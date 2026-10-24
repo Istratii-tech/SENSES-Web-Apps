@@ -190,7 +190,7 @@ def test_mdns():
 def free_base():
     for base in range(18500, 19900, 50):
         try:
-            for p in range(base, base + 3):
+            for p in range(base - 1, base + 3):  # the setup port, the library, 2 slots
                 with socket.socket() as s:
                     s.bind(('0.0.0.0', p))
             return base
@@ -250,14 +250,30 @@ def test_server():
             def redirect_request(self, *a):
                 return None
         opener = urllib.request.build_opener(NoRedirect)
+        setup = port - 1
         try:
             opener.open('http://%s:%d/index.html' % (ip, port))
-            check('LAN over HTTP: only the setup page', False)
+            check('LAN over HTTP to the library: to the setup port', False)
         except urllib.error.HTTPError as e:
-            check('LAN over HTTP: only the setup page', e.code == 302 and e.headers['Location'] == '/__setup/')
-        info = json.loads(urllib.request.urlopen('http://%s:%d/__setup/info.json' % (ip, port)).read())
-        check('setup info', info['port'] == port and info['version'] == 'test-1' and info['ip'] == ip, repr(info))
-        r = urllib.request.urlopen('http://%s:%d/__setup/senses-ca.mobileconfig' % (ip, port))
+            check('LAN over HTTP to the library: to the setup port', e.code == 302 and
+                  e.headers['Location'] == 'http://%s:%d/__setup/' % (ip, setup), e.headers['Location'])
+        try:
+            opener.open('http://%s:%d/index.html' % (ip, setup))
+            check('setup port: nothing but the setup page', False)
+        except urllib.error.HTTPError as e:
+            check('setup port: nothing but the setup page', e.code == 302 and e.headers['Location'] == '/__setup/')
+        page = urllib.request.urlopen('http://%s:%d/__setup/' % (ip, setup)).read()
+        check('setup page over HTTP on its port', b'SENSES Web Apps' in page)
+        try:
+            with socket.create_connection((ip, setup), timeout=5) as raw:
+                ssl._create_unverified_context().wrap_socket(raw, server_hostname=ip)
+            check('setup port: no TLS (a browser trying https falls back to http)', False)
+        except (ssl.SSLError, OSError):
+            check('setup port: no TLS (a browser trying https falls back to http)', True)
+        info = json.loads(urllib.request.urlopen('http://%s:%d/__setup/info.json' % (ip, setup)).read())
+        check('setup info', info['port'] == port and info['setup_port'] == setup and info['version'] == 'test-1'
+              and info['ip'] == ip, repr(info))
+        r = urllib.request.urlopen('http://%s:%d/__setup/senses-ca.mobileconfig' % (ip, setup))
         check('profile type', r.headers['Content-Type'] == 'application/x-apple-aspen-config')
         ctx = ssl.create_default_context(cafile=os.path.join(state, 'ca.crt'))
         if ssl.OPENSSL_VERSION.startswith('LibreSSL 2.'):
@@ -280,7 +296,7 @@ def test_server():
               ' 403 ' in ws_status(ip, port, '/__net/dns', 'https://evil.example', ctx)[0])
         check('relay: plain HTTP from the LAN refused',
               ' 101 ' not in ws_status(ip, port, '/__net/dns', 'http://%s:%d' % (ip, port), None)[0])
-        req = urllib.request.Request('http://%s:%d/__setup/report' % (ip, port), method='POST',
+        req = urllib.request.Request('http://%s:%d/__setup/report' % (ip, setup), method='POST',
                                      data=b'{"state": "steps", "host": "x"}', headers={'Content-Type': 'application/json'})
         check('setup report', urllib.request.urlopen(req).status == 204)
         second = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -292,7 +308,8 @@ def test_server():
     check('the window told about the report', 'shows the steps' in out, out)
     with open(os.path.join(state, 'config.json')) as f:
         cfg = json.load(f)
-    check('settings kept', cfg['port'] == port and cfg['slots'] == 2 and cfg['version'] == 'test-1')
+    check('settings kept', cfg['port'] == port and cfg['setup_port'] == port - 1 and cfg['slots'] == 2 and
+          cfg['version'] == 'test-1')
     check('key files owner-only', all(os.stat(os.path.join(state, f)).st_mode & 0o077 == 0
                                       for f in ('ca.key', 'server.key')) or os.name == 'nt')
     with open(os.path.join(state, 'ca.crt')) as f:

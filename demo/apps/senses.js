@@ -116,7 +116,14 @@
   // worker takes over when a page asks (the library: at once; the app page:
   // before the system starts). -> Promise<controlled>
   function serviceWorker(onUpdating) {
-    if (!('serviceWorker' in navigator)) return Promise.resolve(false);
+    if (!('serviceWorker' in navigator)) { untrusted(); return Promise.resolve(false); }
+    // Safari 16 past the certificate warning: register() neither resolves
+    // nor fails. 10 s without a worker in charge is the same answer.
+    setTimeout(function () { if (!navigator.serviceWorker.controller) untrusted(); }, 10000);
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      var bar = document.getElementById('senses-untrusted');
+      if (bar) bar.remove();
+    });
     return navigator.serviceWorker.register('sw.js').then(function (reg) {
       if (!navigator.serviceWorker.controller) return navigator.serviceWorker.ready;
       var checked = reg.update().catch(function () {});
@@ -142,7 +149,41 @@
         navigator.serviceWorker.addEventListener('controllerchange', function () { resolve(true); });
         setTimeout(function () { resolve(!!navigator.serviceWorker.controller); }, 5000);
       });
-    }).catch(function (e) { log('Senses: service worker: ' + e); return false; });
+    }).then(function (controlled) {
+      if (!controlled) untrusted();
+      return controlled;
+    }, function (e) { log('Senses: service worker: ' + e); untrusted(); return false; });
+  }
+
+  // No service worker (or one that never takes the page) over https from the local release's server
+  // (tools/release/senses.py, which has /__setup/): the phone opened the
+  // library past Safari's "not private" warning, without trusting the
+  // computer's certificate -- no worker, no storage, no apps. Its setup page
+  // (plain HTTP, a port of its own) is where the phone installs the profile.
+  function untrusted() {
+    if (location.protocol !== 'https:' || document.getElementById('senses-untrusted')) return;
+    fetch('/__setup/info.json', {cache: 'no-store'}).then(function (r) {
+      return r.ok ? r.json() : null;
+    }).then(function (info) {
+      if (!info || !info.setup_port || document.getElementById('senses-untrusted') ||
+          navigator.serviceWorker && navigator.serviceWorker.controller) return;
+      var bar = document.createElement('div');
+      bar.id = 'senses-untrusted';
+      bar.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:1000;padding:calc(12px + ' +
+          'env(safe-area-inset-top)) 16px 12px;background:#5c1f1b;color:#fff;font:15px/1.4 -apple-system,' +
+          'system-ui,sans-serif;text-align:center';
+      var link = document.createElement('a');
+      link.href = 'http://' + location.hostname + ':' + info.setup_port + '/';
+      link.textContent = 'Открыть страницу установки';
+      link.style.cssText = 'display:inline-block;margin-top:8px;padding:8px 16px;border-radius:18px;' +
+          'background:#fff;color:#000;font-weight:600;text-decoration:none';
+      bar.appendChild(document.createTextNode('Этот телефон ещё не доверяет компьютеру, поэтому ' +
+          'приложения здесь не заработают. Сначала установите профиль.'));
+      bar.appendChild(document.createElement('br'));
+      bar.appendChild(link);
+      document.body.appendChild(bar);
+      log('Senses: no service worker over https here: the setup page is ' + link.href);
+    }).catch(function () {});
   }
 
   // --- the app's network (topic app-network, docs/topics/app-network.md) -----------

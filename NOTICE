@@ -60,5 +60,4 @@ Store. microG or Google's own services can be added by the user, from the user's
 
 ## 6. SENSES Web Apps
 
-Everything else in this repository is SENSES Web Apps' own code, licensed under the GNU Affero
-General Public License version 3 (`LICENSE`).
+Everything else in this repository is SENSES Web Apps' own code: see `LICENSE`.

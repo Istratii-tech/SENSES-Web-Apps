@@ -192,7 +192,7 @@ function computer() {
   if (info.name) { $('name_line').hidden = false; $('name').textContent = 'https://' + info.name + ':' + info.port + '/'; }
   $('open_here').href = 'http://localhost:' + info.port + '/';
   var tips = ['t_wifi', info.os === 'mac' ? 't_mac' : info.os === 'windows' ? 't_windows' : 't_linux', 't_vpn'];
-  var ports = info.slots ? info.port + ':' + (info.port + info.slots) : info.port;
+  var ports = Math.min(info.setup_port, info.port) + ':' + Math.max(info.setup_port, info.port + info.slots);
   $('trouble').innerHTML = tips.map(function (k) { return '<li>' + t(k, {ports: ports}) + '</li>'; }).join('');
   function clients(list, reports) {
     list = list.map(function (ip) { return reports && reports[ip] ? ip + ' (' + t('st_' + reports[ip]) + ')' : ip; });
@@ -221,7 +221,8 @@ function phone() {
   (function next(i) {
     if (i >= tries.length) return choose(info.ip || location.hostname, true);
     if (tries[i] === location.hostname) return choose(tries[i]);
-    ping('http://' + tries[i] + ':' + port).then(function (ok) { ok ? choose(tries[i]) : next(i + 1); });
+    // This page's own plain-HTTP port answers on every name of the computer.
+    ping('http://' + tries[i] + ':' + info.setup_port).then(function (ok) { ok ? choose(tries[i]) : next(i + 1); });
   })(0);
 
   function choose(host, fallback) {
