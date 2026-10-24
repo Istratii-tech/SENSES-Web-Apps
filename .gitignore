@@ -6,3 +6,4 @@ third_party/aosp81/
 third_party/tzdata/
 third_party/aosp10/
 third_party/vulkan-headers/
+__pycache__/

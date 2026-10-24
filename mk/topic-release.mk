@@ -31,11 +31,22 @@ release-all: release-site-all $(RELEASE_FILES)
 	python3 tools/make_release.py --site $(RELEASE)/site-all --variant all \
 	    --version $(RELEASE_VERSION) --out $(RELEASE) --emsdk "$(EMSDK)"
 
-# The launcher's own checks (certificates against openssl when present, QR
+# The launcher (docs/topics/local-release.md, "Launcher"): the small download
+# (~35 KB) a person gets first; at each start it fetches the latest full
+# release (the zips above, assets of a GitHub Release) to the computer, checks
+# its SHA-256 and starts it with the same settings folder.
+#   make release-launcher   # build/release/SENSES-Web-Apps-launcher-VERSION.zip
+.PHONY: release-launcher
+release-launcher: tools/make_launcher.py tools/release/launcher.py tools/release/README-launcher.txt \
+                  tools/release/README-launcher-ru.txt tools/release/README.txt tools/release/README-ru.txt
+	python3 tools/make_launcher.py --version $(RELEASE_VERSION) --out $(RELEASE)
+
+# The server's own checks (certificates against openssl when present, QR
 # codes decoded back, mDNS packets, the server end to end on a free port).
 .PHONY: release-test
 release-test:
 	python3 tests/release/release_test.py
+	python3 tests/release/launcher_test.py
 
 # The source of the GPL parts in the systems, as built (an asset of each
 # release; NOTICE, 1.1): libcore's ojluni (GPL v2 with the Classpath

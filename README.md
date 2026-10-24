@@ -19,11 +19,18 @@ Requests and questions: issues of this repository or `https://t.me/istratii_tech
 
 Инструкция: как пользоваться SENSES Web Apps
 
-1. Скачайте архив выпуска (Releases этого репозитория): `…-android10.zip` (Android 10, ~58 МБ) или
-   `…-all.zip` (все системы, ~170 МБ) — и распакуйте его на компьютере (macOS, Windows или Linux).
+**Какой файл качать.** Обычно — **запускатор** `SENSES-Web-Apps-launcher-ВЕРСИЯ.zip` (~35 КБ) из Releases
+этого репозитория. При каждом запуске он сам скачивает на компьютер последнюю версию SENSES Web Apps
+отсюда же (Android 10 — ~58 МБ, все системы — ~170 МБ; выбор при первом запуске), сверяет SHA-256 и
+запускает; обновления приходят сами, сертификат и приложения на телефоне сохраняются. Полные архивы
+`…-android10.zip` и `…-all.zip` — для компьютера без интернета: их распаковывают и запускают так же
+(или отдают запускатору: `--install ПУТЬ.zip`).
+
+1. Скачайте запускатор (или полный архив) и распакуйте его на компьютере (macOS, Windows или Linux).
 2. Нужен Python 3.8 или новее (https://www.python.org/downloads/; в Windows отметьте «Add python.exe to PATH»).
 3. Запустите «Start SENSES.command» (macOS), «Start SENSES.bat» (Windows) или `./start-senses.sh` (Linux).
-   Появится окно с QR-кодом и адресом; не закрывайте его, пока пользуетесь приложениями.
+   Запускатор в первый раз спросит, какие системы скачать, и покажет загрузку. Затем появится окно с
+   QR-кодом и адресом; не закрывайте его, пока пользуетесь приложениями.
 4. На iPhone в той же сети Wi-Fi наведите «Камеру» на QR-код. Один раз для телефона страница проведёт по
    шагам: «Скачать профиль» → Настройки → «Профиль загружен» → «Установить» → Основные → Об этом
    устройстве → «Доверие сертификатам» → включить сертификат SENSES. Затем — «Открыть SENSES Web Apps».
@@ -36,15 +43,23 @@ Requests and questions: issues of this repository or `https://t.me/istratii_tech
    переключателе приложений) и откройте адрес снова.
 6. Скачайте Android-приложение (.apk, .apks, .xapk) на телефон, в SENSES нажмите «Установить приложение»
    и выберите файл. Совет: «Поделиться» → «На экран „Домой“».
-7. Подробно — `README-ru.txt` в архиве выпуска.
+7. Подробно — `README-ru.txt` в архиве (разделы «Как это работает» и «Обновление» — в запускаторе).
+   Откат к прошлой версии: запуск с `--rollback`; другие системы: `--variant all`.
 
 How to use SENSES Web Apps
 
-1. Download a release archive (Releases of this repository): `…-android10.zip` (Android 10, ~58 MB) or
-   `…-all.zip` (all systems, ~170 MB), and unpack it on your computer (macOS, Windows or Linux).
+**Which file to download.** Usually the **launcher**, `SENSES-Web-Apps-launcher-VERSION.zip` (~35 KB), from
+this repository's Releases. At each start it downloads the latest SENSES Web Apps from here to your
+computer (Android 10 ~58 MB, all systems ~170 MB; you choose at the first start), checks its SHA-256 and
+starts it; updates come by themselves, and the certificate and the phone's apps stay. The full archives
+`…-android10.zip` and `…-all.zip` are for a computer without internet: unpack and start them the same
+way (or give one to the launcher: `--install PATH.zip`).
+
+1. Download the launcher (or a full archive) and unpack it on your computer (macOS, Windows or Linux).
 2. You need Python 3.8 or newer (https://www.python.org/downloads/; on Windows tick "Add python.exe to PATH").
 3. Start "Start SENSES.command" (macOS), "Start SENSES.bat" (Windows) or `./start-senses.sh` (Linux).
-   A window shows a QR code and an address; keep it open while you use the apps.
+   The launcher asks the first time which systems to download and shows the download. Then a window
+   shows a QR code and an address; keep it open while you use the apps.
 4. On your iPhone, on the same Wi-Fi, point the Camera at the QR code. Once per phone the page walks you
    through it: Download the profile → Settings → Profile Downloaded → Install → General → About →
    Certificate Trust Settings → turn on the SENSES certificate. Then "Open SENSES Web Apps".
@@ -57,7 +72,8 @@ How to use SENSES Web Apps
    switcher) and open the address again.
 6. Download an Android app (.apk, .apks, .xapk) to the phone, tap "Install app" in SENSES and pick the
    file. Tip: Share → Add to Home Screen.
-7. Details: `README.txt` in the release archive.
+7. Details: `README.txt` in the archive (the launcher's has "How it works" and "Updating").
+   Back to the previous version: start with `--rollback`; other systems: `--variant all`.
 
 ## О сертификате / About the certificate
 
@@ -123,8 +139,8 @@ make -j4 art8 art8-web fw8-graphics-web fw8-system-web
 make -j4 fw10-host && make fw10-jars && make -j4 fw10-libs art10 art10-web fw10-graphics-web
 tools/vulkan/build_tint.sh WORK build/vulkan/tint   # once; WORK: a folder with ~2 GB free
 make -j4 senses-apps-vm senses-apps-web             # the web app: build/senses-apps
-make release release-all                            # the release archives: build/release
-make release-test                                   # the release's server, certificates, QR, mDNS
+make release release-all release-launcher          # the release archives: build/release
+make release-test                                   # the server, certificates, QR, mDNS, the launcher
 ```
 
 The `fetch_aosp*.sh` scripts download the AOSP sources at the tags below and apply `patches/`.
