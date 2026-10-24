@@ -74,8 +74,8 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin || url.pathname.startsWith('/__')) return;
   // vm/: the VM side's test page (topic install8), not part of the app: as served.
   if (url.href.startsWith(new URL('vm/', self.registration.scope).href)) return;
-  // The apps' origins (origins.js): the host's, now; the last one kept when
-  // the host does not answer in time.
+  // The apps' origins (origins.js): the copy kept, at once; the host's when
+  // there is none yet.
   if (url.href === new URL('origins.json', self.registration.scope).href) {
     event.respondWith(fresh(event, request, url));
     return;
@@ -83,23 +83,26 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(respond(event, request, url));
 });
 
-// The server's answer if it comes within 3 s, else the copy kept from the
-// last one. The library and the app's page wait for origins.json before
+// The copy kept from the last answer, at once, while the server's answer
+// replaces it for the next start (the slots change only with the server's
+// ports). The library and the app's page wait for origins.json before
 // anything else, and with the computer out of reach (the phone's Wi-Fi off)
 // iOS holds a request to its .local name for a minute instead of failing it.
+// No copy yet: the server's answer if it comes within 3 s.
 async function fresh(event, request, url) {
   const cache = await caches.open(SHELL_CACHE);
   const key = url.origin + url.pathname;
   const net = fetch(request).then((response) => {
-    if (response.ok) {
-      const kept = cache.put(key, response.clone()).catch(() => {});
-      try { event.waitUntil(kept); } catch (e) {}
-    }
+    if (response.ok) return cache.put(key, response.clone()).catch(() => {}).then(() => response);
     return response;
   }, () => null);
+  const kept = await cache.match(key);
+  if (kept) {
+    event.waitUntil(net);
+    return kept;
+  }
   const response = await Promise.race([net, new Promise((resolve) => setTimeout(resolve, 3000, null))]);
-  if (response) return response;
-  return (await cache.match(key)) || new Response('', {status: 404});
+  return response || new Response('', {status: 404});
 }
 
 async function respond(event, request, url) {
