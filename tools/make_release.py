@@ -133,15 +133,16 @@ the components' source folders.
 * Tint from Dawn (BSD 3-Clause), SPIRV-Tools (Apache 2.0), SPIR-V Headers and
   the Vulkan headers (MIT/Apache 2.0).
 * The SENSES Web Apps shell (site/*.html, *.js), the WebAssembly ports and
-  the server (server/): the arc-wasm project.
+  the server (server/): SENSES Web Apps' own code (see the repository's LICENSE).
 
 Source code
 -----------
-The AOSP parts are built from the AOSP tags above with the arc-wasm project's
-patches. For the parts under the GNU GPL (with the Classpath Exception) the
-corresponding source is available: AOSP at
-https://android.googlesource.com (the tags above) together with the project's
-patches, from the provider of this package on request.
+The AOSP parts are built from the AOSP tags above (https://android.googlesource.com)
+with the patches in the SENSES Web Apps repository
+(https://github.com/Istratii-tech/SENSES-Web-Apps, patches/), which also holds
+the rest of the source. The parts under the GNU GPL with the Classpath
+Exception (libcore's ojluni of Android 8.1 and 10), exactly as built, are the
+release's file SENSES-Web-Apps-{version}-gpl-sources.tar.gz.
 
 AOSP projects in this package (folder: licence marker)
 ------------------------------------------------------
