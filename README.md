@@ -32,6 +32,8 @@ Requests and questions: issues of this repository or `https://t.me/istratii_tech
 5. **Предупреждение Safari.** Safari может сам открыть адрес по https и показать «Подключение не защищено».
    Это ожидаемо, пока профиль не установлен: нажмите «Подробнее» → «Посетить веб-сайт» (это сертификат
    вашего же компьютера). После установки профиля и включения доверия к нему предупреждение исчезает.
+   Если после «Посетить веб-сайт» ничего не происходит — полностью закройте Safari (смахните его вверх в
+   переключателе приложений) и откройте адрес снова.
 6. Скачайте Android-приложение (.apk, .apks, .xapk) на телефон, в SENSES нажмите «Установить приложение»
    и выберите файл. Совет: «Поделиться» → «На экран „Домой“».
 7. Подробно — `README-ru.txt` в архиве выпуска.
@@ -51,6 +53,8 @@ How to use SENSES Web Apps
 5. **Safari's warning.** Safari may open the address over https by itself and show "This Connection Is Not
    Private". That is expected until the profile is installed: tap Show Details → visit this website (it is
    your own computer's certificate). Once the profile is installed and trusted, the warning goes away.
+   If nothing happens after "visit this website", close Safari completely (swipe it up in the app
+   switcher) and open the address again.
 6. Download an Android app (.apk, .apks, .xapk) to the phone, tap "Install app" in SENSES and pick the
    file. Tip: Share → Add to Home Screen.
 7. Details: `README.txt` in the release archive.

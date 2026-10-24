@@ -105,6 +105,8 @@ If the phone cannot connect
   website). On SENSES itself (port 8500) it means the phone does not trust the
   computer yet and apps would not work: open the setup page and do step 2. If
   you went on there anyway, SENSES shows a red bar with the link to it.
+* Nothing happens after "visit this website"? Close Safari completely (swipe
+  it up in the app switcher) and open the address again.
 * Same Wi-Fi? Guest networks and "client isolation" keep devices apart.
 * Firewall: allow Python (macOS: System Settings > Network > Firewall >
   Options; Windows: the network must be "Private").
