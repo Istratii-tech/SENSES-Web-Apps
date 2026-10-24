@@ -1,0 +1,2 @@
+This directory contains some functions which are shared by both NDK
+translation and NDK direct execution on Bare Metal ARM.

@@ -1,0 +1,2 @@
+Asset file from the test APK.
+Вторая строка в UTF-8.

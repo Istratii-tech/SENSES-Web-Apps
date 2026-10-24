@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- arc-wasm: the test app of topic multiproc (docs/topics/multiproc.md):
+     components in other processes than the main one, as apps declare them
+     with android:process. Runs on 8.1 and 10 (minSdkVersion 26). Used by
+     arcwasm.MultiProcessTest; tools/build_test_apk.sh with MIN_SDK=26
+     TARGET_SDK=27.
+       main process     MainReceiver (starts it), LocalService
+       ":remote"        RemoteService (binder calls, see Codes), MessengerService,
+                        RemoteProvider, RemoteReceiver
+       isolated         IsolatedService (isolatedProcess, a process of its own)
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.arcwasm.multiproc"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="27" />
+
+    <application android:name=".App" android:label="@string/app_name">
+
+        <receiver android:name=".MainReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="org.arcwasm.multiproc.START" />
+            </intent-filter>
+        </receiver>
+
+        <service android:name=".LocalService" android:exported="false" />
+
+        <service android:name=".RemoteService" android:process=":remote"
+            android:exported="false" />
+
+        <service android:name=".MessengerService" android:process=":remote"
+            android:exported="false" />
+
+        <provider android:name=".RemoteProvider" android:process=":remote"
+            android:authorities="org.arcwasm.multiproc.remote"
+            android:exported="false" />
+
+        <receiver android:name=".RemoteReceiver" android:process=":remote"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.arcwasm.multiproc.REMOTE_PING" />
+            </intent-filter>
+        </receiver>
+
+        <service android:name=".IsolatedService" android:process=":sandboxed"
+            android:isolatedProcess="true" android:exported="false" />
+    </application>
+</manifest>

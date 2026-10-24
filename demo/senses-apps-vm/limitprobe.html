@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory limit probe</title>
+<style>
+  body { font: 15px -apple-system, sans-serif; margin: 16px; background: #111; color: #eee; }
+  #now { font-size: 34px; font-weight: 700; margin: 12px 0; font-variant-numeric: tabular-nums; }
+  #last { color: #fc6; margin: 8px 0; }
+  a { color: #8cf; display: block; margin: 10px 0; font-size: 17px; }
+  pre { font-size: 12px; color: #aaa; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<!-- How much a tab may hold on this device before the browser closes it,
+     and what one more idle VM thread costs (docs/topics/ios-threads.md):
+       limitprobe.html?what=mem      plain memory, 16 MB a step, filled
+       limitprobe.html?what=workers  idle VM pthread workers (as memprobe.html's
+                                     pload: the VM's JS + its module on a shared
+                                     memory), one a step, &vm=a81/artvm8
+     Each step goes to tools/serve.py's log ("limitprobe: ..."); the last one
+     before the browser closed the tab is the limit. A tab the browser reloads
+     after that does not start again: it says how far the last run got. -->
+<div>Тест предела памяти вкладки</div>
+<div id="now">—</div>
+<div id="last"></div>
+<div id="links">
+  <a href="?what=mem">1. Память: занимать по 16 МБ до закрытия вкладки</a>
+  <a href="?what=workers">2. Потоки: добавлять пустые потоки VM до закрытия вкладки</a>
+</div>
+<pre id="out"></pre>
+<script src="report.js"></script>
+<script>
+  var params = new URLSearchParams(location.search);
+  var what = params.get('what');
+  var vm = params.get('vm') || 'a81/artvm8';
+  var KEY = 'limitprobe-run';
+  var ua = navigator.userAgent;
+  function log(s) {
+    document.getElementById('out').textContent += s + '\n';
+    arcReport('limitprobe: ' + s);
+  }
+  function show(s) { document.getElementById('now').textContent = s; }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function save(o) { try { localStorage.setItem(KEY, JSON.stringify(o)); } catch (e) {} }
+  var prev = null;
+  try { prev = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) {}
+  if (prev) {
+    var t = prev.what === 'mem' ? prev.mb + ' МБ' : prev.workers + ' потоков (' + prev.mb + ' МБ памяти VM)';
+    document.getElementById('last').textContent = (prev.done ? 'Прошлый тест прошёл до конца: ' :
+        'Прошлый тест: вкладку закрыли на ') + t + '.';
+    if (!prev.reported) {
+      log('previous run (' + prev.what + '): ' + (prev.done ? 'finished at ' : 'tab closed after ') +
+          (prev.what === 'mem' ? prev.mb + ' MB' : prev.workers + ' workers') + ' · ' + prev.ua);
+      prev.reported = true;
+      save(prev);
+    }
+  }
+  // Started only by a click on a link (its &t= is new), never by the
+  // browser's own reload after it closed the tab (the same &t= again).
+  var links = document.querySelectorAll('#links a');
+  for (var k = 0; k < links.length; k++) {
+    links[k].onclick = function (e) {
+      e.preventDefault();
+      location.href = this.getAttribute('href') + '&vm=' + encodeURIComponent(vm) + '&t=' + Date.now();
+    };
+  }
+  var tag = params.get('t');
+  if (what && tag) {
+    var seen = '';
+    try { seen = sessionStorage.getItem('limitprobe-started') || ''; } catch (e) {}
+    if (seen === tag) {
+      show('Тест закончен');
+      log('the browser reloaded the page: not starting again');
+    } else {
+      try { sessionStorage.setItem('limitprobe-started', tag); } catch (e) {}
+      run();
+    }
+  }
+
+  async function run() {
+    var t0 = performance.now();
+    var state = {what: what, mb: 0, workers: 0, ua: ua, done: false, reported: false};
+    save(state);
+    log('start ' + what + ' · ' + ua);
+    if (what === 'mem') {
+      var keep = [], STEP = 16;
+      for (var mb = STEP; mb <= 8192; mb += STEP) {
+        var a = new Uint32Array(STEP * 262144);
+        // Filled with different values (a page of zeros or repeats is cheap to compress).
+        var x = (mb * 2654435761) >>> 0;
+        for (var i = 0; i < a.length; i += 1) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; a[i] = x; }
+        keep.push(a);
+        state.mb = mb; save(state);
+        show(mb + ' МБ');
+        if (mb % 64 === 0) log(mb + ' MB at ' + Math.round((performance.now() - t0) / 1000) + ' s');
+        await sleep(mb % 64 === 0 ? 350 : 30);
+      }
+    } else if (what === 'workers') {
+      var module = await WebAssembly.compileStreaming(fetch(vm + '.wasm'));
+      var memory = new WebAssembly.Memory({initial: 4096, maximum: 24576, shared: true});
+      state.mb = 256;
+      log('module compiled, memory 256 MB, ' + Math.round(performance.now() - t0) + ' ms');
+      var workers = [];
+      for (var n = 1; n <= 300; n++) {
+        var w = new Worker(vm + '.js', {name: 'em-pthread-' + n});
+        workers.push(w);
+        await new Promise(function (res) {
+          w.onmessage = function (e) { if (e.data && e.data.cmd === 3) res(); };
+          w.onerror = function () { res(); };
+          w.postMessage({cmd: 1, handlers: [], wasmMemory: memory, wasmModule: module, workerID: n});
+        });
+        state.workers = n; save(state);
+        show(n + ' потоков');
+        if (n % 5 === 0) log(n + ' workers at ' + Math.round((performance.now() - t0) / 1000) + ' s');
+        await sleep(n % 5 === 0 ? 350 : 60);
+      }
+    }
+    state.done = true; save(state);
+    show('Готово: вкладку не закрыли');
+    log('finished: ' + (what === 'mem' ? state.mb + ' MB' : state.workers + ' workers') + ' without the tab closed');
+  }
+</script>
+</body>
+</html>

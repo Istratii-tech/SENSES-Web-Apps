@@ -1,0 +1,80 @@
+diff --git a/art/runtime/mirror/class.cc b/art/runtime/mirror/class.cc
+index 5bd65837..177eff0b 100644
+--- a/art/runtime/mirror/class.cc
++++ b/art/runtime/mirror/class.cc
+@@ -82,6 +82,14 @@ void Class::SetStatus(Handle<Class> h_this, Status new_status, Thread* self) {
+     StackHandleScope<1> hs(self);
+     Handle<mirror::Throwable> old_exception(hs.NewHandle(self->GetException()));
+     CHECK(old_exception.Get() != nullptr);
++#ifdef __EMSCRIPTEN__
++    // arc-wasm: say why. Apps swallow the error, and all that is left later is
++    // "Rejecting re-init on previously-failed class".
++    if (class_linker_initialized) {
++      LOG(WARNING) << "Class " << PrettyClass(h_this.Get()) << " is erroneous: "
++                   << old_exception->Dump();
++    }
++#endif
+     Class* eiie_class;
+     // Do't attempt to use FindClass if we have an OOM error since this can try to do more
+     // allocations and may cause infinite loops.
+diff --git a/art/runtime/runtime.cc b/art/runtime/runtime.cc
+index 79478dbe..5e74fa10 100644
+--- a/art/runtime/runtime.cc
++++ b/art/runtime/runtime.cc
+@@ -155,7 +155,12 @@ Runtime* Runtime::instance_ = nullptr;
+ // destructors (no arc-wasm code needs them): drop what keeps the runtime
+ // alive (main() under PROXY_TO_PTHREAD) and close the JS file streams (the
+ // terminal's last partial line); then _exit (proc_exit: threads terminated).
+-static void ArtWasmReleaseMainThread(void*) {
++static void ArtWasmReleaseMainThread(void* status) {
++  // arc-wasm (tiktok): the exit status first. Without keepalive the main
++  // thread exits by itself right after this call (maybeExit: _exit with
++  // EXITSTATUS, then 0), before the calling thread's _exit(status) reaches
++  // it: every System.exit(N) ended the process with 0.
++  EM_ASM({ EXITSTATUS = $0; }, static_cast<int>(reinterpret_cast<intptr_t>(status)));
+   while (emscripten_runtime_keepalive_check()) {
+     emscripten_runtime_keepalive_pop();
+   }
+@@ -166,11 +171,12 @@ static void ArtWasmExit(int status) {
+   std::cout.flush();
+   std::cerr.flush();
+   fflush(nullptr);
++  void* arg = reinterpret_cast<void*>(static_cast<intptr_t>(status));
+   if (emscripten_is_main_runtime_thread()) {
+-    ArtWasmReleaseMainThread(nullptr);
++    ArtWasmReleaseMainThread(arg);
+   } else {
+     emscripten_proxy_sync(emscripten_proxy_get_system_queue(), emscripten_main_runtime_thread_id(),
+-                          ArtWasmReleaseMainThread, nullptr);
++                          ArtWasmReleaseMainThread, arg);
+   }
+   _exit(status);
+ }
+diff --git a/system/core/libutils/FileMap.cpp b/system/core/libutils/FileMap.cpp
+index 91e45d87..68009ed8 100644
+--- a/system/core/libutils/FileMap.cpp
++++ b/system/core/libutils/FileMap.cpp
+@@ -131,7 +131,9 @@ bool FileMap::create(const char* origFileName, int fd, off64_t offset, size_t le
+ 
+     assert(fd >= 0);
+     assert(offset >= 0);
++#ifndef __EMSCRIPTEN__
+     assert(length > 0);
++#endif
+ 
+     // init on first use
+     if (mPageSize == -1) {
+@@ -145,6 +147,13 @@ bool FileMap::create(const char* origFileName, int fd, off64_t offset, size_t le
+     adjust = offset % mPageSize;
+     adjOffset = offset - adjust;
+     adjLength = length + adjust;
++#ifdef __EMSCRIPTEN__
++    // arc-wasm: an empty entry of a zip (an empty asset) at a page boundary.
++    // Release builds of AOSP have no assert above and map it like any other
++    // (mmap of 0 bytes would fail): one byte, of which none is data.
++    if (adjLength == 0)
++        adjLength = 1;
++#endif
+ 
+     flags = MAP_SHARED;
+     prot = PROT_READ;

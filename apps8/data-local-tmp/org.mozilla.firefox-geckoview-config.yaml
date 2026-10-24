@@ -1,0 +1,54 @@
+# GeckoView's debug configuration for Firefox (org.mozilla.firefox) on arc-wasm.
+# GeckoRuntime reads /data/local/tmp/PKG-geckoview-config.yaml when
+# Settings.Global.debug_app is PKG (SystemServer --debug-app=PKG); SystemServer
+# copies this file there from /system/etc/arcwasm/data-local-tmp.
+#
+# One process (no content, GPU, socket, RDD or utility processes: the VM is one
+# process and libxul cannot run twice in it), no crash reporter, software
+# WebRender. JavaScript: the values here are "without JIT" (SpiderMonkey's C++
+# interpreter only); the lines marked "# arcwasm-jit: VALUE" get VALUE unless
+# ro.arcwasm.jit is 0 (SENSES Web Apps' per-app JIT switch, SystemServer:
+# docs/topics/guest-jit.md) -- SpiderMonkey's baseline interpreter and JIT, Ion
+# and native regexps, whose ARM code the ARM CPU interprets and translates like
+# any other. wasm stays off (it wants signal handlers for its traps).
+env:
+  MOZ_FORCE_DISABLE_E10S: "1"
+  MOZ_CRASHREPORTER_DISABLE: "1"
+  JIT_OPTION_disableJitBackend: "true"   # arcwasm-jit: drop
+prefs:
+  browser.tabs.remote.autostart: false
+  fission.autostart: false
+  dom.ipc.processCount: 1
+  dom.ipc.processPrelaunch.enabled: false
+  layers.gpu-process.enabled: false
+  network.process.enabled: false
+  media.rdd-process.enabled: false
+  media.utility-process.enabled: false
+  gfx.webrender.software: true
+  # SWGL's frame goes to the window through a GL texture (RenderCompositorOGLSWGL,
+  # Android's default: the NDK bridge's EGL on WebGL2), without the GPU process
+  # software WebRender would otherwise want. false draws SWGL straight into the
+  # window (ANativeWindow_lock): about as fast, but Gecko then swaps red and
+  # blue in page content (DrawTargetSkia::LockBits reports an RGBA window as
+  # BGRA; docs/topics/firefox8-gl.md).
+  gfx.webrender.software.opengl: true
+  gfx.webrender.fallback.software.requires-gpu-process: false
+  javascript.options.blinterp: false   # arcwasm-jit: true
+  javascript.options.baselinejit: false   # arcwasm-jit: true
+  javascript.options.ion: false   # arcwasm-jit: true
+  javascript.options.native_regexp: false   # arcwasm-jit: true
+  javascript.options.wasm: false
+  javascript.options.jit_trustedprincipals: false   # arcwasm-jit: true
+  network.http.http3.enable: false
+  # A COOP+COEP page wants a cross-origin isolated process ("webCOOP+COEP"):
+  # in the parent process Gecko crashes (BrowsingContext OpenerPolicy). The
+  # headers are ignored instead (no SharedArrayBuffer for such pages).
+  browser.tabs.remote.useCrossOriginOpenerPolicy: false
+  browser.tabs.remote.useCrossOriginEmbedderPolicy: false
+  # dump() of chrome JavaScript reaches the log (tools/firefox8_apk.py's
+  # "arc-wasm: ..." lines); arcwasm.debug.gfx: true adds the renderer, paint
+  # state and gfx feature log of each GeckoView window 15, 45 and 90 s after
+  # it opens. MOZ_LOG (env) takes Gecko's log modules, e.g.
+  # "ProcessIsolation:4,Process:5".
+  browser.dom.window.dump.enabled: true
+  arcwasm.debug.gfx: false

@@ -1,0 +1,152 @@
+diff --git a/art/runtime/interpreter/interpreter_common.cc b/art/runtime/interpreter/interpreter_common.cc
+index 29f92b76..9122987f 100644
+--- a/art/runtime/interpreter/interpreter_common.cc
++++ b/art/runtime/interpreter/interpreter_common.cc
+@@ -700,6 +700,14 @@ bool DoCall(ArtMethod* called_method, Thread* self, ShadowFrame& shadow_frame,
+     UnstartedRuntime::Invoke(self, code_item, new_shadow_frame, result, first_dest_reg);
+   }
+ 
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (art-string-init): without Runtime::GetStringInitMap() (see
++  // interpreter_common.h). String.<init> is never a flat call.
++  if (string_init && !self->IsExceptionPending()) {
++    ArtWasmSetStringInitValueToAllAliases(
++        &shadow_frame, is_range ? inst->VRegC_3rc() : inst->VRegC_35c(), result->GetL());
++  }
++#else
+   if (string_init && !self->IsExceptionPending()) {
+     // Set the new string result of the StringFactory.
+     uint32_t vregC = (is_range) ? inst->VRegC_3rc() : inst->VRegC_35c();
+@@ -730,6 +738,7 @@ bool DoCall(ArtMethod* called_method, Thread* self, ShadowFrame& shadow_frame,
+       }
+     }
+   }
++#endif
+ 
+   return !self->IsExceptionPending();
+ }
+diff --git a/art/runtime/interpreter/interpreter_common.h b/art/runtime/interpreter/interpreter_common.h
+index 2abf245c..9324adb5 100644
+--- a/art/runtime/interpreter/interpreter_common.h
++++ b/art/runtime/interpreter/interpreter_common.h
+@@ -89,6 +89,36 @@ static inline bool ArtWasmCanCallFlat(Thread* self, ArtMethod* m)
+ }
+ #endif
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm (art-string-init): after String.<init> (a StringFactory call),
++// puts the new string into every register of |sf| that holds the object of
++// the new-instance (register |this_vreg| of the invoke), as ART 7 does
++// (SetStringInitValueToAllAliases). AOSP 6.0 found those registers with
++// the verifier and cached them in Runtime::GetStringInitMap(), which any
++// thread changed without a lock. NEW_INSTANCE of String allocates a new
++// empty String each time, so a register holding it is a copy of the
++// new-instance's result. A register holds a reference only if its
++// reference slot agrees with its value (SetVReg clears the slot); ART 7
++// only DCHECKs that.
++ALWAYS_INLINE static inline void ArtWasmSetStringInitValueToAllAliases(ShadowFrame* sf,
++                                                                       uint32_t this_vreg,
++                                                                       mirror::Object* result)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++  mirror::Object* const existing = sf->GetVRegReference(this_vreg);
++  if (UNLIKELY(existing == nullptr)) {
++    sf->SetVRegReference(this_vreg, result);
++    return;
++  }
++  const uint32_t existing_value = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(existing));
++  for (uint32_t i = 0, e = sf->NumberOfVRegs(); i < e; ++i) {
++    if (sf->GetVRegReference(i) == existing &&
++        static_cast<uint32_t>(sf->GetVReg(i)) == existing_value) {
++      sf->SetVRegReference(i, result);
++    }
++  }
++}
++#endif
++
+ // External references to both interpreter implementations.
+ 
+ template<bool do_access_check, bool transaction_active>
+diff --git a/art/runtime/runtime.cc b/art/runtime/runtime.cc
+index 1192ce87..79478dbe 100644
+--- a/art/runtime/runtime.cc
++++ b/art/runtime/runtime.cc
+@@ -23,6 +23,11 @@
+ #endif
+ #if defined(__EMSCRIPTEN__)
+ #include <emscripten/emscripten.h>
++#include <emscripten/eventloop.h>
++#include <emscripten/proxying.h>
++#include <emscripten/threading.h>
++#include <unistd.h>
++#include <iostream>
+ #endif
+ 
+ #define ATRACE_TAG ATRACE_TAG_DALVIK
+@@ -139,6 +144,38 @@ namespace art {
+ static constexpr bool kEnableJavaStackTraceHandler = false;
+ Runtime* Runtime::instance_ = nullptr;
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm (art-string-init): the default exit hook (System.exit). Emscripten's
++// exit() hands the exit to the browser's (Node's) main thread, which runs the
++// C++ static destructors there; std::ios_base's flushes the standard streams
++// and waits for their locks. A thread holding stderr's lock while its write
++// waits for the main thread (a finalizer logging, say) never gets it:
++// deadlock. So: flush every stream on this thread, where waiting is fine;
++// on the main thread do the rest of what exit() does there except the
++// destructors (no arc-wasm code needs them): drop what keeps the runtime
++// alive (main() under PROXY_TO_PTHREAD) and close the JS file streams (the
++// terminal's last partial line); then _exit (proc_exit: threads terminated).
++static void ArtWasmReleaseMainThread(void*) {
++  while (emscripten_runtime_keepalive_check()) {
++    emscripten_runtime_keepalive_pop();
++  }
++  EM_ASM({ FS.quit(); });
++}
++
++static void ArtWasmExit(int status) {
++  std::cout.flush();
++  std::cerr.flush();
++  fflush(nullptr);
++  if (emscripten_is_main_runtime_thread()) {
++    ArtWasmReleaseMainThread(nullptr);
++  } else {
++    emscripten_proxy_sync(emscripten_proxy_get_system_queue(), emscripten_main_runtime_thread_id(),
++                          ArtWasmReleaseMainThread, nullptr);
++  }
++  _exit(status);
++}
++#endif
++
+ struct TraceConfig {
+   Trace::TraceMode trace_mode;
+   Trace::TraceOutputMode trace_output_mode;
+@@ -842,6 +879,11 @@ bool Runtime::Init(const RuntimeOptions& raw_options, bool ignore_unrecognized)
+ 
+   vfprintf_ = runtime_options.GetOrDefault(Opt::HookVfprintf);
+   exit_ = runtime_options.GetOrDefault(Opt::HookExit);
++#if defined(__EMSCRIPTEN__)
++  if (exit_ == exit) {
++    exit_ = ArtWasmExit;
++  }
++#endif
+   abort_ = runtime_options.GetOrDefault(Opt::HookAbort);
+ 
+   default_stack_size_ = runtime_options.GetOrDefault(Opt::StackSize);
+diff --git a/system/core/libcutils/threads.c b/system/core/libcutils/threads.c
+index 036f8c5b..d4a3d013 100644
+--- a/system/core/libcutils/threads.c
++++ b/system/core/libcutils/threads.c
+@@ -32,7 +32,11 @@
+ #endif
+ 
+ // No definition needed for Android because we'll just pick up bionic's copy.
+-#ifndef __ANDROID__
++// arc-wasm (art-string-init): nor for Emscripten, whose libc has gettid()
++// (the pthread's id). This one (no case for it) returned 0 on every thread,
++// so ART's ClassLinker::InitializeClass took every thread for the one running
++// a class's <clinit> and let it read static fields before they were set.
++#if !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
+ pid_t gettid() {
+ #if defined(__APPLE__)
+   return syscall(SYS_thread_selfid);

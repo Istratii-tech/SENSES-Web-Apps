@@ -1,0 +1,356 @@
+diff --git a/frameworks/base/core/java/android/app/timezone/RulesState.aidl b/frameworks/base/core/java/android/app/timezone/RulesState.aidl
+index f789120e..665220dd 100644
+--- a/frameworks/base/core/java/android/app/timezone/RulesState.aidl
++++ b/frameworks/base/core/java/android/app/timezone/RulesState.aidl
+@@ -14,4 +14,6 @@
+  * limitations under the License.
+  */
+ 
++package android.app.timezone;
++
+ parcelable RulesState;
+\ No newline at end of file
+diff --git a/frameworks/base/core/java/android/hardware/location/ContextHubInfo.java b/frameworks/base/core/java/android/hardware/location/ContextHubInfo.java
+index aaf6c57b..e48bdded 100644
+--- a/frameworks/base/core/java/android/hardware/location/ContextHubInfo.java
++++ b/frameworks/base/core/java/android/hardware/location/ContextHubInfo.java
+@@ -25,7 +25,7 @@ import java.util.Arrays;
+  * @hide
+  */
+ @SystemApi
+-public class ContextHubInfo {
++public class ContextHubInfo implements Parcelable {
+     private int mId;
+     private String mName;
+     private String mVendor;
+diff --git a/frameworks/base/core/java/android/hardware/location/ContextHubMessage.java b/frameworks/base/core/java/android/hardware/location/ContextHubMessage.java
+index bca2ae6d..8cd8b6d2 100644
+--- a/frameworks/base/core/java/android/hardware/location/ContextHubMessage.java
++++ b/frameworks/base/core/java/android/hardware/location/ContextHubMessage.java
+@@ -27,7 +27,7 @@ import java.util.Arrays;
+  * @hide
+  */
+ @SystemApi
+-public class ContextHubMessage {
++public class ContextHubMessage implements Parcelable {
+     private int mType;
+     private int mVersion;
+     private byte[]mData;
+diff --git a/frameworks/base/core/java/android/hardware/location/NanoApp.java b/frameworks/base/core/java/android/hardware/location/NanoApp.java
+index 0465defc..3995165f 100644
+--- a/frameworks/base/core/java/android/hardware/location/NanoApp.java
++++ b/frameworks/base/core/java/android/hardware/location/NanoApp.java
+@@ -31,7 +31,7 @@ import android.util.Log;
+  * @hide
+  */
+ @SystemApi
+-public class NanoApp {
++public class NanoApp implements Parcelable {
+     private final String TAG = "NanoApp";
+ 
+     private final String UNKNOWN = "Unknown";
+diff --git a/frameworks/base/core/java/android/hardware/location/NanoAppFilter.java b/frameworks/base/core/java/android/hardware/location/NanoAppFilter.java
+index c4409490..e7659132 100644
+--- a/frameworks/base/core/java/android/hardware/location/NanoAppFilter.java
++++ b/frameworks/base/core/java/android/hardware/location/NanoAppFilter.java
+@@ -26,7 +26,7 @@ import android.util.Log;
+  * @hide
+  */
+ @SystemApi
+-public class NanoAppFilter {
++public class NanoAppFilter implements Parcelable {
+ 
+     private static final String TAG = "NanoAppFilter";
+ 
+diff --git a/frameworks/base/core/java/android/hardware/location/NanoAppInstanceInfo.java b/frameworks/base/core/java/android/hardware/location/NanoAppInstanceInfo.java
+index 26238304..d2d5f2aa 100644
+--- a/frameworks/base/core/java/android/hardware/location/NanoAppInstanceInfo.java
++++ b/frameworks/base/core/java/android/hardware/location/NanoAppInstanceInfo.java
+@@ -29,7 +29,7 @@ import libcore.util.EmptyArray;
+  * @hide
+  */
+ @SystemApi
+-public class NanoAppInstanceInfo {
++public class NanoAppInstanceInfo implements Parcelable {
+     private String mPublisher;
+     private String mName;
+ 
+diff --git a/frameworks/base/core/res/res/values/attrs.xml b/frameworks/base/core/res/res/values/attrs.xml
+index 9aca2dea..6929e594 100644
+--- a/frameworks/base/core/res/res/values/attrs.xml
++++ b/frameworks/base/core/res/res/values/attrs.xml
+@@ -20,6 +20,11 @@
+ -->
+ 
+ <resources>
++    <!-- arc-wasm: declared here because aapt2 of build-tools 35 no longer
++         defines an attr that only a declare-styleable names (AOSP 8.1's
++         aapt2 made it a weak attr of any format, as this one is). -->
++    <attr name="autoSizePresetSizes" />
++    <attr name="__removed3" />
+     <!-- These are the standard attributes that make up a complete theme. -->
+     <declare-styleable name="Theme">
+         <!-- ============== -->
+diff --git a/frameworks/base/core/res/res/values/attrs_manifest.xml b/frameworks/base/core/res/res/values/attrs_manifest.xml
+index 8aff3b6e..bf775a3f 100644
+--- a/frameworks/base/core/res/res/values/attrs_manifest.xml
++++ b/frameworks/base/core/res/res/values/attrs_manifest.xml
+@@ -16,6 +16,10 @@
+ */
+ -->
+ <resources>
++    <!-- arc-wasm: declared here because aapt2 of build-tools 35 no longer
++         defines an attr that only a declare-styleable names (AOSP 8.1's
++         aapt2 made it a weak attr of any format, as this one is). -->
++    <attr name="pathAdvancedPattern" />
+     <!-- **************************************************************** -->
+     <!-- These are the attributes used in AndroidManifest.xml. -->
+     <!-- **************************************************************** -->
+diff --git a/frameworks/base/core/res/res/values/strings.xml b/frameworks/base/core/res/res/values/strings.xml
+index ce6815f1..674db0cb 100644
+--- a/frameworks/base/core/res/res/values/strings.xml
++++ b/frameworks/base/core/res/res/values/strings.xml
+@@ -366,7 +366,7 @@
+     <!-- Text message in the factory reset warning dialog. This says that the the device admin app
+          is missing or corrupted. As a result the device will be erased. [CHAR LIMIT=NONE]-->
+     <string name="factory_reset_message">The admin app can\'t be used. Your device will now be
+-        erased.\n\nIf you have questions, contact your organization's admin.</string>
++        erased.\n\nIf you have questions, contact your organization\'s admin.</string>
+ 
+     <!-- Display name for any time a piece of data refers to the owner of the phone. For example, this could be used in place of the phone's phone number. -->
+     <string name="me">Me</string>
+@@ -710,7 +710,7 @@
+     <string name="capability_title_canCaptureFingerprintGestures">Fingerprint gestures</string>
+     <!-- Description for the capability of an accessibility service to perform gestures. -->
+     <string name="capability_desc_canCaptureFingerprintGestures">Can capture gestures performed on
+-        the device's fingerprint sensor.</string>
++        the device\'s fingerprint sensor.</string>
+ 
+     <!--  Permissions -->
+ 
+diff --git a/frameworks/native/libs/binder/IPCThreadState.cpp b/frameworks/native/libs/binder/IPCThreadState.cpp
+index e8329613..18e99db4 100644
+--- a/frameworks/native/libs/binder/IPCThreadState.cpp
++++ b/frameworks/native/libs/binder/IPCThreadState.cpp
+@@ -862,7 +862,7 @@ status_t IPCThreadState::talkWithDriver(bool doReceive)
+         IF_LOG_COMMANDS() {
+             alog << "About to read/write, write size = " << mOut.dataSize() << endl;
+         }
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || defined(ARC_WASM)
+         if (ioctl(mProcess->mDriverFD, BINDER_WRITE_READ, &bwr) >= 0)
+             err = NO_ERROR;
+         else
+@@ -1156,7 +1156,7 @@ void IPCThreadState::threadDestructor(void *st)
+         IPCThreadState* const self = static_cast<IPCThreadState*>(st);
+         if (self) {
+                 self->flushCommands();
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || defined(ARC_WASM)
+         if (self->mProcess->mDriverFD > 0) {
+             ioctl(self->mProcess->mDriverFD, BINDER_THREAD_EXIT, 0);
+         }
+diff --git a/system/core/libutils/Looper.cpp b/system/core/libutils/Looper.cpp
+index 6c57b2e5..1b737cfa 100644
+--- a/system/core/libutils/Looper.cpp
++++ b/system/core/libutils/Looper.cpp
+@@ -14,7 +14,13 @@
+ #define DEBUG_CALLBACKS 0
+ 
+ #include <utils/Looper.h>
++#if defined(ARC_WASM)
++// arc-wasm: no eventfd in the kernel (posix_translation): a pipe, as Looper
++// was before 6.0.
++#include <fcntl.h>
++#else
+ #include <sys/eventfd.h>
++#endif
+ 
+ namespace android {
+ 
+@@ -64,7 +70,16 @@ Looper::Looper(bool allowNonCallbacks) :
+         mAllowNonCallbacks(allowNonCallbacks), mSendingMessage(false),
+         mPolling(false), mEpollFd(-1), mEpollRebuildRequired(false),
+         mNextRequestSeq(0), mResponseIndex(0), mNextMessageUptime(LLONG_MAX) {
++#if defined(ARC_WASM)
++    int wakeFds[2];
++    LOG_ALWAYS_FATAL_IF(pipe(wakeFds) != 0, "Could not create wake pipe: %s", strerror(errno));
++    mWakeEventFd = wakeFds[0];
++    mWakeWritePipeFd = wakeFds[1];
++    fcntl(mWakeEventFd, F_SETFL, O_NONBLOCK);
++    fcntl(mWakeWritePipeFd, F_SETFL, O_NONBLOCK);
++#else
+     mWakeEventFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
++#endif
+     LOG_ALWAYS_FATAL_IF(mWakeEventFd < 0, "Could not make wake event fd: %s",
+                         strerror(errno));
+ 
+@@ -75,6 +90,10 @@ Looper::Looper(bool allowNonCallbacks) :
+ Looper::~Looper() {
+     close(mWakeEventFd);
+     mWakeEventFd = -1;
++#if defined(ARC_WASM)
++    close(mWakeWritePipeFd);
++    mWakeWritePipeFd = -1;
++#endif
+     if (mEpollFd >= 0) {
+         close(mEpollFd);
+     }
+@@ -400,9 +419,15 @@ void Looper::wake() {
+     ALOGD("%p ~ wake", this);
+ #endif
+ 
++#if defined(ARC_WASM)
++    // One byte per wake; a full pipe (EAGAIN) is already awake.
++    ssize_t nWrite = TEMP_FAILURE_RETRY(write(mWakeWritePipeFd, "W", 1));
++    if (nWrite != 1) {
++#else
+     uint64_t inc = 1;
+     ssize_t nWrite = TEMP_FAILURE_RETRY(write(mWakeEventFd, &inc, sizeof(uint64_t)));
+     if (nWrite != sizeof(uint64_t)) {
++#endif
+         if (errno != EAGAIN) {
+             LOG_ALWAYS_FATAL("Could not write wake signal to fd %d: %s",
+                     mWakeEventFd, strerror(errno));
+@@ -415,8 +440,17 @@ void Looper::awoken() {
+     ALOGD("%p ~ awoken", this);
+ #endif
+ 
++#if defined(ARC_WASM)
++    // Drain the pipe (an eventfd read resets the counter at once).
++    char buffer[16];
++    ssize_t nRead;
++    do {
++        nRead = TEMP_FAILURE_RETRY(read(mWakeEventFd, buffer, sizeof(buffer)));
++    } while (nRead == sizeof(buffer));
++#else
+     uint64_t counter;
+     TEMP_FAILURE_RETRY(read(mWakeEventFd, &counter, sizeof(uint64_t)));
++#endif
+ }
+ 
+ void Looper::pushResponse(int events, const Request& request) {
+diff --git a/system/core/libutils/include/utils/AndroidThreads.h b/system/core/libutils/include/utils/AndroidThreads.h
+index 4c2dd49f..ae7d1ad4 100644
+--- a/system/core/libutils/include/utils/AndroidThreads.h
++++ b/system/core/libutils/include/utils/AndroidThreads.h
+@@ -73,7 +73,8 @@ extern void androidSetCreateThreadFunc(android_create_thread_fn func);
+ // ------------------------------------------------------------------
+ // Extra functions working with raw pids.
+ 
+-#if defined(__ANDROID__)
++// arc-wasm: also without __ANDROID__ (shim/fw6/thread_priority.cc has them).
++#if defined(__ANDROID__) || defined(ARC_WASM)
+ // Change the priority AND scheduling group of a particular thread.  The priority
+ // should be one of the ANDROID_PRIORITY constants.  Returns INVALID_OPERATION
+ // if the priority set failed, else another value if just the group set failed;
+diff --git a/system/core/libutils/include/utils/Looper.h b/system/core/libutils/include/utils/Looper.h
+index a62e67f5..f52c4e48 100644
+--- a/system/core/libutils/include/utils/Looper.h
++++ b/system/core/libutils/include/utils/Looper.h
+@@ -448,6 +448,9 @@ private:
+     const bool mAllowNonCallbacks; // immutable
+ 
+     int mWakeEventFd;  // immutable
++#if defined(ARC_WASM)
++    int mWakeWritePipeFd;  // immutable; arc-wasm: the write end of the wake pipe
++#endif
+     Mutex mLock;
+ 
+     Vector<MessageEnvelope> mMessageEnvelopes; // guarded by mLock
+diff --git a/system/libhidl/base/HidlSupport.cpp b/system/libhidl/base/HidlSupport.cpp
+index c0888f6b..3f79c2e7 100644
+--- a/system/libhidl/base/HidlSupport.cpp
++++ b/system/libhidl/base/HidlSupport.cpp
+@@ -57,7 +57,7 @@ hidl_handle::hidl_handle(const hidl_handle& other) : hidl_handle() {
+ }
+ 
+ // move constructor.
+-hidl_handle::hidl_handle(hidl_handle&& other) : hidl_handle() {
++hidl_handle::hidl_handle(hidl_handle&& other) noexcept : hidl_handle() {
+     mOwnsHandle = false;
+     *this = std::move(other);
+ }
+@@ -88,7 +88,7 @@ hidl_handle &hidl_handle::operator=(const native_handle_t *native_handle) {
+     return *this;
+ }
+ 
+-hidl_handle &hidl_handle::operator=(hidl_handle &&other) {
++hidl_handle &hidl_handle::operator=(hidl_handle &&other) noexcept {
+     if (this != &other) {
+         freeHandle();
+         mHandle = other.mHandle;
+@@ -169,11 +169,11 @@ hidl_string::hidl_string(const std::string &s) : hidl_string() {
+     copyFrom(s.c_str(), s.size());
+ }
+ 
+-hidl_string::hidl_string(hidl_string &&other): hidl_string() {
++hidl_string::hidl_string(hidl_string &&other) noexcept : hidl_string() {
+     moveFrom(std::forward<hidl_string>(other));
+ }
+ 
+-hidl_string &hidl_string::operator=(hidl_string &&other) {
++hidl_string &hidl_string::operator=(hidl_string &&other) noexcept {
+     if (this != &other) {
+         clear();
+         moveFrom(std::forward<hidl_string>(other));
+diff --git a/system/libhidl/transport/ServiceManagement.cpp b/system/libhidl/transport/ServiceManagement.cpp
+index 72ac53a5..358277bc 100644
+--- a/system/libhidl/transport/ServiceManagement.cpp
++++ b/system/libhidl/transport/ServiceManagement.cpp
+@@ -33,7 +33,9 @@
+ #include <hidl/Status.h>
+ 
+ #include <android-base/logging.h>
++#if !defined(ARC_WASM)
+ #include <android-base/properties.h>
++#endif
+ #include <hwbinder/IPCThreadState.h>
+ #include <hwbinder/Parcel.h>
+ #include <vndksupport/linker.h>
+@@ -46,7 +48,9 @@
+ #define RE_PATH         RE_COMPONENT "(?:[.]" RE_COMPONENT ")*"
+ static const std::regex gLibraryFileNamePattern("(" RE_PATH "@[0-9]+[.][0-9]+)-impl(.*?).so");
+ 
++#if !defined(ARC_WASM)
+ using android::base::WaitForProperty;
++#endif
+ 
+ using IServiceManager1_0 = android::hidl::manager::V1_0::IServiceManager;
+ using IServiceManager1_1 = android::hidl::manager::V1_1::IServiceManager;
+@@ -65,11 +69,18 @@ extern sp<android::hidl::manager::V1_1::IServiceManager> gDefaultServiceManager;
+ static const char* kHwServicemanagerReadyProperty = "hwservicemanager.ready";
+ 
+ void waitForHwServiceManager() {
++#if defined(ARC_WASM)
++    // arc-wasm: no hwservicemanager (and no /dev/hwbinder, so this is never
++    // reached: defaultServiceManager() is null); libbase's properties are
++    // bionic's only.
++    LOG(WARNING) << "no hwservicemanager in arc-wasm";
++#else
+     using std::literals::chrono_literals::operator""s;
+ 
+     while (!WaitForProperty(kHwServicemanagerReadyProperty, "true", 1s)) {
+         LOG(WARNING) << "Waited for hwservicemanager.ready for a second, waiting another...";
+     }
++#endif
+ }
+ 
+ bool endsWith(const std::string &in, const std::string &suffix) {
+diff --git a/system/libhidl/transport/include/hidl/HidlBinderSupport.h b/system/libhidl/transport/include/hidl/HidlBinderSupport.h
+index 47ff5812..a20abe3d 100644
+--- a/system/libhidl/transport/include/hidl/HidlBinderSupport.h
++++ b/system/libhidl/transport/include/hidl/HidlBinderSupport.h
+@@ -337,7 +337,11 @@ sp<IBinder> toBinder(sp<IType> iface) {
+             sBnObj = sp<IBinder>(func(static_cast<void*>(ifacePtr)));
+ 
+             if (sBnObj != nullptr) {
+-                details::gBnMap.setLocked(ifacePtr, static_cast<BHwBinder*>(sBnObj.get()));
++                // arc-wasm: a prvalue key (clang after CWG 2352 no longer binds
++                // the IType* lvalue to setLocked's const IBase*&&).
++                details::gBnMap.setLocked(
++                        static_cast<const ::android::hidl::base::V1_0::IBase*>(ifacePtr),
++                        static_cast<BHwBinder*>(sBnObj.get()));
+             }
+         }
+ 

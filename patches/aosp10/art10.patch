@@ -1,0 +1,1398 @@
+diff --git a/art/libartbase/arch/instruction_set.h b/art/libartbase/arch/instruction_set.h
+index 7e071bd9..c5a1d69c 100644
+--- a/art/libartbase/arch/instruction_set.h
++++ b/art/libartbase/arch/instruction_set.h
+@@ -50,6 +50,10 @@ static constexpr InstructionSet kRuntimeISA = InstructionSet::kMips64;
+ static constexpr InstructionSet kRuntimeISA = InstructionSet::kX86;
+ #elif defined(__x86_64__)
+ static constexpr InstructionSet kRuntimeISA = InstructionSet::kX86_64;
++#elif defined(__EMSCRIPTEN__)
++// arc-wasm: there is no wasm ISA in ART; wasm32 has the layout of 32-bit
++// x86 (4-byte pointers, little endian), and nothing is compiled for it.
++static constexpr InstructionSet kRuntimeISA = InstructionSet::kX86;
+ #else
+ static constexpr InstructionSet kRuntimeISA = InstructionSet::kNone;
+ #endif
+@@ -297,7 +301,8 @@ constexpr size_t GetStackOverflowReservedBytes(InstructionSet isa) {
+ //            when the garbage collector can move objects concurrently. Ensure that required locks
+ //            are held when using!
+ 
+-#if defined(__i386__) || defined(__arm__) || (defined(__mips__) && !defined(__LP64__))
++#if defined(__i386__) || defined(__arm__) || (defined(__mips__) && !defined(__LP64__)) || \
++    defined(__wasm32__)  // arc-wasm
+ typedef uint64_t TwoWordReturn;
+ 
+ // Encodes method_ptr==nullptr and code_ptr==nullptr
+diff --git a/art/libartbase/base/atomic.h b/art/libartbase/base/atomic.h
+index 9de84cdd..b12bc1b5 100644
+--- a/art/libartbase/base/atomic.h
++++ b/art/libartbase/base/atomic.h
+@@ -48,7 +48,16 @@ class PACKED(sizeof(T)) Atomic : public std::atomic<T> {
+   // There are no "cache coherence" guarantees; e.g. loads from the same location may be reordered.
+   // In contrast to normal C++ accesses, racing accesses are allowed.
+   T LoadJavaData() const {
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm (art-speed): WebAssembly has only sequentially consistent
++    // atomics (a relaxed load becomes one: a load-acquire and an alignment
++    // check in the engine's code). A plain aligned access does not tear,
++    // which is all Java requires of non-volatile fields (64-bit ones may
++    // tear anyway, JLS 17.7). volatile: one load per call, as before.
++    return *reinterpret_cast<const volatile T*>(this);
++#else
+     return this->load(std::memory_order_relaxed);
++#endif
+   }
+ 
+   // Store data in an atomic variable with Java data memory ordering semantics.
+@@ -59,7 +68,12 @@ class PACKED(sizeof(T)) Atomic : public std::atomic<T> {
+   // There are no "cache coherence" guarantees; e.g. loads from the same location may be reordered.
+   // In contrast to normal C++ accesses, racing accesses are allowed.
+   void StoreJavaData(T desired_value) {
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm (art-speed): see LoadJavaData.
++    *reinterpret_cast<volatile T*>(this) = desired_value;
++#else
+     this->store(desired_value, std::memory_order_relaxed);
++#endif
+   }
+ 
+   // Atomically replace the value with desired_value if it matches the expected_value.
+diff --git a/art/libartbase/base/mem_map.h b/art/libartbase/base/mem_map.h
+index 525e6226..4fee0f1a 100644
+--- a/art/libartbase/base/mem_map.h
++++ b/art/libartbase/base/mem_map.h
+@@ -42,6 +42,11 @@ namespace art {
+ #ifdef __linux__
+ static constexpr bool kMadviseZeroes = true;
+ #define HAVE_MREMAP_SYSCALL true
++#elif defined(__EMSCRIPTEN__)
++// arc-wasm: madvise(MADV_DONTNEED) zeroes on wasm too (shim/art10/art_runtime_wasm10.h);
++// no mremap.
++static constexpr bool kMadviseZeroes = true;
++#define HAVE_MREMAP_SYSCALL false
+ #else
+ static constexpr bool kMadviseZeroes = false;
+ // We cannot ever perform MemMap::ReplaceWith on non-linux hosts since the syscall is not
+diff --git a/art/libartbase/base/strlcpy.h b/art/libartbase/base/strlcpy.h
+index 98ea34b0..787dfaba 100644
+--- a/art/libartbase/base/strlcpy.h
++++ b/art/libartbase/base/strlcpy.h
+@@ -26,7 +26,7 @@
+ // Bionic exposes this function, but the host glibc does not. Remove this shim when we compile
+ // against bionic on the host, also.
+ 
+-#if !defined(__BIONIC__) && !defined(__APPLE__)
++#if !defined(__BIONIC__) && !defined(__APPLE__) && !defined(__EMSCRIPTEN__)  // arc-wasm: musl has it
+ 
+ static inline size_t strlcpy(char* dst, const char* src, size_t size) {
+   // Extra-lazy implementation: this is only a host shim, and we don't have to call this often.
+diff --git a/art/libartbase/base/time_utils.cc b/art/libartbase/base/time_utils.cc
+index aa6c9876..6de44040 100644
+--- a/art/libartbase/base/time_utils.cc
++++ b/art/libartbase/base/time_utils.cc
+@@ -34,7 +34,7 @@ namespace art {
+ 
+ namespace {
+ 
+-#if !defined(__linux__)
++#if !defined(__linux__) && !defined(__EMSCRIPTEN__)  // arc-wasm: POSIX clocks below
+ int GetTimeOfDay(struct timeval* tv, struct timezone* tz) {
+ #ifdef _WIN32
+   return mingw_gettimeofday(tv, tz);
+@@ -145,7 +145,7 @@ std::string GetIsoDate() {
+ }
+ 
+ uint64_t MilliTime() {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__EMSCRIPTEN__)  // arc-wasm: POSIX clocks
+   timespec now;
+   clock_gettime(CLOCK_MONOTONIC, &now);
+   return static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000) + now.tv_nsec / UINT64_C(1000000);
+@@ -157,7 +157,7 @@ uint64_t MilliTime() {
+ }
+ 
+ uint64_t MicroTime() {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__EMSCRIPTEN__)  // arc-wasm: POSIX clocks
+   timespec now;
+   clock_gettime(CLOCK_MONOTONIC, &now);
+   return static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000000) + now.tv_nsec / UINT64_C(1000);
+@@ -169,7 +169,18 @@ uint64_t MicroTime() {
+ }
+ 
+ uint64_t NanoTime() {
+-#if defined(__linux__)
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (as topic install8 for 8.1): the browser's monotonic clock
++  // (performance.timeOrigin + now(), coarsened) can step back a little in
++  // Safari: durations came out "18446744073.709s". Monotonic per thread.
++  timespec now;
++  clock_gettime(CLOCK_MONOTONIC, &now);
++  static thread_local uint64_t last = 0;
++  uint64_t t = static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000000000) + now.tv_nsec;
++  if (t < last) t = last;
++  last = t;
++  return t;
++#elif defined(__linux__)
+   timespec now;
+   clock_gettime(CLOCK_MONOTONIC, &now);
+   return static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000000000) + now.tv_nsec;
+@@ -181,7 +192,7 @@ uint64_t NanoTime() {
+ }
+ 
+ uint64_t ThreadCpuNanoTime() {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__EMSCRIPTEN__)  // arc-wasm: POSIX clocks
+   timespec now;
+   clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now);
+   return static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000000000) + now.tv_nsec;
+@@ -192,7 +203,7 @@ uint64_t ThreadCpuNanoTime() {
+ }
+ 
+ uint64_t ProcessCpuNanoTime() {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__EMSCRIPTEN__)  // arc-wasm: POSIX clocks
+   timespec now;
+   clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &now);
+   return static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000000000) + now.tv_nsec;
+@@ -216,7 +227,7 @@ void NanoSleep(uint64_t ns) {
+ 
+ void InitTimeSpec(bool absolute, int clock, int64_t ms, int32_t ns, timespec* ts) {
+   if (absolute) {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__EMSCRIPTEN__)  // arc-wasm: POSIX clocks
+     clock_gettime(clock, ts);
+ #else
+     UNUSED(clock);
+diff --git a/art/libartbase/base/utils.cc b/art/libartbase/base/utils.cc
+index 5af80f43..967544b5 100644
+--- a/art/libartbase/base/utils.cc
++++ b/art/libartbase/base/utils.cc
+@@ -146,6 +146,14 @@ bool FlushCpuCaches(void* begin, void* end) {
+   return true;
+ }
+ 
++#elif defined(__EMSCRIPTEN__)
++
++// arc-wasm: no machine code is ever written (no JIT), and wasm has no caches
++// to flush.
++bool FlushCpuCaches(void*, void*) {
++  return true;
++}
++
+ #else
+ 
+ bool FlushCpuCaches(void* begin, void* end) {
+@@ -160,7 +168,7 @@ pid_t GetTid() {
+   uint64_t owner;
+   CHECK_PTHREAD_CALL(pthread_threadid_np, (nullptr, &owner), __FUNCTION__);  // Requires Mac OS 10.6
+   return owner;
+-#elif defined(__BIONIC__)
++#elif defined(__BIONIC__) || defined(__EMSCRIPTEN__)  // arc-wasm: musl has gettid()
+   return gettid();
+ #elif defined(_WIN32)
+   return static_cast<pid_t>(::GetCurrentThreadId());
+@@ -245,7 +253,7 @@ void SetThreadName(const char* thread_name) {
+   } else {
+     s = thread_name + len - 15;
+   }
+-#if defined(__linux__) || defined(_WIN32)
++#if defined(__linux__) || defined(_WIN32) || defined(__EMSCRIPTEN__)  // arc-wasm
+   // pthread_setname_np fails rather than truncating long strings.
+   char buf[16];       // MAX_TASK_COMM_LEN=16 is hard-coded in the kernel.
+   strncpy(buf, s, sizeof(buf)-1);
+diff --git a/art/libdexfile/dex/dex_file_types.h b/art/libdexfile/dex/dex_file_types.h
+index ecc04821..60c9ca18 100644
+--- a/art/libdexfile/dex/dex_file_types.h
++++ b/art/libdexfile/dex/dex_file_types.h
+@@ -17,6 +17,7 @@
+ #ifndef ART_LIBDEXFILE_DEX_DEX_FILE_TYPES_H_
+ #define ART_LIBDEXFILE_DEX_DEX_FILE_TYPES_H_
+ 
++#include <functional>  // arc-wasm: std::hash (newer libc++)
+ #include <iosfwd>
+ #include <limits>
+ #include <utility>
+diff --git a/art/runtime/arch/context-inl.h b/art/runtime/arch/context-inl.h
+index ddcbbb18..4f293780 100644
+--- a/art/runtime/arch/context-inl.h
++++ b/art/runtime/arch/context-inl.h
+@@ -40,6 +40,9 @@
+ #elif defined(__x86_64__)
+ #include "x86_64/context_x86_64.h"
+ #define RUNTIME_CONTEXT_TYPE x86_64::X86_64Context
++#elif defined(__EMSCRIPTEN__)
++#include "context_wasm10.h"  // arc-wasm: shim/art10 (no registers, nothing compiled)
++#define RUNTIME_CONTEXT_TYPE WasmContext
+ #else
+ #error unimplemented
+ #endif
+diff --git a/art/runtime/art_method.cc b/art/runtime/art_method.cc
+index 0890da8c..f6c6ff1b 100644
+--- a/art/runtime/art_method.cc
++++ b/art/runtime/art_method.cc
+@@ -51,6 +51,10 @@
+ #include "scoped_thread_state_change-inl.h"
+ #include "vdex_file.h"
+ 
++#if defined(__EMSCRIPTEN__)
++#include "quickening_wasm10.h"  // arc-wasm: shim/art10
++#endif
++
+ namespace art {
+ 
+ using android::base::StringPrintf;
+@@ -318,6 +322,16 @@ void ArtMethod::Invoke(Thread* self, uint32_t* args, uint32_t args_size, JValue*
+   self->PushManagedStackFragment(&fragment);
+ 
+   Runtime* runtime = Runtime::Current();
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: there is no compiled code (and no invoke stub): everything,
++  // natives included, goes through the interpreter. Of a proxy class, only
++  // the interface methods go to the invocation handler; its constructor is
++  // Proxy's, which runs as usual.
++  UNUSED(runtime, args_size);
++  if (UNLIKELY(GetEntryPointFromQuickCompiledCode() == GetQuickProxyInvokeHandler())) {
++    interpreter::ArtWasmInvokeProxy(self, this, args, result, shorty);
++  } else if (true) {
++#else
+   // Call the invoke stub, passing everything as arguments.
+   // If the runtime is not yet started or it is required by the debugger, then perform the
+   // Invocation by the interpreter, explicitly forcing interpretation over JIT to prevent
+@@ -325,6 +339,7 @@ void ArtMethod::Invoke(Thread* self, uint32_t* args, uint32_t args_size, JValue*
+   if (UNLIKELY(!runtime->IsStarted() ||
+                (self->IsForceInterpreter() && !IsNative() && !IsProxyMethod() && IsInvokable()) ||
+                Dbg::IsForcedInterpreterNeededForCalling(self, this))) {
++#endif
+     if (IsStatic()) {
+       art::interpreter::EnterInterpreterFromInvoke(
+           self, this, nullptr, args, result, /*stay_in_interpreter=*/ true);
+@@ -553,6 +568,15 @@ ArrayRef<const uint8_t> ArtMethod::GetQuickenedInfo() {
+ }
+ 
+ uint16_t ArtMethod::GetIndexFromQuickening(uint32_t dex_pc) {
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (art-speed): instructions quickened at run time (no vdex).
++  {
++    const uint16_t index = ArtWasmQuickeningIndex(DexInstructions().Insns() + dex_pc);
++    if (index != DexFile::kDexNoIndex16) {
++      return index;
++    }
++  }
++#endif
+   ArrayRef<const uint8_t> data = GetQuickenedInfo();
+   if (data.empty()) {
+     return DexFile::kDexNoIndex16;
+diff --git a/art/runtime/class_loader_utils.h b/art/runtime/class_loader_utils.h
+index 2e850439..30fa9851 100644
+--- a/art/runtime/class_loader_utils.h
++++ b/art/runtime/class_loader_utils.h
+@@ -158,7 +158,10 @@ inline void VisitClassLoaderDexFiles(ScopedObjectAccessAlreadyRunnable& soa,
+     REQUIRES_SHARED(Locks::mutator_lock_) {
+   auto helper = [&fn](const art::DexFile* dex_file, void** ret)
+       REQUIRES_SHARED(Locks::mutator_lock_) {
+-#ifdef __clang_analyzer__
++#if defined(__clang_analyzer__) || defined(__EMSCRIPTEN__)
++    // arc-wasm: always: the callers copy *ret (and return it), and reading
++    // it uninitialized let clang 22 at -O2 drop the class DefineClass
++    // returned (FindClassInBaseDexClassLoaderClassPath saw it as null).
+     *ret = nullptr;
+ #else
+     UNUSED(ret);
+diff --git a/art/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc b/art/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
+index a2420afb..f1153efb 100644
+--- a/art/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
++++ b/art/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
+@@ -222,7 +222,7 @@ class QuickArgumentVisitor {
+   static size_t GprIndexToGprOffset(uint32_t gpr_index) {
+     return gpr_index * GetBytesPerGprSpillLocation(kRuntimeISA);
+   }
+-#elif defined(__i386__)
++#elif defined(__i386__) || defined(__wasm32__)  // arc-wasm: never runs (no quick code)
+   // The callee save frame is pointed to by SP.
+   // | argN        |  |
+   // | ...         |  |
+@@ -1602,7 +1602,7 @@ template<class T> class BuildNativeCallFrameStateMachine {
+   static constexpr bool kMultiGPRegistersWidened = true;
+   static constexpr bool kAlignLongOnStack = false;
+   static constexpr bool kAlignDoubleOnStack = false;
+-#elif defined(__i386__)
++#elif defined(__i386__) || defined(__wasm32__)  // arc-wasm: never runs (no quick code)
+   // TODO: Check these!
+   static constexpr bool kNativeSoftFloatAbi = false;  // Not using int registers for fp
+   static constexpr size_t kNumNativeGprArgs = 0;  // 6 arguments passed in GPRs.
+diff --git a/art/runtime/interpreter/interpreter.cc b/art/runtime/interpreter/interpreter.cc
+index db116f5a..c5292bf7 100644
+--- a/art/runtime/interpreter/interpreter.cc
++++ b/art/runtime/interpreter/interpreter.cc
+@@ -52,6 +52,12 @@ static void InterpreterJni(Thread* self,
+                            uint32_t* args,
+                            JValue* result)
+     REQUIRES_SHARED(Locks::mutator_lock_) {
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: any shorty (shim/art10/jni_call_wasm10.cc).
++  UNUSED(shorty);
++  ArtWasmInterpreterJni(self, method, receiver.Ptr(), args, result);
++  return;
++#endif
+   // TODO: The following enters JNI code using a typedef-ed function rather than the JNI compiler,
+   //       it should be removed and JNI compiled stubs used instead.
+   ScopedObjectAccessUnchecked soa(self);
+diff --git a/art/runtime/interpreter/interpreter.h b/art/runtime/interpreter/interpreter.h
+index e92d1957..bc0dd3b7 100644
+--- a/art/runtime/interpreter/interpreter.h
++++ b/art/runtime/interpreter/interpreter.h
+@@ -35,6 +35,20 @@ enum class DeoptimizationMethodType;
+ 
+ namespace interpreter {
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm (shim/art10/jni_call_wasm10.cc): a native method with any
++// signature, and a method of a proxy class.
++void ArtWasmInterpreterJni(Thread* self, ArtMethod* method, mirror::Object* receiver,
++                           uint32_t* args, JValue* result)
++    REQUIRES_SHARED(Locks::mutator_lock_);
++void ArtWasmInvokeProxy(Thread* self, ArtMethod* proxy_method, uint32_t* args, JValue* result,
++                        const char* shorty)
++    REQUIRES_SHARED(Locks::mutator_lock_);
++// arc-wasm (art-speed, shim/art10/intrinsics_wasm10.cc): Runtime::Start fills
++// the table of natives the interpreter runs as C functions.
++void ArtWasmInstallIntrinsics(Thread* self) REQUIRES_SHARED(Locks::mutator_lock_);
++#endif
++
+ // Called by ArtMethod::Invoke, shadow frames arguments are taken from the args array.
+ // The optional stay_in_interpreter parameter (false by default) can be used by clients to
+ // explicitly force interpretation in the remaining path that implements method invocation.
+diff --git a/art/runtime/interpreter/interpreter_cache.cc b/art/runtime/interpreter/interpreter_cache.cc
+index e43fe318..133b31a8 100644
+--- a/art/runtime/interpreter/interpreter_cache.cc
++++ b/art/runtime/interpreter/interpreter_cache.cc
+@@ -17,12 +17,21 @@
+ #include "interpreter_cache.h"
+ #include "thread-inl.h"
+ 
++#if defined(__EMSCRIPTEN__)
++#include "interpreter_frames_wasm10.h"
++#endif
++
+ namespace art {
+ 
+ void InterpreterCache::Clear(Thread* owning_thread) {
+   DCHECK(owning_thread->GetInterpreterCache() == this);
+   DCHECK(owning_thread == Thread::Current() || owning_thread->IsSuspended());
+   data_.fill(Entry{});
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: the code item accessors cached for flat calls go with it
++  // (shim/art10/interpreter_frames_wasm10.h).
++  interpreter::g_art_wasm_code_epoch.fetch_add(1, std::memory_order_relaxed);
++#endif
+ }
+ 
+ bool InterpreterCache::IsCalledFromOwningThread() {
+diff --git a/art/runtime/interpreter/interpreter_common.cc b/art/runtime/interpreter/interpreter_common.cc
+index 30c4b90e..2d73349e 100644
+--- a/art/runtime/interpreter/interpreter_common.cc
++++ b/art/runtime/interpreter/interpreter_common.cc
+@@ -1613,9 +1613,46 @@ static inline bool DoCallCommon(ArtMethod* called_method,
+ 
+   // Allocate shadow frame on the stack.
+   const char* old_cause = self->StartAssertNoThreadSuspension("DoCallCommon");
++#if defined(ART_WASM_FLAT_CALLS)
++  // arc-wasm: a flat call's frame comes from the thread's frame stack; the
++  // caller's interpreter loop runs it (shim/art10/interpreter_switch_wasm10-inl.h).
++  ShadowFrame** flat_out = nullptr;
++  if (t_art_flat_out != nullptr && t_art_flat_caller == &shadow_frame && !string_init &&
++      accessor.HasCodeItem() && use_interpreter_entrypoint && !do_assignability_check &&
++      ArtWasmCanCallFlat(self, called_method)) {
++    flat_out = t_art_flat_out;
++    t_art_flat_out = nullptr;
++  }
++  ShadowFrameAllocaUniquePtr shadow_frame_unique_ptr;
++  ShadowFrame* new_shadow_frame;
++  if (flat_out != nullptr) {
++    new_shadow_frame =
++        ArtWasmNewFlatFrame(accessor, num_regs, number_of_inputs, &shadow_frame, called_method);
++    if (UNLIKELY(new_shadow_frame == nullptr)) {
++      // The frame stack is full.
++      self->EndAssertNoThreadSuspension(old_cause);
++      ThrowStackOverflowError(self);
++      return false;
++    }
++  } else if (!string_init && !do_assignability_check) {
++    // arc-wasm (art-speed): the fast path below writes all of the callee's
++    // argument registers before anything can look at the frame (not with
++    // string_init, which skips one; the slow path registers the frame for
++    // the GC while it fills it).
++    shadow_frame_unique_ptr = ShadowFrameAllocaUniquePtr(ShadowFrame::CreateForCall(
++        num_regs, number_of_inputs, &shadow_frame, called_method,
++        alloca(ShadowFrame::ComputeSize(num_regs))));
++    new_shadow_frame = shadow_frame_unique_ptr.get();
++  } else {
++    shadow_frame_unique_ptr =
++        CREATE_SHADOW_FRAME(num_regs, &shadow_frame, called_method, /* dex pc */ 0);
++    new_shadow_frame = shadow_frame_unique_ptr.get();
++  }
++#else
+   ShadowFrameAllocaUniquePtr shadow_frame_unique_ptr =
+       CREATE_SHADOW_FRAME(num_regs, &shadow_frame, called_method, /* dex pc */ 0);
+   ShadowFrame* new_shadow_frame = shadow_frame_unique_ptr.get();
++#endif
+ 
+   // Initialize new shadow frame by copying the registers from the callee shadow frame.
+   if (do_assignability_check) {
+@@ -1721,6 +1758,17 @@ static inline bool DoCallCommon(ArtMethod* called_method,
+     self->EndAssertNoThreadSuspension(old_cause);
+   }
+ 
++#if defined(ART_WASM_FLAT_CALLS)
++  if (flat_out != nullptr) {
++    *flat_out = new_shadow_frame;
++    return true;
++  }
++  // arc-wasm (art-speed): a native runs in the frame built above, without
++  // ArtMethod::Invoke and a second frame (shim/art10/jni_call_wasm10.cc).
++  if (called_method->IsNative() && LIKELY(Runtime::Current()->IsStarted())) {
++    ArtWasmCallNative(self, new_shadow_frame, result);
++  } else
++#endif
+   PerformCall(self,
+               accessor,
+               shadow_frame.GetMethod(),
+diff --git a/art/runtime/interpreter/interpreter_common.h b/art/runtime/interpreter/interpreter_common.h
+index 6366035a..d15dd90f 100644
+--- a/art/runtime/interpreter/interpreter_common.h
++++ b/art/runtime/interpreter/interpreter_common.h
+@@ -60,9 +60,53 @@
+ #include "unstarted_runtime.h"
+ #include "well_known_classes.h"
+ 
++#if defined(__EMSCRIPTEN__)
++#include "debugger.h"
++#include "interpreter_frames_wasm10.h"
++#endif
++
+ namespace art {
+ namespace interpreter {
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm: calls between interpreted methods do not nest C++ frames
++// (shim/art/interpreter_frames_wasm.cc, shim/art10/interpreter_switch_wasm10-inl.h).
++// The switch interpreter sets t_art_flat_out/t_art_flat_caller around
++// DoInvoke; DoCallCommon then builds the callee's frame on the thread's
++// frame stack and returns it through t_art_flat_out instead of running it
++// (as for ART 6.0.1 and 8.1, topics art, art-speed, art8).
++#define ART_WASM_FLAT_CALLS 1
++
++// Whether a call to |m| from the interpreter can be flat: |m| runs in the
++// interpreter without access checks (as the flat caller does) and without
++// lock counting, outside a transaction, and nobody listens to method entry
++// or exit or frame pops. (Every method runs in the interpreter: artvm10
++// passes -Xint and nothing is compiled.)
++// (The part that does not depend on the method's flags.)
++ALWAYS_INLINE static inline bool ArtWasmCanCallFlatRuntime(Thread* self, ArtMethod* m)
++    REQUIRES_SHARED(Locks::mutator_lock_) {
++  Runtime* const runtime = Runtime::Current();
++  if (!runtime->IsStarted() || runtime->IsActiveTransaction() ||
++      Dbg::IsForcedInterpreterNeededForCalling(self, m)) {
++    return false;
++  }
++  const instrumentation::Instrumentation* const instrumentation = runtime->GetInstrumentation();
++  return !instrumentation->HasMethodEntryListeners() &&
++      !instrumentation->HasMethodExitListeners() &&
++      !instrumentation->HasWatchedFramePopListeners();
++}
++
++ALWAYS_INLINE static inline bool ArtWasmCanCallFlat(Thread* self, ArtMethod* m)
++    REQUIRES_SHARED(Locks::mutator_lock_) {
++  return m->SkipAccessChecks() && !m->MustCountLocks() && ArtWasmCanCallFlatRuntime(self, m);
++}
++
++// arc-wasm (art-speed): a native method called by the interpreter, in the
++// frame DoCallCommon built for it (shim/art10/jni_call_wasm10.cc).
++void ArtWasmCallNative(Thread* self, ShadowFrame* sf, JValue* result)
++    REQUIRES_SHARED(Locks::mutator_lock_);
++#endif
++
+ void ThrowNullPointerExceptionFromInterpreter()
+     REQUIRES_SHARED(Locks::mutator_lock_);
+ 
+diff --git a/art/runtime/interpreter/interpreter_switch_impl-inl.h b/art/runtime/interpreter/interpreter_switch_impl-inl.h
+index 36cfee41..fc84b1f2 100644
+--- a/art/runtime/interpreter/interpreter_switch_impl-inl.h
++++ b/art/runtime/interpreter/interpreter_switch_impl-inl.h
+@@ -2618,6 +2618,11 @@ class InstructionHandler {
+ #undef POSSIBLY_HANDLE_PENDING_EXCEPTION_ON_INVOKE_POLYMORPHIC
+ #undef HANDLE_PENDING_EXCEPTION
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm: the loop with flat calls (shim/art10/interpreter_switch_wasm10-inl.h),
++// on the InstructionHandler above.
++#include "interpreter_switch_wasm10-inl.h"
++#else
+ // TODO On ASAN builds this function gets a huge stack frame. Since normally we run in the mterp
+ // this shouldn't cause any problems for stack overflow detection. Remove this once b/117341496 is
+ // fixed.
+@@ -2687,6 +2692,7 @@ DEX_INSTRUCTION_LIST(OPCODE_CASE)
+   ctx->result = ctx->result_register;
+   return;
+ }  // NOLINT(readability/fn_size)
++#endif  // __EMSCRIPTEN__
+ 
+ }  // namespace interpreter
+ }  // namespace art
+diff --git a/art/runtime/interpreter/interpreter_switch_impl.h b/art/runtime/interpreter/interpreter_switch_impl.h
+index d4dca11c..6ff4157d 100644
+--- a/art/runtime/interpreter/interpreter_switch_impl.h
++++ b/art/runtime/interpreter/interpreter_switch_impl.h
+@@ -68,9 +68,15 @@ ALWAYS_INLINE JValue ExecuteSwitchImpl(Thread* self, const CodeItemDataAccessor&
+     .interpret_one_instruction = interpret_one_instruction,
+     .result = JValue(),
+   };
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: no assembly wrapper (it only names the dex pc register for
++  // libunwind's CFI): the C++ implementation directly.
++  ExecuteSwitchImplCpp<do_access_check, transaction_active>(&ctx);
++#else
+   void* impl = reinterpret_cast<void*>(&ExecuteSwitchImplCpp<do_access_check, transaction_active>);
+   const uint16_t* dex_pc = ctx.accessor.Insns();
+   ExecuteSwitchImplAsm(&ctx, impl, dex_pc);
++#endif
+   return ctx.result;
+ }
+ 
+diff --git a/art/runtime/interpreter/mterp/mterp_stub.cc b/art/runtime/interpreter/mterp/mterp_stub.cc
+index e515ec44..d3fcbe41 100644
+--- a/art/runtime/interpreter/mterp/mterp_stub.cc
++++ b/art/runtime/interpreter/mterp/mterp_stub.cc
+@@ -29,10 +29,13 @@ void CheckMterpAsmConstants() {
+   // Dummy version when mterp not implemented.
+ }
+ 
++// arc-wasm: mterp is never used (mterp.cc, which has this, is assembly's).
++bool CanUseMterp() {
++  return false;
++}
++
+ void InitMterpTls(Thread* self) {
+-  self->SetMterpDefaultIBase(nullptr);
+-  self->SetMterpCurrentIBase(nullptr);
+-  self->SetMterpAltIBase(nullptr);
++  self->SetMterpCurrentIBase(nullptr);  // arc-wasm: the one IBase of 10
+ }
+ 
+ /*
+@@ -43,8 +46,9 @@ extern "C" bool ExecuteMterpImpl(Thread* self,
+                                  ShadowFrame* shadow_frame,
+                                  JValue* result_register)
+     REQUIRES_SHARED(Locks::mutator_lock_) {
+-  UNUSED(self); UNUSED(shadow_frame); UNUSED(code_item); UNUSED(result_register);
+-  UNIMPLEMENTED(art::FATAL);
++  // arc-wasm: the stub of 9 did not compile in 10 (code_item, art::FATAL).
++  UNUSED(self); UNUSED(shadow_frame); UNUSED(dex_instructions); UNUSED(result_register);
++  UNIMPLEMENTED(FATAL);
+   return false;
+ }
+ 
+diff --git a/art/runtime/interpreter/shadow_frame.h b/art/runtime/interpreter/shadow_frame.h
+index 3f6b7296..1d9585c9 100644
+--- a/art/runtime/interpreter/shadow_frame.h
++++ b/art/runtime/interpreter/shadow_frame.h
+@@ -103,7 +103,13 @@ class ShadowFrame {
+   }
+ 
+   uint32_t GetDexPC() const {
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm (art10): dex_pc_ptr_ is mterp's (SetDexPCPtr), never set here.
++    DCHECK(dex_pc_ptr_ == nullptr);
++    return dex_pc_;
++#else
+     return (dex_pc_ptr_ == nullptr) ? dex_pc_ : dex_pc_ptr_ - dex_instructions_;
++#endif
+   }
+ 
+   int16_t GetCachedHotnessCountdown() const {
+@@ -124,7 +130,9 @@ class ShadowFrame {
+ 
+   void SetDexPC(uint32_t dex_pc) {
+     dex_pc_ = dex_pc;
++#if !defined(__EMSCRIPTEN__)  // arc-wasm (art10): one store per instruction (see GetDexPC)
+     dex_pc_ptr_ = nullptr;
++#endif
+   }
+ 
+   ShadowFrame* GetLink() const {
+@@ -385,7 +393,40 @@ class ShadowFrame {
+     }
+   }
+ 
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (art-speed): a frame for a call whose arguments the caller
++  // copies into registers [num_vregs - num_ins, num_vregs) right away. Only
++  // the references of the other registers are cleared (the GC reads the
++  // references; the verifier guarantees a register is written before it is
++  // read): the constructor's memset is WebAssembly's memory.fill, a call into
++  // the engine, for a few dozen bytes.
++  static ShadowFrame* CreateForCall(uint32_t num_vregs, uint32_t num_ins, ShadowFrame* link,
++                                    ArtMethod* method, void* memory) {
++    ShadowFrame* sf = new (memory) ShadowFrame(num_vregs, link, method);
++    volatile uint32_t* refs = reinterpret_cast<volatile uint32_t*>(&sf->vregs_[num_vregs]);
++    for (uint32_t i = 0, n = num_vregs - num_ins; i < n; ++i) {
++      refs[i] = 0;  // volatile: not turned back into memset
++    }
++    return sf;
++  }
++#endif
++
+  private:
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (art-speed): CreateForCall's (registers not cleared).
++  ShadowFrame(uint32_t num_vregs, ShadowFrame* link, ArtMethod* method)
++      : link_(link),
++        method_(method),
++        result_register_(nullptr),
++        dex_pc_ptr_(nullptr),
++        dex_instructions_(nullptr),
++        number_of_vregs_(num_vregs),
++        dex_pc_(0),
++        cached_hotness_countdown_(0),
++        hotness_countdown_(0),
++        frame_flags_(0) {}
++#endif
++
+   ShadowFrame(uint32_t num_vregs, ShadowFrame* link, ArtMethod* method,
+               uint32_t dex_pc, bool has_reference_array)
+       : link_(link),
+diff --git a/art/runtime/jni/java_vm_ext.cc b/art/runtime/jni/java_vm_ext.cc
+index 1bf88c5a..8be49e06 100644
+--- a/art/runtime/jni/java_vm_ext.cc
++++ b/art/runtime/jni/java_vm_ext.cc
+@@ -52,6 +52,14 @@
+ #include "thread-inl.h"
+ #include "thread_list.h"
+ #include "ti/agent.h"
++
++#if defined(__EMSCRIPTEN__)
++// arc-wasm: there is no dynamic loading. Libraries linked into artvm10 are
++// found by name (shim/art10/static_jni_libs_art10.cc); ARM and AArch64
++// libraries from APKs go to the NDK bridge (topics ndk-bridge, ndk-arm64).
++#include "static_jni_libs.h"
++#define dlsym arc_wasm_dlsym
++#endif
+ #include "well_known_classes.h"
+ 
+ namespace art {
+@@ -90,11 +98,15 @@ class SharedLibrary {
+       self->GetJniEnv()->DeleteWeakGlobalRef(class_loader_);
+     }
+ 
++#if defined(__EMSCRIPTEN__)
++    arc_wasm_dlclose(handle_);
++#else
+     char* error_msg = nullptr;
+     if (!android::CloseNativeLibrary(handle_, needs_native_bridge_, &error_msg)) {
+       LOG(WARNING) << "Error while unloading native library \"" << path_ << "\": " << error_msg;
+       android::NativeLoaderFreeErrorMessage(error_msg);
+     }
++#endif
+   }
+ 
+   jweak GetClassLoader() const {
+@@ -1002,6 +1014,14 @@ bool JavaVMExt::LoadNativeLibrary(JNIEnv* env,
+   const char* path_str = path.empty() ? nullptr : path.c_str();
+   bool needs_native_bridge = false;
+   char* nativeloader_error_msg = nullptr;
++#if defined(__EMSCRIPTEN__)
++  UNUSED(class_loader, caller_location);
++  void* handle = arc_wasm_dlopen(path_str, RTLD_NOW);
++  if (handle == nullptr) {
++    const char* e = arc_wasm_dlerror();
++    nativeloader_error_msg = strdup(e != nullptr ? e : "dlopen failed");
++  }
++#else
+   void* handle = android::OpenNativeLibrary(
+       env,
+       runtime_->GetTargetSdkVersion(),
+@@ -1011,6 +1031,7 @@ bool JavaVMExt::LoadNativeLibrary(JNIEnv* env,
+       library_path.get(),
+       &needs_native_bridge,
+       &nativeloader_error_msg);
++#endif
+   VLOG(jni) << "[Call to dlopen(\"" << path << "\", RTLD_NOW) returned " << handle << "]";
+ 
+   if (handle == nullptr) {
+@@ -1070,7 +1091,13 @@ bool JavaVMExt::LoadNativeLibrary(JNIEnv* env,
+     VLOG(jni) << "[Calling JNI_OnLoad in \"" << path << "\"]";
+     using JNI_OnLoadFn = int(*)(JavaVM*, void*);
+     JNI_OnLoadFn jni_on_load = reinterpret_cast<JNI_OnLoadFn>(sym);
++#if defined(__EMSCRIPTEN__)
++    // A guest (ARM, AArch64) JNI_OnLoad runs on the NDK bridge's CPU.
++    int version = arc_wasm_call_jni_onload(handle, sym, this);
++    UNUSED(jni_on_load);
++#else
+     int version = (*jni_on_load)(this, nullptr);
++#endif
+ 
+     if (IsSdkVersionSetAndAtMost(runtime_->GetTargetSdkVersion(), SdkVersion::kL)) {
+       // Make sure that sigchain owns SIGSEGV.
+diff --git a/art/runtime/jni/jni_internal.cc b/art/runtime/jni/jni_internal.cc
+index 608cab79..e6804f71 100644
+--- a/art/runtime/jni/jni_internal.cc
++++ b/art/runtime/jni/jni_internal.cc
+@@ -3361,6 +3361,13 @@ const JNINativeInterface* GetRuntimeShutdownNativeInterface() {
+ }
+ 
+ void JniInitializeNativeCallerCheck() {
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: there are no ELF images to map callers to libraries
++  // (dl_iterate_phdr): JNI callers are never whitelisted by library, which
++  // is what a host build decides anyway (kIsTargetBuild is false), and the
++  // hidden API is not enforced (artvm10's -Xhidden-api-policy:disabled).
++  return;
++#endif
+   // This method should be called only once and before there are multiple runtime threads.
+   DCHECK(!CodeRangeCache::GetSingleton().HasCache());
+   CodeRangeCache::GetSingleton().BuildCache();
+diff --git a/art/runtime/native/scoped_fast_native_object_access-inl.h b/art/runtime/native/scoped_fast_native_object_access-inl.h
+index 20ff76ea..907a2ff1 100644
+--- a/art/runtime/native/scoped_fast_native_object_access-inl.h
++++ b/art/runtime/native/scoped_fast_native_object_access-inl.h
+@@ -27,7 +27,13 @@ namespace art {
+ inline ScopedFastNativeObjectAccess::ScopedFastNativeObjectAccess(JNIEnv* env)
+     : ScopedObjectAccessAlreadyRunnable(env) {
+   Locks::mutator_lock_->AssertSharedHeld(Self());
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: natives are called from the interpreter (no quick frame); the
++  // native method is in the top shadow frame (shim/art10/jni_call_wasm10.cc).
++  DCHECK(Self()->GetManagedStack()->GetTopShadowFrame()->GetMethod()->IsFastNative());
++#else
+   DCHECK((*Self()->GetManagedStack()->GetTopQuickFrame())->IsFastNative());
++#endif
+   // Don't work with raw objects in non-runnable states.
+   DCHECK_EQ(Self()->GetState(), kRunnable);
+ }
+diff --git a/art/runtime/native_stack_dump.cc b/art/runtime/native_stack_dump.cc
+index 150fa782..02463ac1 100644
+--- a/art/runtime/native_stack_dump.cc
++++ b/art/runtime/native_stack_dump.cc
+@@ -448,7 +448,7 @@ void DumpKernelStack(std::ostream& os, pid_t tid, const char* prefix, bool inclu
+   }
+ }
+ 
+-#elif defined(__APPLE__)
++#elif defined(__APPLE__) || defined(__EMSCRIPTEN__)  // arc-wasm: no unwinding of wasm stacks
+ 
+ void DumpNativeStack(std::ostream& os ATTRIBUTE_UNUSED,
+                      pid_t tid ATTRIBUTE_UNUSED,
+diff --git a/art/runtime/runtime.cc b/art/runtime/runtime.cc
+index 51a40e78..5a50ae5c 100644
+--- a/art/runtime/runtime.cc
++++ b/art/runtime/runtime.cc
+@@ -31,6 +31,15 @@
+ #include <crt_externs.h>  // for _NSGetEnviron
+ #endif
+ 
++#if defined(__EMSCRIPTEN__)
++#include <emscripten/emscripten.h>
++#include <emscripten/eventloop.h>
++#include <emscripten/proxying.h>
++#include <emscripten/threading.h>
++#include <unistd.h>
++#include <iostream>
++#endif
++
+ #include <cstdio>
+ #include <cstdlib>
+ #include <limits>
+@@ -50,7 +59,9 @@
+ #include "arch/x86_64/registers_x86_64.h"
+ #include "art_field-inl.h"
+ #include "art_method-inl.h"
++#if !defined(__EMSCRIPTEN__)  // arc-wasm: no assembly, no generated asm_defines.h
+ #include "asm_support.h"
++#endif
+ #include "base/aborting.h"
+ #include "base/arena_allocator.h"
+ #include "base/atomic.h"
+@@ -170,12 +181,52 @@
+ #endif
+ 
+ // Static asserts to check the values of generated assembly-support macros.
++#if !defined(__EMSCRIPTEN__)  // arc-wasm: no assembly (see asm_support.h above)
+ #define ASM_DEFINE(NAME, EXPR) static_assert((NAME) == (EXPR), "Unexpected value of " #NAME);
+ #include "asm_defines.def"
+ #undef ASM_DEFINE
++#endif
+ 
+ namespace art {
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm: the default exit hook (System.exit), as for ART 6.0.1 and 8.1
++// (topics art-string-init, tiktok, art8). Emscripten's exit() hands the exit
++// to the browser's (Node's) main thread, which runs the C++ static
++// destructors there; std::ios_base's flushes the standard streams and waits
++// for their locks. A thread holding stderr's lock while its write waits for
++// the main thread (a finalizer logging, say) never gets it: deadlock. So:
++// flush every stream on this thread, where waiting is fine; on the main
++// thread do the rest of what exit() does there except the destructors (no
++// arc-wasm code needs them): set the exit status, drop what keeps the runtime
++// alive (main() under PROXY_TO_PTHREAD) and close the JS file streams (the
++// terminal's last partial line); then _exit (proc_exit: threads terminated).
++// The status first: without keepalive the main thread exits by itself right
++// after this call (maybeExit: _exit with EXITSTATUS), before the calling
++// thread's _exit(status) reaches it.
++static void ArtWasmReleaseMainThread(void* status) {
++  EM_ASM({ EXITSTATUS = $0; }, static_cast<int>(reinterpret_cast<intptr_t>(status)));
++  while (emscripten_runtime_keepalive_check()) {
++    emscripten_runtime_keepalive_pop();
++  }
++  EM_ASM({ FS.quit(); });
++}
++
++static void ArtWasmExit(int status) {
++  std::cout.flush();
++  std::cerr.flush();
++  fflush(nullptr);
++  void* arg = reinterpret_cast<void*>(static_cast<intptr_t>(status));
++  if (emscripten_is_main_runtime_thread()) {
++    ArtWasmReleaseMainThread(arg);
++  } else {
++    emscripten_proxy_sync(emscripten_proxy_get_system_queue(), emscripten_main_runtime_thread_id(),
++                          ArtWasmReleaseMainThread, arg);
++  }
++  _exit(status);
++}
++#endif
++
+ // If a signal isn't handled properly, enable a handler that attempts to dump the Java stack.
+ static constexpr bool kEnableJavaStackTraceHandler = false;
+ // Tuned by compiling GmsCore under perf and measuring time spent in DescriptorEquals for class
+@@ -619,6 +670,12 @@ void Runtime::Abort(const char* msg) {
+   // Get any pending output out of the way.
+   fflush(nullptr);
+ 
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: the native (wasm) stack, before the thread dumps below, which
++  // can block on locks the aborting thread holds.
++  EM_ASM({ err(new Error('art: Runtime::Abort, native stack').stack); });
++#endif
++
+   // Many people have difficulty distinguish aborts from crashes,
+   // so be explicit.
+   // Note: use cerr on the host to print log lines immediately, so we get at least some output
+@@ -852,6 +909,16 @@ bool Runtime::Start() {
+   // because in checking the invocation types of intrinsic methods ArtMethod::GetInvokeType()
+   // needs the SignaturePolymorphic annotation class which is initialized in WellKnownClasses::Init.
+   InitializeIntrinsics();
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (art-speed): natives the interpreter runs as C functions
++  // (shim/art10/intrinsics_wasm10.cc), now that they are registered and
++  // before other threads start. (InitializeIntrinsics above marks the
++  // intrinsics of the interpreter, which on a device the boot image has.)
++  {
++    ScopedObjectAccess soa(self);
++    interpreter::ArtWasmInstallIntrinsics(self);
++  }
++#endif
+ 
+   // Initialize well known thread group values that may be accessed threads while attaching.
+   InitThreadGroups(self);
+@@ -1011,6 +1078,11 @@ void Runtime::InitNonZygoteOrPostFork(
+ }
+ 
+ void Runtime::StartSignalCatcher() {
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: the signal catcher waits for SIGQUIT/SIGUSR1 with sigwait(),
++  // and a browser delivers no signals.
++  return;
++#endif
+   if (!is_zygote_) {
+     signal_catcher_ = new SignalCatcher();
+   }
+@@ -1122,7 +1194,13 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
+   using Opt = RuntimeArgumentMap;
+   Opt runtime_options(std::move(runtime_options_in));
+   ScopedTrace trace(__FUNCTION__);
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: wasm pages are 64 KB; ART keeps its 4 KB pages within them
++  // (shim/art10/art_runtime_wasm10.h).
++  CHECK_EQ(sysconf(_SC_PAGE_SIZE) % kPageSize, 0);
++#else
+   CHECK_EQ(sysconf(_SC_PAGE_SIZE), kPageSize);
++#endif
+ 
+   // Early override for logging output.
+   if (runtime_options.Exists(Opt::UseStderrLogger)) {
+@@ -1222,6 +1300,12 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
+ 
+   vfprintf_ = runtime_options.GetOrDefault(Opt::HookVfprintf);
+   exit_ = runtime_options.GetOrDefault(Opt::HookExit);
++#if defined(__EMSCRIPTEN__)
++  // (The default is _exit since 7.0; exit before.)
++  if (exit_ == _exit || exit_ == exit) {
++    exit_ = ArtWasmExit;
++  }
++#endif
+   abort_ = runtime_options.GetOrDefault(Opt::HookAbort);
+ 
+   default_stack_size_ = runtime_options.GetOrDefault(Opt::StackSize);
+@@ -1428,6 +1512,10 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
+   InitPlatformSignalHandlers();
+ 
+   // Change the implicit checks flags based on runtime architecture.
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: no compiled code and no signals; every check is explicit.
++  if (false)
++#endif
+   switch (kRuntimeISA) {
+     case InstructionSet::kArm:
+     case InstructionSet::kThumb2:
+diff --git a/art/runtime/thread.cc b/art/runtime/thread.cc
+index 70ed7c80..12332c01 100644
+--- a/art/runtime/thread.cc
++++ b/art/runtime/thread.cc
+@@ -16,6 +16,11 @@
+ 
+ #include "thread.h"
+ 
++#if defined(__EMSCRIPTEN__)
++#include <emscripten/threading.h>  // arc-wasm: Park, Unpark
++#include <math.h>
++#endif
++
+ #include <limits.h>  // for INT_MAX
+ #include <pthread.h>
+ #include <signal.h>
+@@ -382,6 +387,44 @@ void Thread::Park(bool is_absolute, int64_t time) {
+     // the fetch_add has consumed the permit. immediately return.
+     DCHECK_EQ(old_state, kPermitAvailable);
+   }
++#elif defined(__EMSCRIPTEN__)
++  // arc-wasm: there is no futex syscall, but WebAssembly has the same
++  // primitive (memory.atomic.wait32/notify: emscripten_futex_wait/wake), on
++  // the park state as above. LockSupport.park (java.util.concurrent) needs it
++  // since 10, where it is no longer Java code on Object.wait.
++  int old_state = tls32_.park_state_.fetch_add(1, std::memory_order_relaxed);
++  if (old_state == kNoPermit) {
++    Runtime::Current()->GetRuntimeCallbacks()->ThreadParkStart(is_absolute, time);
++    bool timed_out = false;
++    volatile void* addr = tls32_.park_state_.Address();
++    if (!is_absolute && time == 0) {
++      ScopedThreadSuspension sts(this, ThreadState::kWaiting);
++      DCHECK_EQ(NumberOfHeldMutexes(), 0u);
++      emscripten_futex_wait(addr, kNoPermitWaiterWaiting, INFINITY);
++    } else if (time > 0) {
++      ScopedThreadSuspension sts(this, ThreadState::kTimedWaiting);
++      DCHECK_EQ(NumberOfHeldMutexes(), 0u);
++      double ms;
++      if (is_absolute) {
++        // Milliseconds of the wall clock (parkUntil).
++        timespec now;
++        clock_gettime(CLOCK_REALTIME, &now);
++        ms = static_cast<double>(time) - (now.tv_sec * 1000.0 + now.tv_nsec / 1000000.0);
++      } else {
++        ms = static_cast<double>(time) / 1000000.0;  // nanoseconds
++      }
++      if (ms > 0) {
++        timed_out = emscripten_futex_wait(addr, kNoPermitWaiterWaiting, ms) == -ETIMEDOUT;
++      } else {
++        timed_out = true;
++      }
++    }
++    // Mark as no longer waiting, and consume permit if there is one.
++    tls32_.park_state_.store(kNoPermit, std::memory_order_relaxed);
++    Runtime::Current()->GetRuntimeCallbacks()->ThreadParkFinished(timed_out);
++  } else {
++    DCHECK_EQ(old_state, kPermitAvailable);
++  }
+ #else
+   #pragma clang diagnostic push
+   #pragma clang diagnostic warning "-W#warnings"
+@@ -409,6 +452,12 @@ void Thread::Unpark() {
+       PLOG(FATAL) << "Failed to unpark";
+     }
+   }
++#elif defined(__EMSCRIPTEN__)
++  // arc-wasm: see Park.
++  if (tls32_.park_state_.exchange(kPermitAvailable, std::memory_order_relaxed)
++      == kNoPermitWaiterWaiting) {
++    emscripten_futex_wake(tls32_.park_state_.Address(), 1);
++  }
+ #else
+   UNIMPLEMENTED(WARNING);
+ #endif
+diff --git a/art/runtime/verifier/class_verifier.cc b/art/runtime/verifier/class_verifier.cc
+index 649fb112..fbada399 100644
+--- a/art/runtime/verifier/class_verifier.cc
++++ b/art/runtime/verifier/class_verifier.cc
+@@ -34,6 +34,10 @@
+ #include "mirror/dex_cache.h"
+ #include "runtime.h"
+ 
++#if defined(__EMSCRIPTEN__)
++#include "quickening_wasm10.h"  // arc-wasm: shim/art10
++#endif
++
+ namespace art {
+ namespace verifier {
+ 
+@@ -116,6 +120,23 @@ FailureKind ClassVerifier::VerifyClass(Thread* self,
+   int64_t previous_method_idx[2] = { -1, -1 };
+   MethodVerifier::FailureData failure_data;
+   ClassLinker* const linker = Runtime::Current()->GetClassLinker();
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (art-speed): the methods' quickening edits, applied below if the
++  // whole class verifies without failures. The class is not initialized yet,
++  // so no thread runs its code while it is rewritten (VerifyClass holds the
++  // class's lock, and ClassLinker::InitializeClass waits for it).
++  bool has_final_instance_field = false;
++  for (const ClassAccessor::Field& field : accessor.GetInstanceFields()) {
++    has_final_instance_field |= (field.GetAccessFlags() & kAccFinal) != 0;
++  }
++  std::vector<ArcQuickEdit> quick_edits;
++  std::vector<ArcQuickEdit>* const saved_quick_edits = t_arc_quick_edits;
++  const bool saved_has_final_instance_field = t_arc_has_final_instance_field;
++  const bool quicken = Runtime::Current()->IsStarted() && !Runtime::Current()->IsAotCompiler() &&
++                       ArcQuickeningEnabled();
++  t_arc_quick_edits = quicken ? &quick_edits : nullptr;
++  t_arc_has_final_instance_field = has_final_instance_field;
++#endif
+ 
+   for (const ClassAccessor::Method& method : accessor.GetMethods()) {
+     int64_t* previous_idx = &previous_method_idx[method.IsStaticOrDirect() ? 0u : 1u];
+@@ -170,6 +191,21 @@ FailureKind ClassVerifier::VerifyClass(Thread* self,
+     failure_data.Merge(result);
+   }
+ 
++#if defined(__EMSCRIPTEN__)
++  t_arc_quick_edits = saved_quick_edits;
++  t_arc_has_final_instance_field = saved_has_final_instance_field;
++  if (failure_data.kind == FailureKind::kNoFailure) {
++    for (const ArcQuickEdit& e : quick_edits) {
++      if (e.two_units) {
++        // (The field index the offset replaces: GetIndexFromQuickening.)
++        ArtWasmRecordQuickening(e.insn, e.insn[1]);
++        e.insn[1] = e.unit1;
++      }
++      e.insn[0] = e.unit0;
++    }
++  }
++#endif
++
+   if (failure_data.kind == FailureKind::kNoFailure) {
+     return FailureKind::kNoFailure;
+   } else {
+diff --git a/art/runtime/verifier/instruction_flags.h b/art/runtime/verifier/instruction_flags.h
+index e5e71a4d..6358beb8 100644
+--- a/art/runtime/verifier/instruction_flags.h
++++ b/art/runtime/verifier/instruction_flags.h
+@@ -109,6 +109,18 @@ class InstructionFlags final {
+ 
+   std::string ToString() const;
+ 
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (art-speed): the verifier saw this field access with an object
++  // register of no known class (e.g. constant null); it is not quickened
++  // (the verifier could not infer the field of the quick instruction again).
++  void SetArcNoQuicken() {
++    flags_ |= 1 << kArcNoQuicken;
++  }
++  bool IsArcNoQuicken() const {
++    return (flags_ & (1 << kArcNoQuicken)) != 0;
++  }
++#endif
++
+  private:
+   enum {
+     // The instruction has been visited and unless IsChanged() verified.
+@@ -126,6 +138,9 @@ class InstructionFlags final {
+     kCompileTimeInfoPoint = 5,
+     // A return instruction.
+     kReturn = 6,
++#if defined(__EMSCRIPTEN__)
++    kArcNoQuicken = 7,
++#endif
+   };
+   uint8_t flags_;
+ };
+diff --git a/art/runtime/verifier/method_verifier.cc b/art/runtime/verifier/method_verifier.cc
+index 32cd47a7..0cfc9dc7 100644
+--- a/art/runtime/verifier/method_verifier.cc
++++ b/art/runtime/verifier/method_verifier.cc
+@@ -107,6 +107,37 @@ void PcToRegisterLineTable::Init(RegisterTrackingMode mode,
+ 
+ PcToRegisterLineTable::~PcToRegisterLineTable() {}
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm (art-speed): quickening (method_verifier.h; ArcCollectQuickening).
++thread_local std::vector<ArcQuickEdit>* t_arc_quick_edits = nullptr;
++thread_local bool t_arc_has_final_instance_field = false;
++
++bool ArcQuickeningEnabled() {
++  static const bool enabled = getenv("ARC_ART_NO_QUICKEN") == nullptr;
++  return enabled;
++}
++
++static Instruction::Code ArcQuickFieldOpcode(Instruction::Code op) {
++  switch (op) {
++    case Instruction::IGET: return Instruction::IGET_QUICK;
++    case Instruction::IGET_WIDE: return Instruction::IGET_WIDE_QUICK;
++    case Instruction::IGET_OBJECT: return Instruction::IGET_OBJECT_QUICK;
++    case Instruction::IGET_BOOLEAN: return Instruction::IGET_BOOLEAN_QUICK;
++    case Instruction::IGET_BYTE: return Instruction::IGET_BYTE_QUICK;
++    case Instruction::IGET_CHAR: return Instruction::IGET_CHAR_QUICK;
++    case Instruction::IGET_SHORT: return Instruction::IGET_SHORT_QUICK;
++    case Instruction::IPUT: return Instruction::IPUT_QUICK;
++    case Instruction::IPUT_WIDE: return Instruction::IPUT_WIDE_QUICK;
++    case Instruction::IPUT_OBJECT: return Instruction::IPUT_OBJECT_QUICK;
++    case Instruction::IPUT_BOOLEAN: return Instruction::IPUT_BOOLEAN_QUICK;
++    case Instruction::IPUT_BYTE: return Instruction::IPUT_BYTE_QUICK;
++    case Instruction::IPUT_CHAR: return Instruction::IPUT_CHAR_QUICK;
++    case Instruction::IPUT_SHORT: return Instruction::IPUT_SHORT_QUICK;
++    default: return Instruction::NOP;
++  }
++}
++#endif
++
+ namespace impl {
+ namespace {
+ 
+@@ -127,6 +158,72 @@ class MethodVerifier final : public ::art::verifier::MethodVerifier {
+     return IsConstructor() && !IsStatic();
+   }
+ 
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (art-speed): called for every instruction the verifier
++  // processes: a field access whose object register has no known class
++  // (constant null, unresolved) is not quickened, since the verifier must be
++  // able to infer the field of a quick instruction when it looks at the
++  // method again (NullPointerException messages, FindLocksAtDexPc).
++  void ArcNoteQuickening(const Instruction* inst) REQUIRES_SHARED(Locks::mutator_lock_) {
++    if (t_arc_quick_edits == nullptr || ArcQuickFieldOpcode(inst->Opcode()) == Instruction::NOP) {
++      return;
++    }
++    if (!work_line_->GetRegisterType(this, inst->VRegB_22c()).HasClass()) {
++      GetModifiableInstructionFlags(work_insn_idx_).SetArcNoQuicken();
++    }
++  }
++
++  // After a method verified without failures: the edits dex2oat's
++  // dex-to-dex compiler would make (dex2oat/dex/dex_to_dex_compiler.cc).
++  // Instance field accesses to non-volatile fields resolved by verification
++  // become *-quick with the field offset (not iput to a final field of
++  // another class); return-void becomes return-void-no-barrier, except in
++  // constructors of classes with final instance fields. Only instructions
++  // the verifier reached are changed. invoke-virtual is not quickened: the
++  // NullPointerException of invoke-virtual-quick names the method found in
++  // the vtable instead of the one the instruction refers to.
++  void ArcCollectQuickening(std::vector<ArcQuickEdit>* edits)
++      REQUIRES_SHARED(Locks::mutator_lock_) {
++    const PointerSize pointer_size = Runtime::Current()->GetClassLinker()->GetImagePointerSize();
++    const bool keep_barrier = IsInstanceConstructor() && t_arc_has_final_instance_field;
++    uint16_t* const insns = const_cast<uint16_t*>(code_item_accessor_.Insns());
++    const uint32_t size = code_item_accessor_.InsnsSizeInCodeUnits();
++    for (uint32_t pc = 0; pc < size; pc += Instruction::At(insns + pc)->SizeInCodeUnits()) {
++      const InstructionFlags& flags = GetInstructionFlags(pc);
++      if (!flags.IsOpcode() || !flags.IsVisited()) {
++        continue;
++      }
++      const Instruction* inst = Instruction::At(insns + pc);
++      const Instruction::Code op = inst->Opcode();
++      if (op == Instruction::RETURN_VOID) {
++        if (!keep_barrier) {
++          edits->push_back({insns + pc,
++                            static_cast<uint16_t>((insns[pc] & 0xff00) |
++                                                  Instruction::RETURN_VOID_NO_BARRIER),
++                            0, false});
++        }
++        continue;
++      }
++      const Instruction::Code quick = ArcQuickFieldOpcode(op);
++      if (quick == Instruction::NOP || flags.IsArcNoQuicken()) {
++        continue;
++      }
++      ArtField* field = dex_cache_->GetResolvedField(inst->VRegC_22c(), pointer_size);
++      if (field == nullptr || field->IsStatic() || field->IsVolatile() ||
++          field->GetOffset().Uint32Value() > 0xffff) {
++        continue;
++      }
++      const bool is_put = op >= Instruction::IPUT && op <= Instruction::IPUT_SHORT;
++      if (is_put && field->IsFinal() &&
++          field->GetDeclaringClass() != GetDeclaringClass().GetClass()) {
++        continue;
++      }
++      edits->push_back({insns + pc, static_cast<uint16_t>((insns[pc] & 0xff00) | quick),
++                        static_cast<uint16_t>(field->GetOffset().Uint32Value()), true});
++    }
++  }
++#endif
++
+   const RegType& ResolveCheckedClass(dex::TypeIndex class_idx) override
+       REQUIRES_SHARED(Locks::mutator_lock_) {
+     DCHECK(!HasFailures());
+@@ -1992,6 +2089,9 @@ static void AdjustReturnLine(MethodVerifier<kVerifierDebug>* verifier,
+ 
+ template <bool kVerifierDebug>
+ bool MethodVerifier<kVerifierDebug>::CodeFlowVerifyInstruction(uint32_t* start_guess) {
++#if defined(__EMSCRIPTEN__)
++  ArcNoteQuickening(&code_item_accessor_.InstructionAt(work_insn_idx_));
++#endif
+   // If we're doing FindLocksAtDexPc, check whether we're at the dex pc we care about.
+   // We want the state _before_ the instruction, for the case where the dex pc we're
+   // interested in is itself a monitor-enter instruction (which is a likely place
+@@ -5225,6 +5325,11 @@ MethodVerifier::FailureData MethodVerifier::VerifyMethod(Thread* self,
+         method->SetDontCompile();
+       }
+     }
++#if defined(__EMSCRIPTEN__)
++    else if (t_arc_quick_edits != nullptr && code_item != nullptr) {  // NOLINT
++      verifier.ArcCollectQuickening(t_arc_quick_edits);
++    }
++#endif
+     if (method != nullptr) {
+       if (verifier.HasInstructionThatWillThrow()) {
+         method->SetDontCompile();
+diff --git a/art/runtime/verifier/method_verifier.h b/art/runtime/verifier/method_verifier.h
+index 0af09c32..02e12432 100644
+--- a/art/runtime/verifier/method_verifier.h
++++ b/art/runtime/verifier/method_verifier.h
+@@ -57,6 +57,23 @@ class DexCache;
+ 
+ namespace verifier {
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm (art-speed): quickening after verification, as dex2oat's
++// dex-to-dex compiler does on a device (topics art-speed, art8). One rewrite
++// of an instruction; ClassVerifier::VerifyClass collects the edits of its
++// methods here and applies them if the whole class verified without failures.
++struct ArcQuickEdit {
++  uint16_t* insn;
++  uint16_t unit0;
++  uint16_t unit1;
++  bool two_units;
++};
++extern thread_local std::vector<ArcQuickEdit>* t_arc_quick_edits;
++extern thread_local bool t_arc_has_final_instance_field;
++// ARC_ART_NO_QUICKEN=1 turns quickening off (for comparison).
++bool ArcQuickeningEnabled();
++#endif
++
+ class MethodVerifier;
+ class RegisterLine;
+ using RegisterLineArenaUniquePtr = std::unique_ptr<RegisterLine, RegisterLineArenaDelete>;
+diff --git a/external/icu/icu4c/source/i18n/double-conversion-utils.h b/external/icu/icu4c/source/i18n/double-conversion-utils.h
+index 57fc49b2..0a50211a 100644
+--- a/external/icu/icu4c/source/i18n/double-conversion-utils.h
++++ b/external/icu/icu4c/source/i18n/double-conversion-utils.h
+@@ -86,7 +86,8 @@ inline void abort_noreturn() { abort(); }
+     defined(__SH4__) || defined(__alpha__) || \
+     defined(_MIPS_ARCH_MIPS32R2) || \
+     defined(__AARCH64EL__) || defined(__aarch64__) || \
+-    defined(__riscv)
++    defined(__riscv) || \
++    defined(__wasm__)  /* arc-wasm: IEEE doubles, no x87 stack */
+ #define DOUBLE_CONVERSION_CORRECT_DOUBLE_OPERATIONS 1
+ #elif defined(__mc68000__)
+ #undef DOUBLE_CONVERSION_CORRECT_DOUBLE_OPERATIONS
+diff --git a/libcore/luni/src/main/native/libcore_io_Linux.cpp b/libcore/luni/src/main/native/libcore_io_Linux.cpp
+index 6b8ee085..89a6ed20 100644
+--- a/libcore/luni/src/main/native/libcore_io_Linux.cpp
++++ b/libcore/luni/src/main/native/libcore_io_Linux.cpp
+@@ -774,6 +774,9 @@ class Passwd {
+ public:
+     explicit Passwd(JNIEnv* env) : mEnv(env), mResult(NULL) {
+         mBufferSize = sysconf(_SC_GETPW_R_SIZE_MAX);
++        if ((ssize_t) mBufferSize < 0) {
++            mBufferSize = 1024;  // arc-wasm: musl returns -1 ("no limit").
++        }
+         mBuffer.reset(new char[mBufferSize]);
+     }
+ 
+@@ -1549,7 +1552,7 @@ static jobject Linux_getsockoptUcred(JNIEnv* env, jobject, jobject javaFd, jint
+ }
+ 
+ static jint Linux_gettid(JNIEnv* env __unused, jobject) {
+-#if defined(__BIONIC__)
++#if defined(__BIONIC__) || defined(__EMSCRIPTEN__)  // arc-wasm: musl has gettid()
+   return TEMP_FAILURE_RETRY(gettid());
+ #else
+   return syscall(__NR_gettid);
+diff --git a/libcore/ojluni/src/main/java/java/lang/System.java b/libcore/ojluni/src/main/java/java/lang/System.java
+index 8235bf75..50f556bb 100644
+--- a/libcore/ojluni/src/main/java/java/lang/System.java
++++ b/libcore/ojluni/src/main/java/java/lang/System.java
+@@ -996,7 +996,11 @@ public final class System {
+         p.put("os.arch", info.machine);
+         // os.name was previously hardcoded to "Linux", but was reverted due to support
+         // for Fuchsia. b/121268567 shows initialization regressions.
+-        p.put("os.name", info.sysname);
++        // arc-wasm: the kernel under libcore is Emscripten's ("Emscripten");
++        // Android's is Linux, which apps and java.nio.file (sun.nio.fs.
++        // DefaultFileSystemProvider) expect. ART 8.1's libcore had "Linux"
++        // compiled in.
++        p.put("os.name", "Emscripten".equals(info.sysname) ? "Linux" : info.sysname);
+         p.put("os.version", info.release);
+ 
+         // Android-added: Undocumented properties that exist only on Android.
+diff --git a/system/core/base/file.cpp b/system/core/base/file.cpp
+index adc89848..3229b2ed 100644
+--- a/system/core/base/file.cpp
++++ b/system/core/base/file.cpp
+@@ -421,6 +421,9 @@ std::string GetExecutablePath() {
+   if (result == 0 || result == sizeof(path) - 1) return "";
+   path[PATH_MAX - 1] = 0;
+   return path;
++#elif defined(__EMSCRIPTEN__)
++  // arc-wasm: no /proc/self/exe; the program is artvm10 in /system/bin.
++  return "/system/bin/artvm10";
+ #else
+ #error unknown OS
+ #endif
+diff --git a/system/core/base/threads.cpp b/system/core/base/threads.cpp
+index 48f6197e..10c4c5b1 100644
+--- a/system/core/base/threads.cpp
++++ b/system/core/base/threads.cpp
+@@ -31,7 +31,7 @@ namespace android {
+ namespace base {
+ 
+ uint64_t GetThreadId() {
+-#if defined(__BIONIC__)
++#if defined(__BIONIC__) || defined(__EMSCRIPTEN__)  // arc-wasm: musl has gettid()
+   return gettid();
+ #elif defined(__APPLE__)
+   uint64_t tid;
+diff --git a/system/core/libcutils/ashmem-dev.cpp b/system/core/libcutils/ashmem-dev.cpp
+index e67b4580..fdb1805d 100644
+--- a/system/core/libcutils/ashmem-dev.cpp
++++ b/system/core/libcutils/ashmem-dev.cpp
+@@ -45,6 +45,15 @@
+ #include <android-base/properties.h>
+ #include <android-base/unique_fd.h>
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm: no memfd (sys.use_memfd is never set, so it is never tried);
++// regions are on posix_translation's /dev/ashmem.
++#define syscall(...) (errno = ENOSYS, -1)
++#ifndef __NR_memfd_create
++#define __NR_memfd_create 0
++#endif
++#endif
++
+ #define ASHMEM_DEVICE "/dev/ashmem"
+ 
+ /* Will be added to UAPI once upstream change is merged */
+diff --git a/system/core/libcutils/threads.cpp b/system/core/libcutils/threads.cpp
+index a7e6b2d8..4951e92d 100644
+--- a/system/core/libcutils/threads.cpp
++++ b/system/core/libcutils/threads.cpp
+@@ -32,7 +32,10 @@
+ #endif
+ 
+ // No definition needed for Android because we'll just pick up bionic's copy.
+-#ifndef __ANDROID__
++// arc-wasm: nor for Emscripten, whose libc has gettid() (the pthread's id).
++// This one has no case for it: as in 6.0 and 8.1, every thread got the same
++// id, so ART took every thread for the one running a class's <clinit>.
++#if !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
+ pid_t gettid() {
+ #if defined(__APPLE__)
+   uint64_t tid;

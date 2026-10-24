@@ -1,0 +1,271 @@
+diff --git a/dalvik/vm/native/java_lang_Class.cpp b/dalvik/vm/native/java_lang_Class.cpp
+index 9b3b2f0f..0bafd994 100644
+--- a/dalvik/vm/native/java_lang_Class.cpp
++++ b/dalvik/vm/native/java_lang_Class.cpp
+@@ -769,7 +769,18 @@ JNIEXPORT jobject JNICALL Java_java_lang_Class_getDex(JNIEnv* env, jclass javaCl
+     if (dvm_dex->dex_object != NULL) {
+         return dvm_dex->dex_object;
+     }
+-    jobject byte_buffer = env->NewDirectByteBuffer(dvm_dex->memMap.addr, dvm_dex->memMap.length);
++    // arc-wasm (topic userspace): a dex optimized in this process
++    // (dvmDexFileOpenPartial) has no file mapping; the dex itself is at the
++    // DexFile's base (Dex.create takes a plain dex as well as an odex).
++    // Without it the Dex was empty and reflection on generic signatures
++    // (Gson's TypeToken) hung.
++    void* dex_addr = dvm_dex->memMap.addr;
++    size_t dex_length = dvm_dex->memMap.length;
++    if (dex_addr == NULL || dex_length == 0) {
++        dex_addr = (void*) dvm_dex->pDexFile->baseAddr;
++        dex_length = dvm_dex->pDexFile->pHeader->fileSize;
++    }
++    jobject byte_buffer = env->NewDirectByteBuffer(dex_addr, dex_length);
+     if (byte_buffer == NULL) {
+         return NULL;
+     }
+diff --git a/frameworks/base/core/java/android/app/ActivityThread.java b/frameworks/base/core/java/android/app/ActivityThread.java
+index 4825c56b..8cf39319 100644
+--- a/frameworks/base/core/java/android/app/ActivityThread.java
++++ b/frameworks/base/core/java/android/app/ActivityThread.java
+@@ -2349,7 +2349,31 @@ public final class ActivityThread {
+     }
+ 
+     public void handleInstallProvider(ProviderInfo info) {
+-        installContentProviders(mInitialApplication, Lists.newArrayList(info));
++        // arc-wasm (topic userspace): one process hosts every package. A package
++        // other than the bound one gets its Application before its providers and
++        // Application.onCreate after them, as handleBindApplication does
++        // (LauncherProvider casts getContext().getApplicationContext() to its
++        // Application class).
++        LoadedApk packageInfo = getPackageInfoNoCheck(info.applicationInfo,
++                CompatibilityInfo.DEFAULT_COMPATIBILITY_INFO);
++        Application app = packageInfo.getApplication();
++        boolean created = false;
++        if (app == null) {
++            app = packageInfo.makeApplication(false, null);
++            created = true;
++        }
++        installContentProviders(app != null ? app : mInitialApplication,
++                Lists.newArrayList(info));
++        if (created && app != null) {
++            try {
++                mInstrumentation.callApplicationOnCreate(app);
++            } catch (Exception e) {
++                if (!mInstrumentation.onException(app, e)) {
++                    throw new RuntimeException("Unable to create application "
++                            + app.getClass().getName() + ": " + e.toString(), e);
++                }
++            }
++        }
+     }
+ 
+     private static final ThreadLocal<Intent> sCurrentBroadcastIntent = new ThreadLocal<Intent>();
+diff --git a/frameworks/base/core/java/android/content/res/Resources.java b/frameworks/base/core/java/android/content/res/Resources.java
+index cd5b5d2f..81f6fae9 100644
+--- a/frameworks/base/core/java/android/content/res/Resources.java
++++ b/frameworks/base/core/java/android/content/res/Resources.java
+@@ -131,11 +131,40 @@ public class Resources {
+ 
+     /** @hide */
+     public static int selectDefaultTheme(int curTheme, int targetSdkVersion) {
++        int[] htc = htcThemes();
++        if (htc != null) {
++            return selectSystemTheme(curTheme, targetSdkVersion, htc[0], htc[1], htc[2]);
++        }
+         return selectSystemTheme(curTheme, targetSdkVersion,
+                 com.android.internal.R.style.Theme,
+                 com.android.internal.R.style.Theme_Holo,
+                 com.android.internal.R.style.Theme_DeviceDefault);
+     }
++
++    /**
++     * arc-wasm (topic userspace, HTC Sense): with HTC's framework resources
++     * (package com.htc, AssetManager's addDefaultAssets), the default themes
++     * are HTC's, as in HTC's framework: com.htc:style/Htc, HtcHolo and
++     * HtcDeviceDefault, Android's themes with the attributes of HTC's views.
++     * An activity's theme goes over the application's, so HTC's apps find
++     * those attributes whatever theme they pick. Null without them.
++     */
++    private static int[] htcThemes() {
++        if (!sHtcThemesChecked) {
++            Resources system = getSystem();
++            int deviceDefault = system.getIdentifier("HtcDeviceDefault", "style", "com.htc");
++            if (deviceDefault != 0) {
++                sHtcThemes = new int[] {
++                        system.getIdentifier("Htc", "style", "com.htc"),
++                        system.getIdentifier("HtcHolo", "style", "com.htc"), deviceDefault};
++            }
++            sHtcThemesChecked = true;
++        }
++        return sHtcThemes;
++    }
++
++    private static boolean sHtcThemesChecked;
++    private static int[] sHtcThemes;
+     
+     /** @hide */
+     public static int selectSystemTheme(int curTheme, int targetSdkVersion,
+diff --git a/frameworks/base/core/java/android/os/Binder.java b/frameworks/base/core/java/android/os/Binder.java
+index f4a83910..520c7813 100644
+--- a/frameworks/base/core/java/android/os/Binder.java
++++ b/frameworks/base/core/java/android/os/Binder.java
+@@ -358,7 +358,22 @@ public class Binder implements IBinder {
+         if (data != null) {
+             data.setDataPosition(0);
+         }
+-        boolean r = onTransact(code, data, reply, flags);
++        // arc-wasm (topic userspace): a call within this process runs on the
++        // caller's thread, and the callee's enforceInterface() sets that
++        // thread's StrictMode policy from the call (with PENALTY_GATHER). Put
++        // it back after the call, as JavaBBinder::onTransact does for a binder
++        // thread; else the caller keeps gathering violations for good and
++        // every later call appends its stack to them, until it runs out of
++        // memory.
++        final int policy = StrictMode.getThreadPolicyMask();
++        boolean r;
++        try {
++            r = onTransact(code, data, reply, flags);
++        } finally {
++            if (StrictMode.getThreadPolicyMask() != policy) {
++                StrictMode.restoreThreadPolicyMask(policy);
++            }
++        }
+         if (reply != null) {
+             reply.setDataPosition(0);
+         }
+diff --git a/frameworks/base/core/java/android/os/HandlerThread.java b/frameworks/base/core/java/android/os/HandlerThread.java
+index 2904105e..0d4ea5be 100644
+--- a/frameworks/base/core/java/android/os/HandlerThread.java
++++ b/frameworks/base/core/java/android/os/HandlerThread.java
+@@ -58,9 +58,32 @@ public class HandlerThread extends Thread {
+         }
+         Process.setThreadPriority(mPriority);
+         onLooperPrepared();
+-        Looper.loop();
++        loopLeniently();
+         mTid = -1;
+     }
++
++    /**
++     * arc-wasm (topic userspace): in the lenient mode of the phone-like
++     * systems (arcwasm.server.lenient), an exception out of one message is
++     * logged and the thread goes on with the next, as the app thread does
++     * (arcwasm.server.CrashRecovery): every app runs in one process here, and
++     * a worker thread that died (an app's loader, say) left the app waiting
++     * for it for good, where on a device the process would be restarted.
++     */
++    private static void loopLeniently() {
++        for (;;) {
++            try {
++                Looper.loop();
++                return;
++            } catch (RuntimeException e) {
++                if (!SystemProperties.getBoolean("arcwasm.server.lenient", false)) {
++                    throw e;
++                }
++                android.util.Log.e("HandlerThread", Thread.currentThread().getName()
++                        + ": a message threw; going on with the next", e);
++            }
++        }
++    }
+     
+     /**
+      * This method returns the Looper associated with this thread. If this thread not been started
+diff --git a/frameworks/base/core/java/android/os/Process.java b/frameworks/base/core/java/android/os/Process.java
+index cf9ddb3b..3b04403e 100644
+--- a/frameworks/base/core/java/android/os/Process.java
++++ b/frameworks/base/core/java/android/os/Process.java
+@@ -939,6 +939,15 @@ public class Process {
+      * other's processes.
+      */
+     public static final void killProcess(int pid) {
++        // arc-wasm (topic userspace): every app runs in this one process, so
++        // an app killing "its" process (HTC's launcher does, for an activity
++        // that has a process of its own on a device) would end them all. In
++        // the lenient mode of the phone-like systems that is not done.
++        if (pid == myPid() && SystemProperties.getBoolean("arcwasm.server.lenient", false)) {
++            android.util.Log.w("Process", "not killing this process (every app runs in it)",
++                    new Throwable("killProcess"));
++            return;
++        }
+         sendSignal(pid, SIGNAL_KILL);
+     }
+ 
+diff --git a/frameworks/base/core/java/android/os/StrictMode.java b/frameworks/base/core/java/android/os/StrictMode.java
+index d794ca67..5d320ddb 100644
+--- a/frameworks/base/core/java/android/os/StrictMode.java
++++ b/frameworks/base/core/java/android/os/StrictMode.java
+@@ -766,6 +766,11 @@ public final class StrictMode {
+         setThreadPolicyMask(policy.mask);
+     }
+ 
++    /** arc-wasm (topic userspace): for Binder.transact's in-process calls. */
++    static void restoreThreadPolicyMask(final int policyMask) {
++        setThreadPolicyMask(policyMask);
++    }
++
+     private static void setThreadPolicyMask(final int policyMask) {
+         // In addition to the Java-level thread-local in Dalvik's
+         // BlockGuard, we also need to keep a native thread-local in
+diff --git a/frameworks/base/libs/androidfw/AssetManager.cpp b/frameworks/base/libs/androidfw/AssetManager.cpp
+index 6667dafe..12b81def 100644
+--- a/frameworks/base/libs/androidfw/AssetManager.cpp
++++ b/frameworks/base/libs/androidfw/AssetManager.cpp
+@@ -391,7 +391,22 @@ bool AssetManager::addDefaultAssets()
+     String8 path(root);
+     path.appendPath(kSystemAssets);
+ 
+-    return addAssetPath(path, NULL);
++    bool added = addAssetPath(path, NULL);
++    // arc-wasm (topic userspace, HTC Sense): an HTC system image's framework
++    // resources besides framework-res (package 0x01): com.htc.resources.apk
++    // (0x02) and framework-res-htc.apk (0x03), which HTC's framework adds to
++    // every AssetManager. Images without them are not affected.
++    static const char* kHtcAssets[] = {
++        "framework/com.htc.resources.apk", "framework/framework-res-htc.apk",
++    };
++    for (size_t i = 0; added && i < sizeof(kHtcAssets) / sizeof(kHtcAssets[0]); i++) {
++        String8 htc(root);
++        htc.appendPath(kHtcAssets[i]);
++        if (access(htc.string(), R_OK) == 0) {
++            addAssetPath(htc, NULL);
++        }
++    }
++    return added;
+ }
+ 
+ void* AssetManager::nextAssetPath(void* cookie) const
+diff --git a/frameworks/base/media/java/android/media/Ringtone.java b/frameworks/base/media/java/android/media/Ringtone.java
+index 1283e9b5..09b07ad2 100644
+--- a/frameworks/base/media/java/android/media/Ringtone.java
++++ b/frameworks/base/media/java/android/media/Ringtone.java
+@@ -191,6 +191,12 @@ public class Ringtone {
+             if (!mAllowRemote) {
+                 Log.w(TAG, "Remote playback not allowed: " + e);
+             }
++        } catch (IllegalStateException e) {
++            // arc-wasm (topic userspace): no media player natives here; the
++            // ringtone still exists (its title, the remote player), as when
++            // the file cannot be opened. DeskClock lists alarms' ringtones.
++            destroyLocalPlayer();
++            Log.w(TAG, "No local playback: " + e);
+         }
+ 
+         if (LOGD) {
+diff --git a/system/core/libutils/FileMap.cpp b/system/core/libutils/FileMap.cpp
+index 9ce370e0..de57823d 100644
+--- a/system/core/libutils/FileMap.cpp
++++ b/system/core/libutils/FileMap.cpp
+@@ -144,7 +144,12 @@ bool FileMap::create(const char* origFileName, int fd, off64_t offset, size_t le
+ 
+     /* init on first use */
+     if (mPageSize == -1) {
+-#if NOT_USING_KLIBC
++        /* arc-wasm (topic userspace): the system's page is wasm's 64 KB, and
++         * mmap refuses offsets not on it. With 4096, nearly every entry of
++         * an APK on /data failed to map and was mapped again from offset 0
++         * below (the file up to the entry copied: 2 GB for one game's
++         * start, out of memory on iPhones). */
++#if NOT_USING_KLIBC || defined(__EMSCRIPTEN__)
+         mPageSize = sysconf(_SC_PAGESIZE);
+         if (mPageSize == -1) {
+             ALOGE("could not get _SC_PAGESIZE\n");

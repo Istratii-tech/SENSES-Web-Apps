@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- arc-wasm: the test app for Android 6.0.1 on ART (topic fw6-system,
+     docs/topics/fw6-system.md): minSdkVersion/targetSdkVersion 23, so it
+     installs only on API 23+, uses Theme.Material and asks for a runtime
+     permission. tools/build_test_apk.sh with MIN_SDK=23. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.arcwasm.testapp6"
+    android:versionCode="23"
+    android:versionName="6.0">
+
+    <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="23" />
+
+    <!-- normal: granted at install -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- dangerous (runtime, API 23): requested by MainActivity -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+
+    <application
+        android:name=".App6"
+        android:label="@string/app_name"
+        android:theme="@style/AppTheme">
+
+        <activity android:name=".MainActivity" android:label="@string/main_title">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".ResultActivity" android:label="@string/result_title" />
+
+        <service android:name=".LocalService" android:exported="false" />
+
+        <provider android:name=".NotesProvider"
+            android:authorities="org.arcwasm.testapp6.notes"
+            android:exported="false" />
+    </application>
+</manifest>

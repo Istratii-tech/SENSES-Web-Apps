@@ -1,0 +1,110 @@
+diff --git a/frameworks/base/core/jni/android_opengl_EGL14.cpp b/frameworks/base/core/jni/android_opengl_EGL14.cpp
+index 5b0a4b2e..a6cd6015 100644
+--- a/frameworks/base/core/jni/android_opengl_EGL14.cpp
++++ b/frameworks/base/core/jni/android_opengl_EGL14.cpp
+@@ -26,9 +26,15 @@
+ #include <assert.h>
+ #include <EGL/egl.h>
+ 
++// arc-wasm: no libgui; SurfaceTexture is not supported (see
++// com_google_android_gles_jni_EGLImpl.cpp).
++#ifndef ARC_WASM_NO_LIBGUI
+ #include <gui/Surface.h>
+ #include <gui/GLConsumer.h>
+ #include <gui/Surface.h>
++#else
++#include <gui/IGraphicBufferProducer.h>
++#endif
+ 
+ #include <ui/ANativeObjectBase.h>
+ 
+@@ -625,12 +631,19 @@ not_valid_surface:
+         _exceptionMessage = "Make sure the SurfaceView or associated SurfaceHolder has a valid Surface";
+         goto exit;
+     }
++#ifndef ARC_WASM_NO_LIBGUI
+     producer = android::SurfaceTexture_getProducer(_env, win);
+ 
+     if (producer == NULL)
+         goto not_valid_surface;
+ 
+     window = new android::Surface(producer, true);
++#else
++    _exception = 1;
++    _exceptionType = "java/lang/UnsupportedOperationException";
++    _exceptionMessage = "SurfaceTexture is not supported";
++    goto exit;
++#endif
+ 
+     if (window == NULL)
+         goto not_valid_surface;
+diff --git a/frameworks/base/core/jni/com_google_android_gles_jni_EGLImpl.cpp b/frameworks/base/core/jni/com_google_android_gles_jni_EGLImpl.cpp
+index 50b33029..4376c451 100644
+--- a/frameworks/base/core/jni/com_google_android_gles_jni_EGLImpl.cpp
++++ b/frameworks/base/core/jni/com_google_android_gles_jni_EGLImpl.cpp
+@@ -22,13 +22,22 @@
+ #include <utils/misc.h>
+ 
+ 
++#ifndef ARC_WASM_NO_LIBGUI
+ #include <EGL/egl_display.h>
++#endif
+ #include <EGL/egl.h>
+ #include <GLES/gl.h>
+ 
++// arc-wasm: no libgui (BufferQueue across processes) and no libEGL loader;
++// window surfaces come from the in-process SurfaceFlinger (shim/gles), and
++// SurfaceTexture is not supported.
++#ifndef ARC_WASM_NO_LIBGUI
+ #include <gui/Surface.h>
+ #include <gui/GLConsumer.h>
+ #include <gui/Surface.h>
++#else
++#include <ui/PixelFormat.h>
++#endif
+ 
+ #include <SkBitmap.h>
+ #include <SkPixelRef.h>
+@@ -178,8 +187,13 @@ static jboolean jni_eglQuerySurface(JNIEnv *_env, jobject _this, jobject display
+ 
+ static jint jni_getInitCount(JNIEnv *_env, jobject _clazz, jobject display) {
+     EGLDisplay dpy = getDisplay(_env, display);
++#ifndef ARC_WASM_NO_LIBGUI
+     egl_display_t* eglDisplay = get_display_nowake(dpy);
+     return eglDisplay ? eglDisplay->getRefsCount() : 0;
++#else
++    // graphics_translation keeps no eglInitialize count.
++    return 0;
++#endif
+ }
+ 
+ static jboolean jni_eglReleaseThread(JNIEnv *_env, jobject _this) {
+@@ -352,8 +366,14 @@ not_valid_surface:
+         return 0;
+     }
+ 
++#ifndef ARC_WASM_NO_LIBGUI
+     sp<IGraphicBufferProducer> producer(SurfaceTexture_getProducer(_env, native_window));
+     window = new Surface(producer, true);
++#else
++    jniThrowException(_env, "java/lang/UnsupportedOperationException",
++            "SurfaceTexture is not supported");
++    return 0;
++#endif
+     if (window == NULL)
+         goto not_valid_surface;
+ 
+diff --git a/frameworks/base/core/jni/com_google_android_gles_jni_GLImpl.cpp b/frameworks/base/core/jni/com_google_android_gles_jni_GLImpl.cpp
+index b0c26c51..130bd2a5 100644
+--- a/frameworks/base/core/jni/com_google_android_gles_jni_GLImpl.cpp
++++ b/frameworks/base/core/jni/com_google_android_gles_jni_GLImpl.cpp
+@@ -183,7 +183,8 @@ getDirectBufferPointer(JNIEnv *_env, jobject buffer) {
+             if (array) {
+                 releasePointer(_env, array, buf, 0);
+             }
+-            buf = buf + offset;
++            // arc-wasm: void* arithmetic is a GNU extension clang rejects in C++.
++            buf = (char*) buf + offset;
+         } else {
+             jniThrowException(_env, "java/lang/IllegalArgumentException",
+                               "Must use a native order direct Buffer");

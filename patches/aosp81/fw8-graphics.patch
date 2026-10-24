@@ -1,0 +1,602 @@
+diff --git a/external/skia/include/config/SkUserConfig.h b/external/skia/include/config/SkUserConfig.h
+index dd3a6c9d4..a314e27e6 100644
+--- a/external/skia/include/config/SkUserConfig.h
++++ b/external/skia/include/config/SkUserConfig.h
+@@ -4,17 +4,27 @@
+ #define SkUserConfig_DEFINED
+ #include "SkUserConfigManual.h"
+   #define SK_ALLOW_STATIC_GLOBAL_INITIALIZERS 0
++  #ifndef ARC_WASM  // arc-wasm: no dng_sdk, libheif, sfntly, Vulkan
+   #define SK_CODEC_DECODES_RAW
++  #endif
+   #define SK_ENABLE_DISCRETE_GPU
+   #define SK_GAMMA_APPLY_TO_A8
+   #define SK_GAMMA_CONTRAST 0.0
+   #define SK_GAMMA_EXPONENT 1.4
++  #ifndef ARC_WASM  // arc-wasm: no dng_sdk, libheif, sfntly, Vulkan
+   #define SK_HAS_HEIF_LIBRARY
++  #endif
+   #define SK_HAS_JPEG_LIBRARY
+   #define SK_HAS_PNG_LIBRARY
+   #define SK_HAS_WEBP_LIBRARY
++  #ifndef ARC_WASM  // arc-wasm: no dng_sdk, libheif, sfntly, Vulkan
+   #define SK_PDF_USE_SFNTLY
++  #endif
++  #ifndef ARC_WASM  // arc-wasm: no dng_sdk, libheif, sfntly, Vulkan
+   #define SK_SUPPORT_PDF
++  #endif
++  #ifndef ARC_WASM  // arc-wasm: no dng_sdk, libheif, sfntly, Vulkan
+   #define SK_VULKAN
++  #endif
+   #define SK_XML
+ #endif//SkUserConfig_DEFINED
+diff --git a/frameworks/base/core/java/android/view/ThreadedRenderer.java b/frameworks/base/core/java/android/view/ThreadedRenderer.java
+index 489de565a..42bef37f6 100644
+--- a/frameworks/base/core/java/android/view/ThreadedRenderer.java
++++ b/frameworks/base/core/java/android/view/ThreadedRenderer.java
+@@ -246,6 +246,13 @@ public final class ThreadedRenderer {
+         if (sSupportsOpenGL != null) {
+             return sSupportsOpenGL.booleanValue();
+         }
++        // arc-wasm: hwui draws with WebGL2 (topic fw8-graphics), where the
++        // build asks for it (ro.arcwasm.hwui=1) and this thread's worker has
++        // it (no WebGL in Node: views draw in software there).
++        if (SystemProperties.getInt("ro.arcwasm.hwui", 0) != 1 || !nArcWasmGlAvailable()) {
++            sSupportsOpenGL = false;
++            return false;
++        }
+         if (SystemProperties.getInt("ro.kernel.qemu", 0) == 0) {
+             // Device is not an emulator.
+             sSupportsOpenGL = true;
+@@ -1001,6 +1008,7 @@ public final class ThreadedRenderer {
+ 
+     static native void setupShadersDiskCache(String cacheFile);
+ 
++    private static native boolean nArcWasmGlAvailable();
+     private static native void nRotateProcessStatsBuffer();
+     private static native void nSetProcessStatsBuffer(int fd);
+     private static native int nGetRenderThreadTid(long nativeProxy);
+diff --git a/frameworks/base/core/jni/android/graphics/Matrix.cpp b/frameworks/base/core/jni/android/graphics/Matrix.cpp
+index f8bb77a96..78b464f5e 100644
+--- a/frameworks/base/core/jni/android/graphics/Matrix.cpp
++++ b/frameworks/base/core/jni/android/graphics/Matrix.cpp
+@@ -35,8 +35,10 @@ public:
+ 
+     // ---------------- Regular JNI -----------------------------
+ 
+-    static void finalizer(jlong objHandle) {
+-        SkMatrix* obj = reinterpret_cast<SkMatrix*>(objHandle);
++    // arc-wasm: the free function of a NativeAllocationRegistry is called as
++    // void (*)(void*); AOSP declared it with a jlong, which works on ARM by
++    // accident and traps in WebAssembly (the types must match exactly).
++    static void finalizer(SkMatrix* obj) {
+         delete obj;
+     }
+ 
+diff --git a/frameworks/base/core/jni/android_util_PathParser.cpp b/frameworks/base/core/jni/android_util_PathParser.cpp
+index 10efb9510..237908a4a 100644
+--- a/frameworks/base/core/jni/android_util_PathParser.cpp
++++ b/frameworks/base/core/jni/android_util_PathParser.cpp
+@@ -41,18 +41,18 @@ static void parseStringForPath(JNIEnv* env, jobject, jlong skPathHandle, jstring
+     }
+ }
+ 
+-static long createEmptyPathData(JNIEnv*, jobject) {
++static jlong createEmptyPathData(JNIEnv*, jobject) {
+     PathData* pathData = new PathData();
+     return reinterpret_cast<jlong>(pathData);
+ }
+ 
+-static long createPathData(JNIEnv*, jobject, jlong pathDataPtr) {
++static jlong createPathData(JNIEnv*, jobject, jlong pathDataPtr) {
+     PathData* pathData = reinterpret_cast<PathData*>(pathDataPtr);
+     PathData* newPathData = new PathData(*pathData);
+     return reinterpret_cast<jlong>(newPathData);
+ }
+ 
+-static long createPathDataFromStringPath(JNIEnv* env, jobject, jstring inputStr, jint strLength) {
++static jlong createPathDataFromStringPath(JNIEnv* env, jobject, jstring inputStr, jint strLength) {
+     const char* pathString = env->GetStringUTFChars(inputStr, NULL);
+     PathData* pathData = new PathData();
+     PathParser::ParseResult result;
+diff --git a/frameworks/base/core/jni/android_view_ThreadedRenderer.cpp b/frameworks/base/core/jni/android_view_ThreadedRenderer.cpp
+index e757ddd8c..184c8a211 100644
+--- a/frameworks/base/core/jni/android_view_ThreadedRenderer.cpp
++++ b/frameworks/base/core/jni/android_view_ThreadedRenderer.cpp
+@@ -976,7 +976,19 @@ static void android_view_ThreadedRenderer_setupShadersDiskCache(JNIEnv* env, job
+ 
+ const char* const kClassPathName = "android/view/ThreadedRenderer";
+ 
++#ifdef ARC_WASM
++// arc-wasm: whether hwui can get a WebGL2 context on this thread's worker
++// (shim/fw8-graphics' hwui EGL); none linked in: no.
++extern "C" int arc_hwui_gl_available() __attribute__((weak));
++static jboolean android_view_ThreadedRenderer_arcWasmGlAvailable(JNIEnv*, jclass) {
++    return arc_hwui_gl_available && arc_hwui_gl_available() != 0;
++}
++#endif
++
+ static const JNINativeMethod gMethods[] = {
++#ifdef ARC_WASM
++    { "nArcWasmGlAvailable", "()Z", (void*) android_view_ThreadedRenderer_arcWasmGlAvailable },
++#endif
+     { "nRotateProcessStatsBuffer", "()V", (void*) android_view_ThreadedRenderer_rotateProcessStatsBuffer },
+     { "nSetProcessStatsBuffer", "(I)V", (void*) android_view_ThreadedRenderer_setProcessStatsBuffer },
+     { "nGetRenderThreadTid", "(J)I", (void*) android_view_ThreadedRenderer_getRenderThreadTid },
+diff --git a/frameworks/base/libs/hwui/DeferredLayerUpdater.cpp b/frameworks/base/libs/hwui/DeferredLayerUpdater.cpp
+index ff90160b8..a25f9c0e8 100644
+--- a/frameworks/base/libs/hwui/DeferredLayerUpdater.cpp
++++ b/frameworks/base/libs/hwui/DeferredLayerUpdater.cpp
+@@ -15,6 +15,10 @@
+  */
+ #include "DeferredLayerUpdater.h"
+ 
++#ifdef ARC_WASM
++#include "Caches.h"
++#endif
++
+ #include "GlLayer.h"
+ #include "VkLayer.h"
+ #include "renderstate/RenderState.h"
+@@ -98,6 +102,11 @@ void DeferredLayerUpdater::apply() {
+                 mUpdateTexImage = false;
+                 doUpdateTexImage();
+             }
++#ifdef ARC_WASM
++            // arc-wasm: GLConsumer bound its external texture, a 2D texture in
++            // WebGL (shim/fw6-hwui/hwui_gl.cc), behind the texture cache's back.
++            if (Caches::hasInstance()) Caches::getInstance().textureState().resetBoundTextures();
++#endif
+             GLenum renderTarget = mSurfaceTexture->getCurrentTextureTarget();
+             static_cast<GlLayer*>(mLayer)->setRenderTarget(renderTarget);
+         }
+diff --git a/frameworks/base/libs/hwui/FontRenderer.cpp b/frameworks/base/libs/hwui/FontRenderer.cpp
+index 8b0346867..beebd5831 100644
+--- a/frameworks/base/libs/hwui/FontRenderer.cpp
++++ b/frameworks/base/libs/hwui/FontRenderer.cpp
+@@ -32,7 +32,11 @@
+ #include "utils/Timing.h"
+ 
+ #include <algorithm>
++#ifndef ARC_WASM
+ #include <RenderScript.h>
++#else
++#define RS_CPU_ALLOCATION_ALIGNMENT 16  // (rsDefines.h)
++#endif
+ #include <SkGlyph.h>
+ #include <SkUtils.h>
+ #include <utils/Log.h>
+@@ -683,6 +687,7 @@ bool FontRenderer::renderTextOnPath(const SkPaint* paint, const Rect* clip, cons
+ 
+ void FontRenderer::blurImage(uint8_t** image, int32_t width, int32_t height, float radius) {
+     uint32_t intRadius = Blur::convertRadiusToInt(radius);
++#ifndef ARC_WASM
+     if (width * height * intRadius >= RS_MIN_INPUT_CUTOFF && radius <= 25.0f) {
+         uint8_t* outImage = (uint8_t*) memalign(RS_CPU_ALLOCATION_ALIGNMENT, width * height);
+ 
+@@ -720,6 +725,7 @@ void FontRenderer::blurImage(uint8_t** image, int32_t width, int32_t height, flo
+             return;
+         }
+     }
++#endif
+ 
+     std::unique_ptr<float[]> gaussian(new float[2 * intRadius + 1]);
+     Blur::generateGaussianWeights(gaussian.get(), radius);
+diff --git a/frameworks/base/libs/hwui/FontRenderer.h b/frameworks/base/libs/hwui/FontRenderer.h
+index 329309c1c..eaf4bdbd6 100644
+--- a/frameworks/base/libs/hwui/FontRenderer.h
++++ b/frameworks/base/libs/hwui/FontRenderer.h
+@@ -34,7 +34,9 @@
+ 
+ #include <vector>
+ 
++#ifndef ARC_WASM  // arc-wasm: no RenderScript; text shadows blur on the CPU
+ #include "RenderScript.h"
++#endif
+ namespace RSC {
+     class Element;
+     class RS;
+@@ -199,10 +201,12 @@ private:
+     FontCacheHistoryTracker mHistoryTracker;
+ #endif
+ 
++#ifndef ARC_WASM
+     // RS constructs
+     RSC::sp<RSC::RS> mRs;
+     RSC::sp<const RSC::Element> mRsElement;
+     RSC::sp<RSC::ScriptIntrinsicBlur> mRsScript;
++#endif
+ 
+     static void computeGaussianWeights(float* weights, int32_t radius);
+     static void horizontalBlur(float* weights, int32_t radius, const uint8_t *source, uint8_t *dest,
+diff --git a/frameworks/base/libs/hwui/JankTracker.cpp b/frameworks/base/libs/hwui/JankTracker.cpp
+index 9d1182819..d3f1de07b 100644
+--- a/frameworks/base/libs/hwui/JankTracker.cpp
++++ b/frameworks/base/libs/hwui/JankTracker.cpp
+@@ -122,12 +122,22 @@ void JankTracker::finishFrame(const FrameInfo& frame) {
+             // the actual time spent blocked.
+             nsecs_t forgiveAmount = std::min(expectedDequeueDuration,
+                     frame[FrameInfoIndex::DequeueBufferDuration]);
++#ifdef ARC_WASM
++            if (forgiveAmount >= totalDuration) forgiveAmount = 0;  // (coarse clocks, above)
++#endif
+             LOG_ALWAYS_FATAL_IF(forgiveAmount >= totalDuration,
+                     "Impossible dequeue duration! dequeue duration reported %" PRId64
+                     ", total duration %" PRId64, forgiveAmount, totalDuration);
+             totalDuration -= forgiveAmount;
+         }
+     }
++#ifdef ARC_WASM
++    // arc-wasm: the browser's clocks are coarse (performance.now() is
++    // rounded, to 100 us and more), and frames without vsync timestamps
++    // (Surface.lockHardwareCanvas) can come out with no duration: nothing to
++    // report, rather than abort.
++    if (totalDuration <= 0) return;
++#endif
+     LOG_ALWAYS_FATAL_IF(totalDuration <= 0, "Impossible totalDuration %" PRId64, totalDuration);
+     mData->reportFrame(totalDuration);
+     (*mGlobalData)->reportFrame(totalDuration);
+diff --git a/frameworks/base/libs/hwui/hwui/Bitmap.cpp b/frameworks/base/libs/hwui/hwui/Bitmap.cpp
+index 75b6d2336..b1faf664a 100644
+--- a/frameworks/base/libs/hwui/hwui/Bitmap.cpp
++++ b/frameworks/base/libs/hwui/hwui/Bitmap.cpp
+@@ -207,6 +207,7 @@ Bitmap::Bitmap(GraphicBuffer* buffer, const SkImageInfo& info)
+     mPixelStorage.hardware.buffer = buffer;
+     buffer->incStrong(buffer);
+     setImmutable(); // HW bitmaps are always immutable
++#ifndef ARC_WASM  // arc-wasm: Skia has no AHardwareBuffer images (no __ANDROID_API__)
+     if (uirenderer::Properties::isSkiaEnabled()) {
+         // GraphicBuffer should be in the display color space (Bitmap::createFrom is always
+         // passing SRGB). The code that uploads into a GraphicBuffer should do color conversion if
+@@ -214,6 +215,7 @@ Bitmap::Bitmap(GraphicBuffer* buffer, const SkImageInfo& info)
+         mImage = SkImage::MakeFromAHardwareBuffer(reinterpret_cast<AHardwareBuffer*>(buffer),
+                 mInfo.alphaType(), nullptr);
+     }
++#endif
+ }
+ 
+ Bitmap::~Bitmap() {
+diff --git a/frameworks/base/libs/hwui/renderstate/TextureState.cpp b/frameworks/base/libs/hwui/renderstate/TextureState.cpp
+index f9a1f8c38..2e77d2520 100644
+--- a/frameworks/base/libs/hwui/renderstate/TextureState.cpp
++++ b/frameworks/base/libs/hwui/renderstate/TextureState.cpp
+@@ -113,6 +113,11 @@ void TextureState::bindTexture(GLenum target, GLuint texture) {
+         // target=GL_TEXTURE_EXTERNAL_OES, don't cache this target
+         // since the cached state could be stale
+         glBindTexture(target, texture);
++#ifdef ARC_WASM
++        // arc-wasm: external textures are 2D textures in WebGL
++        // (shim/fw6-hwui/hwui_gl.cc): this unit's 2D binding is gone.
++        mBoundTextures[mTextureUnit] = ~0u;
++#endif
+     }
+ }
+ 
+diff --git a/frameworks/base/libs/hwui/renderthread/RenderThread.cpp b/frameworks/base/libs/hwui/renderthread/RenderThread.cpp
+index 72a428f1c..b760daa80 100644
+--- a/frameworks/base/libs/hwui/renderthread/RenderThread.cpp
++++ b/frameworks/base/libs/hwui/renderthread/RenderThread.cpp
+@@ -353,6 +353,9 @@ void RenderThread::requestVsync() {
+ }
+ 
+ bool RenderThread::threadLoop() {
++#ifdef ARC_WASM
++    mArcWasmTid = gettid();
++#endif
+     setpriority(PRIO_PROCESS, 0, PRIORITY_DISPLAY);
+     initThreadLocals();
+ 
+diff --git a/frameworks/base/libs/hwui/renderthread/RenderThread.h b/frameworks/base/libs/hwui/renderthread/RenderThread.h
+index bef47b3e2..57e285399 100644
+--- a/frameworks/base/libs/hwui/renderthread/RenderThread.h
++++ b/frameworks/base/libs/hwui/renderthread/RenderThread.h
+@@ -113,8 +113,15 @@ public:
+ 
+ protected:
+     virtual bool threadLoop() override;
++#ifdef ARC_WASM
++    // arc-wasm: utils::Thread::getTid() exists only for __ANDROID__.
++    pid_t getTid() const { return mArcWasmTid; }
++#endif
+ 
+ private:
++#ifdef ARC_WASM
++    volatile pid_t mArcWasmTid = -1;
++#endif
+     friend class DispatchFrameCallbacks;
+     friend class RenderProxy;
+     friend class android::uirenderer::TestUtils;
+diff --git a/frameworks/base/libs/hwui/utils/FatVector.h b/frameworks/base/libs/hwui/utils/FatVector.h
+index df8cb076e..533a8dfeb 100644
+--- a/frameworks/base/libs/hwui/utils/FatVector.h
++++ b/frameworks/base/libs/hwui/utils/FatVector.h
+@@ -52,6 +52,12 @@ public:
+ 
+     typedef T value_type; // needed to implement std::allocator
+     typedef T* pointer; // needed to implement std::allocator
++    // arc-wasm: newer libc++ requires rebind of allocators with a non-type
++    // parameter (the vector never rebinds it).
++    template <typename U>
++    struct rebind {
++        typedef InlineStdAllocator<U, SIZE> other;
++    };
+ 
+     explicit InlineStdAllocator(Allocation& allocation)
+             : mAllocation(allocation) {}
+diff --git a/frameworks/native/include/input/Input.h b/frameworks/native/include/input/Input.h
+index cfcafabeb..aada191ce 100644
+--- a/frameworks/native/include/input/Input.h
++++ b/frameworks/native/include/input/Input.h
+@@ -153,7 +153,7 @@ struct AInputDevice {
+ 
+ namespace android {
+ 
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(ARC_WASM)  // arc-wasm: Parcel code for the JNI
+ class Parcel;
+ #endif
+ 
+@@ -248,7 +248,7 @@ struct PointerCoords {
+         return getAxisValue(AMOTION_EVENT_AXIS_Y);
+     }
+ 
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(ARC_WASM)  // arc-wasm: Parcel code for the JNI
+     status_t readFromParcel(Parcel* parcel);
+     status_t writeToParcel(Parcel* parcel) const;
+ #endif
+@@ -586,7 +586,7 @@ public:
+     // Matrix is in row-major form and compatible with SkMatrix.
+     void transform(const float matrix[9]);
+ 
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(ARC_WASM)  // arc-wasm: Parcel code for the JNI
+     status_t readFromParcel(Parcel* parcel);
+     status_t writeToParcel(Parcel* parcel) const;
+ #endif
+diff --git a/frameworks/native/include/input/KeyCharacterMap.h b/frameworks/native/include/input/KeyCharacterMap.h
+index 79359277c..c2306a5b5 100644
+--- a/frameworks/native/include/input/KeyCharacterMap.h
++++ b/frameworks/native/include/input/KeyCharacterMap.h
+@@ -19,7 +19,7 @@
+ 
+ #include <stdint.h>
+ 
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(ARC_WASM)  // arc-wasm: Parcel code for the JNI
+ #include <binder/IBinder.h>
+ #endif
+ 
+@@ -132,7 +132,7 @@ public:
+     void tryRemapKey(int32_t scanCode, int32_t metaState,
+             int32_t* outKeyCode, int32_t* outMetaState) const;
+ 
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(ARC_WASM)  // arc-wasm: Parcel code for the JNI
+     /* Reads a key map from a parcel. */
+     static sp<KeyCharacterMap> readFromParcel(Parcel* parcel);
+ 
+diff --git a/frameworks/native/libs/gui/GLConsumer.cpp b/frameworks/native/libs/gui/GLConsumer.cpp
+index 14d993714..963bb8b8d 100644
+--- a/frameworks/native/libs/gui/GLConsumer.cpp
++++ b/frameworks/native/libs/gui/GLConsumer.cpp
+@@ -1185,6 +1185,9 @@ GLConsumer::EglImage::EglImage(sp<GraphicBuffer> graphicBuffer) :
+ }
+ 
+ GLConsumer::EglImage::~EglImage() {
++#ifdef ARC_WASM
++    return;  // no EGLImage was made (see bindToTextureTarget)
++#endif
+     if (mEglImage != EGL_NO_IMAGE_KHR) {
+         if (!eglDestroyImageKHR(mEglDisplay, mEglImage)) {
+            ALOGE("~EglImage: eglDestroyImageKHR failed");
+@@ -1196,6 +1199,16 @@ GLConsumer::EglImage::~EglImage() {
+ status_t GLConsumer::EglImage::createIfNeeded(EGLDisplay eglDisplay,
+                                               const Rect& cropRect,
+                                               bool forceCreation) {
++#ifdef ARC_WASM
++    // arc-wasm: the buffers are software gralloc memory (IAllocator/IMapper
++    // 2.0 over shim/fw6-graphics/gralloc_sw.cc), which no EGLImage of
++    // graphics_translation's or WebGL's can wrap; bindToTextureTarget
++    // uploads their pixels instead (as for 6.0.1, topic mediacodec).
++    mEglDisplay = eglDisplay;
++    mCropRect = cropRect;
++    mEglImage = reinterpret_cast<EGLImageKHR>(this);
++    return OK;
++#endif
+     // If there's an image and it's no longer valid, destroy it.
+     bool haveImage = mEglImage != EGL_NO_IMAGE_KHR;
+     bool displayInvalid = mEglDisplay != eglDisplay;
+@@ -1231,6 +1244,52 @@ status_t GLConsumer::EglImage::createIfNeeded(EGLDisplay eglDisplay,
+ }
+ 
+ void GLConsumer::EglImage::bindToTextureTarget(uint32_t texTarget) {
++#ifdef ARC_WASM
++    // arc-wasm: the buffer's pixels into the texture bound to texTarget (an
++    // external texture: graphics_translation and hwui's GL emulate it with a
++    // TEXTURE_2D and take TexImage2D into it). Rows as in memory, as an
++    // EGLImage of the buffer would have them: getTransformMatrix's flip
++    // applies as usual. RGBX gets an opaque alpha.
++    const sp<GraphicBuffer>& b = mGraphicBuffer;
++    GLenum format, type;
++    size_t bpp;
++    const bool opaque = b->getPixelFormat() == HAL_PIXEL_FORMAT_RGBX_8888;
++    switch (b->getPixelFormat()) {
++        case HAL_PIXEL_FORMAT_RGBA_8888:
++        case HAL_PIXEL_FORMAT_RGBX_8888:
++            format = GL_RGBA; type = GL_UNSIGNED_BYTE; bpp = 4;
++            break;
++        case HAL_PIXEL_FORMAT_RGB_565:
++            format = GL_RGB; type = GL_UNSIGNED_SHORT_5_6_5; bpp = 2;
++            break;
++        default:
++            ALOGE("bindToTextureTarget: no upload of pixel format %d", b->getPixelFormat());
++            return;
++    }
++    void* vaddr = NULL;
++    if (b->lock(GRALLOC_USAGE_SW_READ_OFTEN, &vaddr) != NO_ERROR || vaddr == NULL) {
++        ALOGE("bindToTextureTarget: cannot lock the buffer");
++        return;
++    }
++    const uint32_t w = b->getWidth(), h = b->getHeight(), stride = b->getStride();
++    const uint8_t* pixels = static_cast<const uint8_t*>(vaddr);
++    uint8_t* packed = NULL;
++    if (stride != w || opaque) {
++        packed = new uint8_t[w * h * bpp];
++        for (uint32_t y = 0; y < h; y++)
++            memcpy(packed + y * w * bpp, pixels + y * stride * bpp, w * bpp);
++        if (opaque) {
++            for (size_t i = 3; i < size_t(w) * h * 4; i += 4)
++                packed[i] = 0xff;
++        }
++        pixels = packed;
++    }
++    glPixelStorei(GL_UNPACK_ALIGNMENT, bpp == 4 ? 4 : 2);
++    glTexImage2D(texTarget, 0, format, w, h, 0, format, type, pixels);
++    delete[] packed;
++    b->unlock();
++    return;
++#endif
+     glEGLImageTargetTexture2DOES(texTarget,
+             static_cast<GLeglImageOES>(mEglImage));
+ }
+diff --git a/frameworks/native/libs/gui/SurfaceComposerClient.cpp b/frameworks/native/libs/gui/SurfaceComposerClient.cpp
+index 7ae267224..d2a7f3a80 100644
+--- a/frameworks/native/libs/gui/SurfaceComposerClient.cpp
++++ b/frameworks/native/libs/gui/SurfaceComposerClient.cpp
+@@ -54,9 +54,20 @@ ComposerService::ComposerService()
+     connectLocked();
+ }
+ 
++#ifdef ARC_WASM
++// arc-wasm: SurfaceFlinger runs in the app's process (shim/fw8-graphics).
++sp<ISurfaceComposer> arc_wasm_local_surface_composer() __attribute__((weak));
++#endif
++
+ void ComposerService::connectLocked() {
+     const String16 name("SurfaceFlinger");
++#ifdef ARC_WASM
++    if (arc_wasm_local_surface_composer)
++        mComposerService = arc_wasm_local_surface_composer();
++    while (mComposerService == NULL && getService(name, &mComposerService) != NO_ERROR) {
++#else
+     while (getService(name, &mComposerService) != NO_ERROR) {
++#endif
+         usleep(250000);
+     }
+     assert(mComposerService != NULL);
+diff --git a/frameworks/native/libs/input/Input.cpp b/frameworks/native/libs/input/Input.cpp
+index a6246636a..c3f0176e6 100644
+--- a/frameworks/native/libs/input/Input.cpp
++++ b/frameworks/native/libs/input/Input.cpp
+@@ -23,7 +23,7 @@
+ #include <input/Input.h>
+ #include <input/InputEventLabels.h>
+ 
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(ARC_WASM)  // arc-wasm: Parcel code for the JNI
+ #include <binder/Parcel.h>
+ #endif
+ 
+@@ -144,7 +144,7 @@ void PointerCoords::applyOffset(float xOffset, float yOffset) {
+     setAxisValue(AMOTION_EVENT_AXIS_Y, getY() + yOffset);
+ }
+ 
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(ARC_WASM)  // arc-wasm: Parcel code for the JNI
+ status_t PointerCoords::readFromParcel(Parcel* parcel) {
+     bits = parcel->readInt64();
+ 
+@@ -420,7 +420,7 @@ void MotionEvent::transform(const float matrix[9]) {
+     }
+ }
+ 
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(ARC_WASM)  // arc-wasm: Parcel code for the JNI
+ status_t MotionEvent::readFromParcel(Parcel* parcel) {
+     size_t pointerCount = parcel->readInt32();
+     size_t sampleCount = parcel->readInt32();
+diff --git a/frameworks/native/libs/input/KeyCharacterMap.cpp b/frameworks/native/libs/input/KeyCharacterMap.cpp
+index 0627ca6d6..0b6b91052 100644
+--- a/frameworks/native/libs/input/KeyCharacterMap.cpp
++++ b/frameworks/native/libs/input/KeyCharacterMap.cpp
+@@ -19,7 +19,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(ARC_WASM)  // arc-wasm: Parcel code for the JNI
+ #include <binder/Parcel.h>
+ #endif
+ 
+@@ -599,7 +599,7 @@ void KeyCharacterMap::addLockedMetaKey(Vector<KeyEvent>& outEvents,
+     }
+ }
+ 
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(ARC_WASM)  // arc-wasm: Parcel code for the JNI
+ sp<KeyCharacterMap> KeyCharacterMap::readFromParcel(Parcel* parcel) {
+     sp<KeyCharacterMap> map = new KeyCharacterMap();
+     map->mType = parcel->readInt32();
+diff --git a/frameworks/native/libs/ui/Gralloc2.cpp b/frameworks/native/libs/ui/Gralloc2.cpp
+index 0eb08e59a..7d38ab2e0 100644
+--- a/frameworks/native/libs/ui/Gralloc2.cpp
++++ b/frameworks/native/libs/ui/Gralloc2.cpp
+@@ -26,6 +26,15 @@
+ #include <sync/sync.h>
+ #pragma clang diagnostic pop
+ 
++#ifdef ARC_WASM
++// arc-wasm: no hwservicemanager and no dlopen; the passthrough HAL's
++// implementations (hardware/interfaces/graphics/{mapper,allocator}/2.0/default
++// over the software gralloc of shim/fw6-graphics/gralloc_sw.cc) are linked in.
++extern "C" android::hardware::graphics::mapper::V2_0::IMapper* HIDL_FETCH_IMapper(const char* name);
++extern "C" android::hardware::graphics::allocator::V2_0::IAllocator* HIDL_FETCH_IAllocator(
++        const char* name);
++#endif
++
+ namespace android {
+ 
+ namespace Gralloc2 {
+@@ -33,12 +42,18 @@ namespace Gralloc2 {
+ static constexpr Error kTransactionError = Error::NO_RESOURCES;
+ 
+ void Mapper::preload() {
++#ifndef ARC_WASM
+     android::hardware::preloadPassthroughService<hardware::graphics::mapper::V2_0::IMapper>();
++#endif
+ }
+ 
+ Mapper::Mapper()
+ {
++#ifdef ARC_WASM
++    mMapper = HIDL_FETCH_IMapper("default");
++#else
+     mMapper = IMapper::getService();
++#endif
+     if (mMapper == nullptr || mMapper->isRemote()) {
+         LOG_ALWAYS_FATAL("gralloc-mapper must be in passthrough mode");
+     }
+@@ -202,7 +217,11 @@ int Mapper::unlock(buffer_handle_t bufferHandle) const
+ Allocator::Allocator(const Mapper& mapper)
+     : mMapper(mapper)
+ {
++#ifdef ARC_WASM
++    mAllocator = HIDL_FETCH_IAllocator("default");
++#else
+     mAllocator = IAllocator::getService();
++#endif
+     if (mAllocator == nullptr) {
+         LOG_ALWAYS_FATAL("gralloc-alloc is missing");
+     }
+@@ -248,7 +267,9 @@ Error Allocator::allocate(BufferDescriptor descriptor, uint32_t count,
+             });
+ 
+     // make sure the kernel driver sees BC_FREE_BUFFER and closes the fds now
+-    hardware::IPCThreadState::self()->flushCommands();
++#ifndef ARC_WASM  // (no hwbinder: the HAL is in the process)
++        hardware::IPCThreadState::self()->flushCommands();
++#endif
+ 
+     return (ret.isOk()) ? error : kTransactionError;
+ }

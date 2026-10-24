@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hello from arc-wasm</title>
+<!-- A local page for Firefox on arc-wasm's Android 8.1 (topic firefox8):
+     tools/serve.py serves it; Gecko reaches the Mac's loopback through the
+     network relay (http://localhost:PORT/firefox8-web/hello.html). -->
+<style>
+  body { font: 18px/1.4 sans-serif; margin: 16px; background: #f4f1ff; color: #1d1b2e; }
+  h1 { font-size: 26px; color: #5b2fd6; }
+  .boxes { display: flex; gap: 8px; margin: 16px 0; }
+  .boxes div { flex: 1; height: 48px; border-radius: 8px; }
+  #js { font-weight: bold; }
+</style>
+<h1>Hello from arc-wasm</h1>
+<p>This page comes from <code>tools/serve.py</code> on the Mac, through the
+  WebSocket relay, into Gecko running on Android&nbsp;8.1 in WebAssembly.</p>
+<div class="boxes">
+  <div style="background:#e8453c"></div><div style="background:#f4b400"></div>
+  <div style="background:#0f9d58"></div><div style="background:#4285f4"></div>
+</div>
+<p>JavaScript: <span id="js">off</span></p>
+<p><a href="https://example.com/">example.com</a></p>
+<script>
+  var n = 0;
+  document.getElementById('js').textContent = 'on, ' + navigator.userAgent;
+  setInterval(function () {
+    document.title = 'Hello from arc-wasm (' + (++n) + ')';
+  }, 1000);
+</script>
+</html>

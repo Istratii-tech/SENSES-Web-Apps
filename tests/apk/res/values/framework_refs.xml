@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- References into the framework package (android, 0x01) for
+     arcwasm.FrameworkResTest: they resolve only when
+     /system/framework/framework-res.apk is loaded. -->
+<resources>
+    <string name="ok_label">@android:string/ok</string>
+    <color name="system_black">@android:color/black</color>
+    <dimen name="icon_size">@android:dimen/app_icon_size</dimen>
+    <style name="AppTheme" parent="@android:style/Theme.Holo.Light">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:colorForeground">@color/accent</item>
+    </style>
+</resources>

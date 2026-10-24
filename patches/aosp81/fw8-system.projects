@@ -1,0 +1,10 @@
+# Topic fw8-system: the in-process system_server, ActivityThread, windows and
+# the NDK bridge on Android 8.1.
+# sqlite: SQLite 8.1 and android.database's JNI (as topic tiktok for 6.0.1);
+# wilhelm: OpenSL ES headers for the NDK bridge's audio half;
+# media, libhardware: system/audio.h and hardware headers the audio JNI and
+# camera/sensor stubs include.
+external/sqlite
+frameworks/wilhelm
+system/media
+hardware/libhardware

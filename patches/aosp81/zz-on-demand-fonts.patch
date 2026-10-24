@@ -1,0 +1,688 @@
+diff --git a/external/skia/src/ports/SkFontMgr_android.cpp b/external/skia/src/ports/SkFontMgr_android.cpp
+index a180215e8..ca2e59772 100644
+--- a/external/skia/src/ports/SkFontMgr_android.cpp
++++ b/external/skia/src/ports/SkFontMgr_android.cpp
+@@ -79,7 +79,15 @@ public:
+             sk_sp<SkData> data(SkData::MakeFromFILE(fFile));
+             return data ? skstd::make_unique<SkMemoryStream>(std::move(data)) : nullptr;
+         }
++#ifdef ARC_WASM
++        // arc-wasm (fonts on demand): FreeType reads the font through a file
++        // stream; SkStream::MakeFromFile maps the file, and in WebAssembly a
++        // mapping is filled completely when it is made.
++        std::unique_ptr<SkFILEStream> stream(new SkFILEStream(fPathName.c_str()));
++        return stream->isValid() ? std::move(stream) : nullptr;
++#else
+         return SkStream::MakeFromFile(fPathName.c_str());
++#endif
+     }
+ 
+     virtual void onGetFontDescriptor(SkFontDescriptor* desc, bool* serialize) const override {
+@@ -157,7 +165,18 @@ public:
+             SkString pathName(family.fBasePath);
+             pathName.append(fontFile.fFileName);
+ 
++#ifdef ARC_WASM
++            // arc-wasm (fonts on demand): every system font is scanned here
++            // (name, style, axes) when the font manager is made; through a file
++            // stream FreeType reads only the tables it needs, while a mapping
++            // (SkStream::MakeFromFile) filled all of every font in WebAssembly.
++            std::unique_ptr<SkStreamAsset> stream(new SkFILEStream(pathName.c_str()));
++            if (!static_cast<SkFILEStream*>(stream.get())->isValid()) {
++                stream.reset();
++            }
++#else
+             std::unique_ptr<SkStreamAsset> stream = SkStream::MakeFromFile(pathName.c_str());
++#endif
+             if (!stream) {
+                 SkDEBUGF(("Requested font file %s does not exist or cannot be opened.\n",
+                           pathName.c_str()));
+diff --git a/frameworks/base/core/jni/android/graphics/FontFamily.cpp b/frameworks/base/core/jni/android/graphics/FontFamily.cpp
+index 4cf2b562b..ccefd61ea 100644
+--- a/frameworks/base/core/jni/android/graphics/FontFamily.cpp
++++ b/frameworks/base/core/jni/android/graphics/FontFamily.cpp
+@@ -22,6 +22,7 @@
+ #include "SkData.h"
+ #include "SkFontMgr.h"
+ #include "SkRefCnt.h"
++#include "SkStream.h"
+ #include "SkTypeface.h"
+ #include "GraphicsJNI.h"
+ #include <nativehelper/ScopedPrimitiveArray.h>
+@@ -96,15 +97,35 @@ static void FontFamily_unref(jlong familyPtr) {
+ }
+ 
+ static bool addSkTypeface(NativeFamilyBuilder* builder, sk_sp<SkData>&& data, int ttcIndex,
+-        jint givenWeight, jint givenItalic) {
++        jint givenWeight, jint givenItalic, const char* filePath = nullptr) {
+     uirenderer::FatVector<SkFontMgr::FontParameters::Axis, 2> skiaAxes;
+     for (const auto& axis : builder->axes) {
+         skiaAxes.emplace_back(SkFontMgr::FontParameters::Axis{axis.axisTag, axis.value});
+     }
+ 
+-    const size_t fontSize = data->size();
+-    const void* fontPtr = data->data();
+-    std::unique_ptr<SkStreamAsset> fontData(new SkMemoryStream(std::move(data)));
++    size_t fontSize;
++    const void* fontPtr;
++    std::unique_ptr<SkStreamAsset> fontData;
++    if (filePath != nullptr) {
++        // arc-wasm (fonts on demand): a system font left in its file
++        // (FontFamily.addFontFromFile, Typeface.makeFamilyFromParsed). Skia
++        // reads it through a file stream (FreeType reads what it needs),
++        // minikin table by table (MinikinFont::GetFontPath): nothing maps the
++        // whole font, which in WebAssembly would fill all of it.
++        fontData.reset(new SkFILEStream(filePath));
++        if (!static_cast<SkFILEStream*>(fontData.get())->isValid() ||
++                fontData->getLength() == 0) {
++            ALOGE("addFont failed to open %s", filePath);
++            builder->axes.clear();
++            return false;
++        }
++        fontSize = fontData->getLength();
++        fontPtr = nullptr;
++    } else {
++        fontSize = data->size();
++        fontPtr = data->data();
++        fontData.reset(new SkMemoryStream(std::move(data)));
++    }
+ 
+     SkFontMgr::FontParameters params;
+     params.setCollectionIndex(ttcIndex);
+@@ -117,8 +138,10 @@ static bool addSkTypeface(NativeFamilyBuilder* builder, sk_sp<SkData>&& data, in
+         builder->axes.clear();
+         return false;
+     }
+-    std::shared_ptr<minikin::MinikinFont> minikinFont =
+-            std::make_shared<MinikinFontSkia>(std::move(face), fontPtr, fontSize, ttcIndex,
++    std::shared_ptr<minikin::MinikinFont> minikinFont = filePath != nullptr
++            ? std::make_shared<MinikinFontSkia>(std::move(face), filePath, fontSize, ttcIndex,
++                    builder->axes)
++            : std::make_shared<MinikinFontSkia>(std::move(face), fontPtr, fontSize, ttcIndex,
+                     builder->axes);
+ 
+     int weight = givenWeight / 100;
+@@ -211,6 +234,19 @@ static jboolean FontFamily_addFontWeightStyle(JNIEnv* env, jobject clazz, jlong
+     return addSkTypeface(builder, std::move(data), ttcIndex, weight, isItalic);
+ }
+ 
++// arc-wasm (fonts on demand): the font stays in its file (see addSkTypeface).
++static jboolean FontFamily_addFontFromFile(JNIEnv* env, jobject clazz, jlong builderPtr,
++        jstring path, jint ttcIndex, jint weight, jint isItalic) {
++    NPE_CHECK_RETURN_ZERO(env, path);
++    NativeFamilyBuilder* builder = reinterpret_cast<NativeFamilyBuilder*>(builderPtr);
++    ScopedUtfChars str(env, path);
++    if (str.c_str() == nullptr) {
++        builder->axes.clear();
++        return false;
++    }
++    return addSkTypeface(builder, nullptr, ttcIndex, weight, isItalic, str.c_str());
++}
++
+ static void releaseAsset(const void* ptr, void* context) {
+     delete static_cast<Asset*>(context);
+ }
+@@ -277,6 +313,7 @@ static const JNINativeMethod gFontFamilyMethods[] = {
+     { "nAddFontFromAssetManager",    "(JLandroid/content/res/AssetManager;Ljava/lang/String;IZIII)Z",
+             (void*)FontFamily_addFontFromAssetManager },
+     { "nAddAxisValue",         "(JIF)V", (void*)FontFamily_addAxisValue },
++    { "nAddFontFromFile",      "(JLjava/lang/String;III)Z", (void*)FontFamily_addFontFromFile },
+ };
+ 
+ int register_android_graphics_FontFamily(JNIEnv* env)
+diff --git a/frameworks/base/graphics/java/android/graphics/FontFamily.java b/frameworks/base/graphics/java/android/graphics/FontFamily.java
+index d9a77e752..12f73af97 100644
+--- a/frameworks/base/graphics/java/android/graphics/FontFamily.java
++++ b/frameworks/base/graphics/java/android/graphics/FontFamily.java
+@@ -123,6 +123,26 @@ public class FontFamily {
+         return nAddFontWeightStyle(mBuilderPtr, font, ttcIndex, weight, italic);
+     }
+ 
++    /**
++     * arc-wasm (fonts on demand): adds a font that stays in its file: the
++     * native font reads the file a table and a glyph at a time instead of a
++     * mapping. In WebAssembly a mapping is filled completely when it is made,
++     * so mapping every system font at start filled all of them (19 MB) for
++     * the few tables text layout reads. Used by Typeface for the system fonts.
++     */
++    public boolean addFontFromFile(String path, int ttcIndex, FontVariationAxis[] axes,
++            int weight, int italic) {
++        if (mBuilderPtr == 0) {
++            throw new IllegalStateException("Unable to call addFontFromFile after freezing.");
++        }
++        if (axes != null) {
++            for (FontVariationAxis axis : axes) {
++                nAddAxisValue(mBuilderPtr, axis.getOpenTypeTagValue(), axis.getStyleValue());
++            }
++        }
++        return nAddFontFromFile(mBuilderPtr, path, ttcIndex, weight, italic);
++    }
++
+     /**
+      * @param mgr The AssetManager to use for this context.
+      * @param path The path to the font file to load.
+@@ -199,4 +219,6 @@ public class FontFamily {
+     // The added axis values are only valid for the next nAddFont* method call.
+     @CriticalNative
+     private static native void nAddAxisValue(long builderPtr, int tag, float value);
++    private static native boolean nAddFontFromFile(long builderPtr, String path, int ttcIndex,
++            int weight, int isItalic);
+ }
+diff --git a/frameworks/base/graphics/java/android/graphics/Typeface.java b/frameworks/base/graphics/java/android/graphics/Typeface.java
+index c4b56c333..31f83657d 100644
+--- a/frameworks/base/graphics/java/android/graphics/Typeface.java
++++ b/frameworks/base/graphics/java/android/graphics/Typeface.java
+@@ -885,24 +885,32 @@ public class Typeface {
+         mWeight = nativeGetWeight(ni);
+     }
+ 
++    // arc-wasm (fonts on demand): bufferForPath's mark of a readable font file.
++    private static final ByteBuffer FONT_ON_DEMAND = ByteBuffer.allocate(0);
++
+     private static FontFamily makeFamilyFromParsed(FontConfig.Family family,
+             Map<String, ByteBuffer> bufferForPath) {
+         FontFamily fontFamily = new FontFamily(family.getLanguage(), family.getVariant());
+         for (FontConfig.Font font : family.getFonts()) {
+             String fullPathName = "/system/fonts/" + font.getFontName();
+-            ByteBuffer fontBuffer = bufferForPath.get(fullPathName);
+-            if (fontBuffer == null) {
+-                try (FileInputStream file = new FileInputStream(fullPathName)) {
+-                    FileChannel fileChannel = file.getChannel();
+-                    long fontSize = fileChannel.size();
+-                    fontBuffer = fileChannel.map(FileChannel.MapMode.READ_ONLY, 0, fontSize);
+-                    bufferForPath.put(fullPathName, fontBuffer);
+-                } catch (IOException e) {
++            // arc-wasm (fonts on demand): the font is not mapped but stays in
++            // its file (FontFamily.addFontFromFile): in WebAssembly a mapping
++            // is filled completely when it is made, and text layout reads only
++            // a few tables and glyphs of each font. bufferForPath only
++            // remembers which files can be read (one that cannot is skipped,
++            // as one that failed to mmap).
++            if (!bufferForPath.containsKey(fullPathName)) {
++                final File file = new File(fullPathName);
++                final boolean readable = file.canRead() && file.length() > 0;
++                if (!readable) {
+                     Log.e(TAG, "Error mapping font file " + fullPathName);
+-                    continue;
+                 }
++                bufferForPath.put(fullPathName, readable ? FONT_ON_DEMAND : null);
++            }
++            if (bufferForPath.get(fullPathName) == null) {
++                continue;
+             }
+-            if (!fontFamily.addFontFromBuffer(fontBuffer, font.getTtcIndex(), font.getAxes(),
++            if (!fontFamily.addFontFromFile(fullPathName, font.getTtcIndex(), font.getAxes(),
+                     font.getWeight(), font.isItalic() ? STYLE_ITALIC : STYLE_NORMAL)) {
+                 Log.e(TAG, "Error creating font " + fullPathName + "#" + font.getTtcIndex());
+             }
+diff --git a/frameworks/base/libs/hwui/hwui/MinikinSkia.cpp b/frameworks/base/libs/hwui/hwui/MinikinSkia.cpp
+index ba4e3a4df..a07e94bd2 100644
+--- a/frameworks/base/libs/hwui/hwui/MinikinSkia.cpp
++++ b/frameworks/base/libs/hwui/hwui/MinikinSkia.cpp
+@@ -30,6 +30,13 @@ MinikinFontSkia::MinikinFontSkia(sk_sp<SkTypeface> typeface, const void* fontDat
+     mFontSize(fontSize), mTtcIndex(ttcIndex), mAxes(axes) {
+ }
+ 
++MinikinFontSkia::MinikinFontSkia(sk_sp<SkTypeface> typeface, const char* filePath,
++        size_t fontSize, int ttcIndex, const std::vector<minikin::FontVariation>& axes) :
++    MinikinFontSkia(std::move(typeface), static_cast<const void*>(nullptr), fontSize, ttcIndex,
++            axes) {
++    mFilePath = filePath;
++}
++
+ static void MinikinFontSkia_SetSkiaPaint(const minikin::MinikinFont* font, SkPaint* skPaint,
+         const minikin::MinikinPaint& paint) {
+     skPaint->setTextEncoding(SkPaint::kGlyphID_TextEncoding);
+@@ -110,6 +117,10 @@ std::shared_ptr<minikin::MinikinFont> MinikinFontSkia::createFontWithVariation(
+     sk_sp<SkFontMgr> fm(SkFontMgr::RefDefault());
+     sk_sp<SkTypeface> face(fm->createFromStream(stream, params));
+ 
++    if (mFontData == nullptr && !mFilePath.empty()) {  // arc-wasm (fonts on demand)
++        return std::make_shared<MinikinFontSkia>(std::move(face), mFilePath.c_str(), mFontSize,
++                ttcIndex, variations);
++    }
+     return std::make_shared<MinikinFontSkia>(std::move(face), mFontData, mFontSize, ttcIndex,
+             variations);
+ }
+diff --git a/frameworks/base/libs/hwui/hwui/MinikinSkia.h b/frameworks/base/libs/hwui/hwui/MinikinSkia.h
+index 6c1248584..67ceea2c9 100644
+--- a/frameworks/base/libs/hwui/hwui/MinikinSkia.h
++++ b/frameworks/base/libs/hwui/hwui/MinikinSkia.h
+@@ -21,6 +21,8 @@
+ #include <minikin/MinikinFont.h>
+ #include <SkRefCnt.h>
+ 
++#include <string>
++
+ class SkPaint;
+ class SkTypeface;
+ 
+@@ -30,6 +32,13 @@ class ANDROID_API MinikinFontSkia : public minikin::MinikinFont {
+ public:
+     explicit MinikinFontSkia(sk_sp<SkTypeface> typeface, const void* fontData, size_t fontSize,
+         int ttcIndex, const std::vector<minikin::FontVariation>& axes);
++    // arc-wasm (fonts on demand): a font with no data in memory, only its file
++    // (FontFamily.cpp, system fonts): minikin reads the tables from there.
++    MinikinFontSkia(sk_sp<SkTypeface> typeface, const char* filePath, size_t fontSize,
++        int ttcIndex, const std::vector<minikin::FontVariation>& axes);
++    const char* GetFontPath() const override {
++        return mFontData == nullptr && !mFilePath.empty() ? mFilePath.c_str() : nullptr;
++    }
+ 
+     float GetHorizontalAdvance(uint32_t glyph_id,
+         const minikin::MinikinPaint &paint) const;
+@@ -63,6 +72,7 @@ private:
+     size_t mFontSize;
+     int mTtcIndex;
+     std::vector<minikin::FontVariation> mAxes;
++    std::string mFilePath;  // arc-wasm (fonts on demand)
+ };
+ 
+ }  // namespace android
+diff --git a/frameworks/minikin/include/minikin/MinikinFont.h b/frameworks/minikin/include/minikin/MinikinFont.h
+index 01af786aa..bc76d9761 100644
+--- a/frameworks/minikin/include/minikin/MinikinFont.h
++++ b/frameworks/minikin/include/minikin/MinikinFont.h
+@@ -106,6 +106,13 @@ public:
+         return 0;
+     }
+ 
++    // arc-wasm (fonts on demand): a font that is not in memory (GetFontData()
++    // is null) but in this file. Its HarfBuzz face reads the tables it needs
++    // from the file one at a time (HbFontCache) instead of the whole file.
++    virtual const char* GetFontPath() const {
++        return nullptr;
++    }
++
+     // Override if font can provide access to raw data.
+     // Returns index within OpenType collection
+     virtual int GetFontIndex() const {
+diff --git a/frameworks/minikin/libs/minikin/HbFontCache.cpp b/frameworks/minikin/libs/minikin/HbFontCache.cpp
+index af3d783bc..c71cde50f 100644
+--- a/frameworks/minikin/libs/minikin/HbFontCache.cpp
++++ b/frameworks/minikin/libs/minikin/HbFontCache.cpp
+@@ -18,6 +18,18 @@
+ 
+ #include "HbFontCache.h"
+ 
++#include <errno.h>
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include <algorithm>
++#include <cmath>
++#include <mutex>
++#include <string>
++#include <vector>
++
+ #include <log/log.h>
+ #include <utils/LruCache.h>
+ 
+@@ -29,6 +41,296 @@
+ 
+ namespace minikin {
+ 
++// arc-wasm (fonts on demand): the HarfBuzz face of a font that is a file and
++// not in memory (MinikinFont::GetFontPath; getHbFontLocked). Mapping a whole font fills all of
++// it in WebAssembly (no MMU: a mapping is complete when mmap returns), while
++// layout reads only the table directory and a few tables (cmap for the
++// coverage; GSUB, GPOS, GDEF, hmtx... when shaping with it). So each table is
++// mapped by itself when HarfBuzz first asks for it: the mapping starts at the
++// 64 KiB page that holds the table (the VFS's mmap offsets are multiples of
++// the wasm page; also a multiple of any CPU page), MAP_SHARED and read-only,
++// which the VFS gives as the /system image's own pages.
++namespace {
++
++struct FileFaceTable {
++    uint32_t tag;
++    uint32_t offset;
++    uint32_t length;
++};
++
++// Glyph extents of a color bitmap font (CBDT/CBLC) without CBDT in memory:
++// minikin asks HarfBuzz for the extents of every emoji it lays out (Layout),
++// and HarfBuzz's CBDT code holds the whole table (here 9 MB of PNGs) to read
++// four bytes of metrics per glyph. FileFaceBitmaps does what HarfBuzz 1.4.2
++// does (hb-ot-font.cc, hb_ot_face_cbdt_accelerator_t, hb-ot-cbdt-table.hh,
++// and the em scaling of hb_ot_get_glyph_extents) with CBLC mapped and the
++// glyph's metrics read from the file.
++struct FileFaceBitmaps {
++    std::once_flag once;
++    hb_blob_t* cblc = nullptr;
++    uint32_t cbdtOffset = 0;
++    uint32_t cbdtLength = 0;  // 0 if CBDT is not valid (as HarfBuzz's empty blob)
++    int upem = 0;
++};
++
++struct FileFace {
++    std::string path;
++    std::vector<FileFaceTable> tables;
++    FileFaceBitmaps bitmaps;
++
++    const FileFaceTable* find(uint32_t tag) const {
++        for (const FileFaceTable& t : tables) {
++            if (t.tag == tag && t.length > 0) return &t;
++        }
++        return nullptr;
++    }
++    ~FileFace() { hb_blob_destroy(bitmaps.cblc); }
++};
++
++hb_user_data_key_t gFileFaceKey;
++
++struct FileFaceMapping {
++    void* addr;
++    size_t length;
++};
++
++uint32_t readBe32(const uint8_t* p) {
++    return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
++}
++
++bool preadFully(int fd, void* buf, size_t len, off_t off) {
++    uint8_t* p = reinterpret_cast<uint8_t*>(buf);
++    while (len > 0) {
++        ssize_t n = pread(fd, p, len, off);
++        if (n < 0 && errno == EINTR) continue;
++        if (n <= 0) return false;
++        p += n;
++        len -= n;
++        off += n;
++    }
++    return true;
++}
++
++// The table records of the font (of font ttcIndex of a collection).
++bool readFileFaceTables(int fd, uint32_t ttcIndex, std::vector<FileFaceTable>* out) {
++    struct stat st;
++    if (fstat(fd, &st) != 0) return false;
++    uint8_t header[12];
++    if (!preadFully(fd, header, sizeof(header), 0)) return false;
++    uint32_t base = 0;
++    if (readBe32(header) == MinikinFont::MakeTag('t', 't', 'c', 'f')) {
++        if (ttcIndex >= readBe32(header + 8)) return false;
++        uint8_t offset[4];
++        if (!preadFully(fd, offset, sizeof(offset), 12 + 4 * ttcIndex)) return false;
++        base = readBe32(offset);
++        if (!preadFully(fd, header, sizeof(header), base)) return false;
++    }
++    const uint32_t numTables = (uint32_t(header[4]) << 8) | header[5];
++    std::vector<uint8_t> records(16 * numTables);
++    if (!preadFully(fd, records.data(), records.size(), base + 12)) return false;
++    for (uint32_t i = 0; i < numTables; i++) {
++        const uint8_t* r = &records[16 * i];
++        FileFaceTable t = {readBe32(r), readBe32(r + 8), readBe32(r + 12)};
++        if (uint64_t(t.offset) + t.length > uint64_t(st.st_size)) continue;
++        out->push_back(t);
++    }
++    return true;
++}
++
++hb_blob_t* referenceFileFaceTable(hb_face_t*, hb_tag_t tag, void* userData) {
++    const FileFace* face = reinterpret_cast<const FileFace*>(userData);
++    for (const FileFaceTable& t : face->tables) {
++        if (t.tag != tag) continue;
++        if (t.length == 0) return nullptr;
++        int fd = open(face->path.c_str(), O_RDONLY | O_CLOEXEC);
++        if (fd < 0) return nullptr;
++        constexpr uint32_t kPage = 65536;
++        const uint32_t start = t.offset & ~(kPage - 1);
++        const size_t length = t.offset + t.length - start;
++        void* addr = mmap(nullptr, length, PROT_READ, MAP_SHARED, fd, start);
++        close(fd);
++        if (addr == MAP_FAILED) {
++            ALOGE("Could not map table %08x of %s", tag, face->path.c_str());
++            return nullptr;
++        }
++        FileFaceMapping* mapping = new FileFaceMapping{addr, length};
++        return hb_blob_create(reinterpret_cast<const char*>(addr) + (t.offset - start), t.length,
++                              HB_MEMORY_MODE_READONLY, mapping, [](void* p) {
++                                  FileFaceMapping* m = reinterpret_cast<FileFaceMapping*>(p);
++                                  munmap(m->addr, m->length);
++                                  delete m;
++                              });
++    }
++    return nullptr;
++}
++
++uint16_t readBe16(const uint8_t* p) {
++    return (uint16_t(p[0]) << 8) | p[1];
++}
++
++// HarfBuzz's hb_font_t::em_scale.
++hb_position_t emScale(int16_t v, int scale, int upem) {
++    int64_t scaled = v * (int64_t)scale;
++    scaled += scaled >= 0 ? upem / 2 : -upem / 2;
++    return (hb_position_t)(scaled / upem);
++}
++
++bool fileFaceBitmapExtentsInFontUnits(FileFace* face, hb_font_t* font, hb_codepoint_t glyph,
++                                      hb_glyph_extents_t* extents) {
++    FileFaceBitmaps& b = face->bitmaps;
++    std::call_once(b.once, [&]() {
++        hb_face_t* hbFace = hb_font_get_face(font);
++        b.cblc = hb_face_reference_table(hbFace, MinikinFont::MakeTag('C', 'B', 'L', 'C'));
++        b.upem = hb_face_get_upem(hbFace);
++        const FileFaceTable* cbdt = face->find(MinikinFont::MakeTag('C', 'B', 'D', 'T'));
++        uint8_t version[4];
++        int fd = open(face->path.c_str(), O_RDONLY | O_CLOEXEC);
++        if (cbdt != nullptr && fd >= 0 && cbdt->length >= 4 &&
++            preadFully(fd, version, sizeof(version), cbdt->offset) &&
++            (readBe16(version) == 2 || readBe16(version) == 3)) {
++            b.cbdtOffset = cbdt->offset;
++            b.cbdtLength = cbdt->length;
++        }
++        if (fd >= 0) close(fd);
++    });
++    unsigned int cblcLength = 0;
++    const uint8_t* cblc = reinterpret_cast<const uint8_t*>(hb_blob_get_data(b.cblc, &cblcLength));
++    auto inCblc = [&](uint64_t offset, uint64_t length) {
++        return offset <= cblcLength && cblcLength - offset >= length;
++    };
++    // CBLC: version, sizeTables (BitmapSizeTable: 48 bytes).
++    if (!inCblc(0, 8) || (readBe16(cblc) != 2 && readBe16(cblc) != 3)) return false;
++    const uint32_t count = readBe32(cblc + 4);
++    if (!inCblc(8, uint64_t(count) * 48)) return false;
++    // CBLC::find_table: the first strike that has the glyph.
++    for (uint32_t i = 0; i < count; i++) {
++        const uint8_t* strike = cblc + 8 + 48 * i;
++        if (!(readBe16(strike + 40) <= glyph && glyph <= readBe16(strike + 42))) continue;
++        const unsigned int xPpem = strike[44], yPpem = strike[45];
++        // BitmapSizeTable::find_table
++        const uint32_t arrayOffset = readBe32(strike);
++        const uint32_t numSubtables = readBe32(strike + 8);
++        if (!inCblc(arrayOffset, uint64_t(numSubtables) * 8)) return false;
++        uint64_t record = 0;
++        bool found = false;
++        for (uint32_t j = 0; j < numSubtables; j++) {
++            const uint8_t* r = cblc + arrayOffset + 8 * j;
++            if (readBe16(r) <= glyph && glyph <= readBe16(r + 2)) {
++                record = arrayOffset + 8 * j;
++                found = true;
++                break;
++            }
++        }
++        if (!found) return false;
++        // IndexSubtableRecord::get_image_data: in 1.4.2 the subtable's offset is
++        // from the record itself (index formats 1 and 3).
++        const uint8_t* r = cblc + record;
++        const uint32_t first = readBe16(r), last = readBe16(r + 2);
++        const uint64_t subtable = record + readBe32(r + 4);
++        if (glyph < first || glyph > last || !inCblc(subtable, 8)) return false;
++        const uint8_t* header = cblc + subtable;
++        const uint16_t indexFormat = readBe16(header);
++        const uint16_t imageFormat = readBe16(header + 2);
++        const uint32_t idx = glyph - first;
++        uint32_t start, end;
++        if (indexFormat == 1) {
++            if (!inCblc(subtable + 8, (uint64_t(idx) + 2) * 4)) return false;
++            start = readBe32(header + 8 + 4 * idx);
++            end = readBe32(header + 8 + 4 * (idx + 1));
++        } else if (indexFormat == 3) {
++            if (!inCblc(subtable + 8, (uint64_t(idx) + 2) * 2)) return false;
++            start = readBe16(header + 8 + 2 * idx);
++            end = readBe16(header + 8 + 2 * (idx + 1));
++        } else {
++            return false;
++        }
++        if (end <= start) return false;
++        const uint32_t imageOffset = readBe32(header + 4) + start;
++        const uint32_t imageLength = end - start;
++        if (imageOffset > b.cbdtLength || b.cbdtLength - imageOffset < imageLength) return false;
++        if (imageFormat != 17 || imageLength < 9) return false;
++        // Small glyph metrics: height, width, bearingX, bearingY.
++        uint8_t metrics[4];
++        int fd = open(face->path.c_str(), O_RDONLY | O_CLOEXEC);
++        if (fd < 0) return false;
++        const bool read = preadFully(fd, metrics, sizeof(metrics), b.cbdtOffset + imageOffset);
++        close(fd);
++        if (!read) return false;
++        extents->x_bearing = int8_t(metrics[2]);
++        extents->y_bearing = int8_t(metrics[3]);
++        extents->width = metrics[1];
++        extents->height = -int(metrics[0]);
++        const float upem = b.upem;
++        extents->x_bearing *= upem / (float)xPpem;
++        extents->y_bearing *= upem / (float)yPpem;
++        extents->width *= upem / (float)xPpem;
++        extents->height *= upem / (float)yPpem;
++        return true;
++    }
++    return false;
++}
++
++// hb_ot_get_glyph_extents for a font whose only glyph data is CBDT.
++hb_bool_t fileFaceBitmapExtents(hb_font_t* font, void* fontData, hb_codepoint_t glyph,
++                                hb_glyph_extents_t* extents, void* /* userData */) {
++    FileFace* face = reinterpret_cast<FileFace*>(fontData);
++    const bool ret = fileFaceBitmapExtentsInFontUnits(face, font, glyph, extents);
++    int xScale, yScale;
++    hb_font_get_scale(font, &xScale, &yScale);
++    const int upem = hb_face_get_upem(hb_font_get_face(font));
++    extents->x_bearing = emScale(extents->x_bearing, xScale, upem);
++    extents->y_bearing = emScale(extents->y_bearing, yScale, upem);
++    extents->width = emScale(extents->width, xScale, upem);
++    extents->height = emScale(extents->height, yScale, upem);
++    return ret;
++}
++
++hb_font_funcs_t* fileFaceBitmapFuncs() {
++    static hb_font_funcs_t* funcs = nullptr;
++    static std::once_flag once;
++    std::call_once(once, [&]() {
++        funcs = hb_font_funcs_create();
++        hb_font_funcs_set_glyph_extents_func(funcs, fileFaceBitmapExtents, nullptr, nullptr);
++        hb_font_funcs_make_immutable(funcs);
++    });
++    return funcs;
++}
++
++// Whether HarfBuzz would take glyph extents from CBDT (hb_ot_get_glyph_extents
++// tries glyf first).
++bool usesBitmapExtents(const FileFace* face) {
++    return face->find(MinikinFont::MakeTag('C', 'B', 'D', 'T')) != nullptr &&
++           face->find(MinikinFont::MakeTag('C', 'B', 'L', 'C')) != nullptr &&
++           face->find(MinikinFont::MakeTag('g', 'l', 'y', 'f')) == nullptr;
++}
++
++hb_face_t* createFileFace(const char* path, uint32_t ttcIndex) {
++    std::unique_ptr<FileFace> face(new FileFace{path, {}});
++    int fd = open(path, O_RDONLY | O_CLOEXEC);
++    if (fd < 0 || !readFileFaceTables(fd, ttcIndex, &face->tables)) {
++        ALOGE("Could not read the table directory of %s", path);
++    }
++    if (fd >= 0) close(fd);
++    FileFace* fileFace = face.release();
++    hb_face_t* hbFace = hb_face_create_for_tables(
++            referenceFileFaceTable, fileFace,
++            [](void* p) { delete reinterpret_cast<FileFace*>(p); });
++    hb_face_set_user_data(hbFace, &gFileFaceKey, fileFace, nullptr, false);
++    hb_face_set_index(hbFace, ttcIndex);
++    return hbFace;
++}
++
++}  // namespace
++
++bool fileFaceHasTable(hb_face_t* face, uint32_t tag, bool* hasTable) {
++    const FileFace* fileFace =
++            reinterpret_cast<const FileFace*>(hb_face_get_user_data(face, &gFileFaceKey));
++    if (fileFace == nullptr) return false;
++    *hasTable = fileFace->find(tag) != nullptr;
++    return true;
++}
++
++
+ class HbFontCache : private android::OnEntryRemoved<int32_t, hb_font_t*> {
+ public:
+     HbFontCache() : mCache(kMaxEntries) {
+@@ -105,10 +407,14 @@ hb_font_t* getHbFontLocked(const MinikinFont* minikinFont) {
+     hb_face_t* face;
+     const void* buf = minikinFont->GetFontData();
+     size_t size = minikinFont->GetFontSize();
+-    hb_blob_t* blob = hb_blob_create(reinterpret_cast<const char*>(buf), size,
+-        HB_MEMORY_MODE_READONLY, nullptr, nullptr);
+-    face = hb_face_create(blob, minikinFont->GetFontIndex());
+-    hb_blob_destroy(blob);
++    if (buf == nullptr && minikinFont->GetFontPath() != nullptr) {
++        face = createFileFace(minikinFont->GetFontPath(), minikinFont->GetFontIndex());
++    } else {
++        hb_blob_t* blob = hb_blob_create(reinterpret_cast<const char*>(buf), size,
++            HB_MEMORY_MODE_READONLY, nullptr, nullptr);
++        face = hb_face_create(blob, minikinFont->GetFontIndex());
++        hb_blob_destroy(blob);
++    }
+ 
+     hb_font_t* parent_font = hb_font_create(face);
+     hb_ot_font_set_funcs(parent_font);
+@@ -116,6 +422,17 @@ hb_font_t* getHbFontLocked(const MinikinFont* minikinFont) {
+     unsigned int upem = hb_face_get_upem(face);
+     hb_font_set_scale(parent_font, upem, upem);
+ 
++    // arc-wasm (fonts on demand): the extents of a color bitmap font read from
++    // its file come from FileFaceBitmaps, not from HarfBuzz's whole CBDT; a sub
++    // font in between, everything else is its parent's.
++    FileFace* fileFace = reinterpret_cast<FileFace*>(hb_face_get_user_data(face, &gFileFaceKey));
++    if (fileFace != nullptr && usesBitmapExtents(fileFace)) {
++        hb_font_t* bitmaps = hb_font_create_sub_font(parent_font);
++        hb_font_set_funcs(bitmaps, fileFaceBitmapFuncs(), fileFace, nullptr);
++        hb_font_destroy(parent_font);
++        parent_font = bitmaps;
++    }
++
+     font = hb_font_create_sub_font(parent_font);
+     std::vector<hb_variation_t> variations;
+     for (const FontVariation& variation : minikinFont->GetAxes()) {
+diff --git a/frameworks/minikin/libs/minikin/Layout.cpp b/frameworks/minikin/libs/minikin/Layout.cpp
+index cbfb430d3..66045cc41 100644
+--- a/frameworks/minikin/libs/minikin/Layout.cpp
++++ b/frameworks/minikin/libs/minikin/Layout.cpp
+@@ -278,6 +278,10 @@ hb_font_funcs_t* getHbFontFuncs(bool forColorBitmapFont) {
+ 
+ static bool isColorBitmapFont(hb_font_t* font) {
+     hb_face_t* face = hb_font_get_face(font);
++    bool hasCbdt;  // arc-wasm (fonts on demand): no mapping of the 9 MB of emoji
++    if (fileFaceHasTable(face, HB_TAG('C', 'B', 'D', 'T'), &hasCbdt)) {
++        return hasCbdt;
++    }
+     HbBlob cbdt(hb_face_reference_table(face, HB_TAG('C', 'B', 'D', 'T')));
+     return cbdt.size() > 0;
+ }
+diff --git a/frameworks/minikin/libs/minikin/MinikinInternal.h b/frameworks/minikin/libs/minikin/MinikinInternal.h
+index a59e55d6c..7c8ccf87d 100644
+--- a/frameworks/minikin/libs/minikin/MinikinInternal.h
++++ b/frameworks/minikin/libs/minikin/MinikinInternal.h
+@@ -38,6 +38,12 @@ void assertMinikinLocked();
+ 
+ hb_blob_t* getFontTable(const MinikinFont* minikinFont, uint32_t tag);
+ 
++// arc-wasm (fonts on demand): for the HarfBuzz face of a font read from its
++// file (HbFontCache.cpp), whether the font has the table (with data); returns
++// false, and leaves *hasTable, for any other face. Asking HarfBuzz itself
++// (hb_face_reference_table) maps the table, which for CBDT is the whole font.
++bool fileFaceHasTable(hb_face_t* face, uint32_t tag, bool* hasTable);
++
+ constexpr uint32_t MAX_UNICODE_CODE_POINT = 0x10FFFF;
+ 
+ constexpr uint32_t VS1 = 0xFE00;

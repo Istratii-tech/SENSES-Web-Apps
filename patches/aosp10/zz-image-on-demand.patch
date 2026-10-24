@@ -1,0 +1,77 @@
+diff --git a/external/icu/android_icu4j/src/main/java/android/icu/impl/ICUBinary.java b/external/icu/android_icu4j/src/main/java/android/icu/impl/ICUBinary.java
+index e58b553b7..393ed35bc 100644
+--- a/external/icu/android_icu4j/src/main/java/android/icu/impl/ICUBinary.java
++++ b/external/icu/android_icu4j/src/main/java/android/icu/impl/ICUBinary.java
+@@ -341,7 +341,13 @@ public final class ICUBinary {
+                 continue;
+             }
+             itemPath.append(fileName);
+-            if (file.isDirectory()) {
++            if (file.isDirectory() && folderPathLength == 0 && fileName.startsWith("icudt")) {
++                // arc-wasm (topic image-on-demand): ICU4C's individual files, in a folder
++                // named for their package (icudt63l/coll/root.res: tools/icu_dat_split.py),
++                // are the items of that package, as in its .dat (coll/root.res).
++                itemPath.setLength(0);
++                addDataFilesFromFolder(file, itemPath, dataFiles);
++            } else if (file.isDirectory()) {
+                 // TODO: Within a folder, put all single files before all .dat packages?
+                 addDataFilesFromFolder(file, itemPath, dataFiles);
+             } else if (fileName.endsWith(".dat")) {
+diff --git a/libcore/luni/src/main/native/libcore_icu_ICU.cpp b/libcore/luni/src/main/native/libcore_icu_ICU.cpp
+index 16e53d5c4..737f1de91 100644
+--- a/libcore/luni/src/main/native/libcore_icu_ICU.cpp
++++ b/libcore/luni/src/main/native/libcore_icu_ICU.cpp
+@@ -956,6 +956,28 @@ struct ICURegistration {
+   // Init ICU, configuring it and loading the data files.
+   ICURegistration(JNIEnv* env) {
+     UErrorCode status = U_ZERO_ERROR;
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm (topic image-on-demand): the data's items as files of their own
++    // (tools/icu_dat_split.py: ICU's "files" packaging, RUNTIME_ROOT/etc/icu/icudt63l/...)
++    // instead of icudt63l.dat: here a mapping is filled into wasm memory whole, a page touched
++    // there is the tab's memory for good, and an app reads a small part of the 23 MB. ICU
++    // then maps the items it uses (udata.cpp, doLoadFromIndividualFiles); ICU4J reads the same
++    // folder (ICUBinary.addDataFilesFromFolder).
++    std::string itemsDir = getRuntimeModulePath();
++    itemsDir.resize(itemsDir.size() - 4);  // less ".dat"
++    if (pathExists(itemsDir) && !pathExists(getRuntimeModulePath())) {
++      items_ = true;
++      udata_setFileAccess(UDATA_FILES_FIRST, &status);
++      u_setDataDirectory(itemsDir.substr(0, itemsDir.rfind('/')).c_str());
++      u_init(&status);
++      if (status != U_ZERO_ERROR) {
++        ALOGE("Couldn't initialize ICU from %s (u_init): %s", itemsDir.c_str(), u_errorName(status));
++        abort();
++      }
++      jniRegisterNativeMethods(env, "libcore/icu/ICU", gMethods, NELEM(gMethods));
++      return;
++    }
++#endif
+     // Tell ICU it can *only* use our memory-mapped data.
+     udata_setFileAccess(UDATA_NO_FILES, &status);
+     if (status != U_ZERO_ERROR) {
+@@ -1011,6 +1033,16 @@ struct ICURegistration {
+   // De-init ICU, unloading the data files. Do the opposite of the above function.
+   ~ICURegistration() {
+     // Skip unregistering JNI methods explicitly, class unloading takes care of it.
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm (topic image-on-demand): this runs among the static destructors at exit
++    // (EXIT_RUNTIME) while other threads may still use ICU. With the items as files, u_cleanup
++    // unmaps them -- the small ones are copies, freed and reused -- and a thread still reading
++    // them crashed the exit (SplitInstallTest 8.1, "memory access out of bounds"); the whole
++    // .dat was the image's own pages, which an unmap leaves in place. Nothing to give back.
++    if (items_) {
++      return;
++    }
++#endif
+ 
+     // Reset libicu state to before it was loaded.
+     u_cleanup();
+@@ -1090,6 +1122,7 @@ struct ICURegistration {
+   std::unique_ptr<IcuDataMap> icu_datamap_from_data_;
+   std::unique_ptr<IcuDataMap> icu_datamap_from_tz_module_;
+   std::unique_ptr<IcuDataMap> icu_datamap_from_runtime_module_;
++  bool items_ = false;  // arc-wasm: the data's items as files (above)
+ };
+ 
+ // Use RAII-style initialization/teardown so that we can get unregistered

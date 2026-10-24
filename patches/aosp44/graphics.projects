@@ -1,0 +1,10 @@
+# Extra AOSP 4.4.4 projects for topic "graphics": software Skia and its codecs/fonts.
+external/skia
+external/freetype
+external/libpng
+external/jpeg
+external/giflib
+external/expat
+external/harfbuzz_ng
+external/harfbuzz
+external/webp

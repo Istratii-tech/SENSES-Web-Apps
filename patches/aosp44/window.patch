@@ -1,0 +1,16 @@
+diff --git a/frameworks/base/core/java/android/view/ViewRootImpl.java b/frameworks/base/core/java/android/view/ViewRootImpl.java
+index d7796285..273ac1b4 100644
+--- a/frameworks/base/core/java/android/view/ViewRootImpl.java
++++ b/frameworks/base/core/java/android/view/ViewRootImpl.java
+@@ -3692,7 +3692,10 @@ public final class ViewRootImpl implements ViewParent,
+                     if (result == InputMethodManager.DISPATCH_HANDLED) {
+                         return FINISH_HANDLED;
+                     } else if (result == InputMethodManager.DISPATCH_NOT_HANDLED) {
+-                        return FINISH_NOT_HANDLED;
++                        // The IME could not handle it, so skip along to the next InputStage
++                        // (as in AOSP 5.0: without a bound input method, keys from a
++                        // hardware keyboard would never reach the views).
++                        return FORWARD;
+                     } else {
+                         return DEFER; // callback will be invoked later
+                     }

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dalvik on WebAssembly</title>
+<style>
+  :root { --bg: #0e1016; --fg: #d7dbe5; --muted: #8a90a0; --ok: #6fd28a; --bad: #ff7b72; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #f6f7f9; --fg: #1d2030; --muted: #5a6072; --ok: #1a7f37; --bad: #cf222e; }
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  header { padding: 12px 16px 0; font: 13px/1.4 system-ui, sans-serif; color: var(--muted); }
+  pre { margin: 0; padding: 12px 16px 16px; font: 12px/1.45 ui-monospace, monospace;
+        white-space: pre-wrap; word-break: break-word; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .log { color: var(--muted); }
+</style>
+</head>
+<body>
+<header id="cmd"></header>
+<pre id="out"></pre>
+<script src="report.js"></script>
+<script>
+  // dalvikvm arguments come from the URL: ?arg=-cp&arg=/system/framework/arc-tests.jar&arg=arcwasm.VmTest
+  var args = new URLSearchParams(location.search).getAll('arg');
+  if (!args.length) args = ['-cp', '/system/framework/arc-tests.jar', 'arcwasm.VmTest'];
+  document.getElementById('cmd').textContent = 'dalvikvm ' + args.join(' ');
+  var outEl = document.getElementById('out');
+  var started = performance.now();
+  function emit(text) {
+    var line = document.createElement('span');
+    if (/^\[ OK \]|passed, 0 failed/.test(text)) line.className = 'ok';
+    else if (/^\[FAIL\]|Exception|Error|Abort/.test(text)) line.className = 'bad';
+    else if (/^[VDIWEF]\//.test(text)) line.className = 'log';
+    line.textContent = text + '\n';
+    outEl.appendChild(line);
+    arcReport(text);
+  }
+  // ?env=KEY=VALUE: the VM's environment (getenv), e.g. topic install8's
+  // ARC_DATA_DIR / ARC_APPS_DIR.
+  var env = new URLSearchParams(location.search).getAll('env');
+  var Module = {
+    arguments: args,
+    print: emit,
+    printErr: emit,
+    preRun: [function () {
+      env.forEach(function (e) { var i = e.indexOf('='); if (i > 0) ENV[e.slice(0, i)] = e.slice(i + 1); });
+    }],
+    onExit: function (code) {
+      if (code === 75) {
+        // The VM asks to be started again (as tools/run_java_tests.sh does
+        // under Node): the same page, the same storage.
+        emit('RESTART 75 after ' + Math.round(performance.now() - started) + ' ms');
+        setTimeout(function () { location.reload(); }, 300);
+        return;
+      }
+      emit('EXIT ' + code + ' after ' + Math.round(performance.now() - started) + ' ms');
+      document.title = 'EXIT ' + code;
+    },
+    onAbort: function (what) { emit('ABORT ' + what); },
+  };
+</script>
+<script src="dalvikvm.js"></script>
+</body>
+</html>

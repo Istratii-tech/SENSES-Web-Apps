@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Test app for arcwasm.SplitInstallTest (tests/java/arcwasm/SplitInstallTest.java,
+     topic apks-split): an app delivered as split APKs, as Google Play's app
+     bundles are. tools/build_split_test_apks.sh makes base.apk, the density
+     parts (split_config.mdpi.apk, split_config.xhdpi.apk: aapt2 split),
+     the language part (split_config.ru.apk), the ABI part
+     (split_config.armeabi_v7a.apk: lib/armeabi-v7a/libndkhelper.so) and a
+     feature part with code (split_feature.apk, tests/apk-split/feature);
+     versionCode 1 and 2. The launcher icon is only in the density parts. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.arcwasm.splittest"
+    android:versionCode="1"
+    android:versionName="1.0"
+    android:isSplitRequired="true">
+    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="21" />
+    <application android:label="@string/app_name" android:icon="@drawable/ic_launcher">
+        <activity android:name=".MainActivity" android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

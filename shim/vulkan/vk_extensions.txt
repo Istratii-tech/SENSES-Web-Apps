@@ -1,0 +1,40 @@
+# The Vulkan API of arc-wasm's libvulkan.so (topic vulkan, docs/topics/vulkan.md):
+# core versions and extensions it implements. tools/vulkan/gen_vk.py reads this
+# file and vk.xml (third_party/vulkan-headers) and generates the entry points
+# both guest ABIs see, the struct conversions of arm64-v8a guests and the
+# extension tables vkEnumerate*ExtensionProperties report.
+#
+#   version NAME            a core version (its commands and types)
+#   instance NAME           an instance extension
+#   device NAME             a device extension
+#
+# An extension here must be implemented by shim/vulkan (its commands at
+# least as no-ops that honour the spec).
+version VK_VERSION_1_0
+version VK_VERSION_1_1
+
+instance VK_KHR_surface
+instance VK_KHR_android_surface
+instance VK_KHR_get_surface_capabilities2
+instance VK_KHR_get_physical_device_properties2
+instance VK_KHR_device_group_creation
+instance VK_KHR_external_memory_capabilities
+instance VK_KHR_external_semaphore_capabilities
+instance VK_KHR_external_fence_capabilities
+instance VK_EXT_debug_report
+instance VK_EXT_debug_utils
+
+device VK_KHR_swapchain
+device VK_KHR_maintenance1
+device VK_KHR_maintenance2
+device VK_KHR_maintenance3
+device VK_KHR_dedicated_allocation
+device VK_KHR_get_memory_requirements2
+device VK_KHR_bind_memory2
+device VK_KHR_descriptor_update_template
+device VK_KHR_device_group
+device VK_KHR_shader_draw_parameters
+device VK_KHR_storage_buffer_storage_class
+device VK_KHR_relaxed_block_layout
+device VK_KHR_image_format_list
+device VK_KHR_driver_properties

@@ -1,0 +1,71 @@
+diff --git a/external/boringssl/src/include/openssl/base.h b/external/boringssl/src/include/openssl/base.h
+index b769ad53..214f880c 100644
+--- a/external/boringssl/src/include/openssl/base.h
++++ b/external/boringssl/src/include/openssl/base.h
+@@ -91,6 +91,9 @@ extern "C" {
+ #elif defined(__pnacl__)
+ #define OPENSSL_32_BIT
+ #define OPENSSL_PNACL
++#elif defined(__EMSCRIPTEN__) && defined(__wasm32__)
++/* arc-wasm: WebAssembly (wasm32), C only (OPENSSL_NO_ASM). */
++#define OPENSSL_32_BIT
+ #else
+ #error "Unknown target CPU"
+ #endif
+diff --git a/external/conscrypt/src/main/native/org_conscrypt_NativeCrypto.cpp b/external/conscrypt/src/main/native/org_conscrypt_NativeCrypto.cpp
+index 0989fb08..72394cc7 100644
+--- a/external/conscrypt/src/main/native/org_conscrypt_NativeCrypto.cpp
++++ b/external/conscrypt/src/main/native/org_conscrypt_NativeCrypto.cpp
+@@ -1214,7 +1214,7 @@ private:
+  */
+ static JNIEnv* getJNIEnv() {
+     JNIEnv* env;
+-#ifdef ANDROID
++#if defined(ANDROID) || defined(__EMSCRIPTEN__)  // arc-wasm: C++ jni.h
+     if (gJavaVM->AttachCurrentThread(&env, NULL) < 0) {
+ #else
+     if (gJavaVM->AttachCurrentThread(reinterpret_cast<void**>(&env), NULL) < 0) {
+@@ -2253,6 +2253,9 @@ static void threadid_callback(CRYPTO_THREADID *threadid) {
+     } else {
+         ALOGE("Error calling pthread_threadid_np");
+     }
++#elif defined(__EMSCRIPTEN__)
++    // arc-wasm: musl has gettid() (and no __NR_gettid)
++    CRYPTO_THREADID_set_numeric(threadid, gettid());
+ #else
+     // bionic exposes gettid(), but glibc doesn't
+     CRYPTO_THREADID_set_numeric(threadid, syscall(__NR_gettid));
+@@ -4563,8 +4566,14 @@ static void NativeCrypto_EVP_DigestUpdate(JNIEnv* env, jclass, jobject evpMdCtxR
+             EVP_DigestUpdate);
+ }
+ 
++// arc-wasm: the Java declaration is EVP_DigestSignUpdate(EVP_MD_CTX, byte[]);
++// the C function took two more arguments (offset, length) that Java never
++// passed, which 32-bit ARM tolerated (garbage registers) and WebAssembly
++// does not (exact function types). Update with the whole array.
+ static void NativeCrypto_EVP_DigestSignUpdate(JNIEnv* env, jclass, jobject evpMdCtxRef,
+-        jbyteArray inJavaBytes, jint inOffset, jint inLength) {
++        jbyteArray inJavaBytes) {
++    const jint inOffset = 0;
++    const jint inLength = inJavaBytes == NULL ? 0 : env->GetArrayLength(inJavaBytes);
+     evpUpdate(env, evpMdCtxRef, inJavaBytes, inOffset, inLength, "EVP_DigestSignUpdate",
+             EVP_DigestUpdate);
+ }
+@@ -5728,7 +5737,7 @@ static jlong NativeCrypto_X509_get_notAfter(JNIEnv* env, jclass, jlong x509Ref)
+     return reinterpret_cast<uintptr_t>(notAfter);
+ }
+ 
+-static long NativeCrypto_X509_get_version(JNIEnv*, jclass, jlong x509Ref) {
++static jlong NativeCrypto_X509_get_version(JNIEnv*, jclass, jlong x509Ref) {
+     X509* x509 = reinterpret_cast<X509*>(static_cast<uintptr_t>(x509Ref));
+     JNI_TRACE("X509_get_version(%p)", x509);
+ 
+@@ -6075,7 +6084,7 @@ static jbyteArray NativeCrypto_X509_CRL_get_issuer_name(JNIEnv* env, jclass, jlo
+     return ASN1ToByteArray<X509_NAME>(env, X509_CRL_get_issuer(crl), i2d_X509_NAME);
+ }
+ 
+-static long NativeCrypto_X509_CRL_get_version(JNIEnv*, jclass, jlong x509CrlRef) {
++static jlong NativeCrypto_X509_CRL_get_version(JNIEnv*, jclass, jlong x509CrlRef) {
+     X509_CRL* crl = reinterpret_cast<X509_CRL*>(static_cast<uintptr_t>(x509CrlRef));
+     JNI_TRACE("X509_CRL_get_version(%p)", crl);
+ 

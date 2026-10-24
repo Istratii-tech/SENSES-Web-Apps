@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NDK CPU tests</title>
+<style>
+  :root { --bg: #0e1016; --fg: #d7dbe5; --ok: #6fd28a; --bad: #ff7b72; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #f6f7f9; --fg: #1d2030; --ok: #1a7f37; --bad: #cf222e; }
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  pre { margin: 0; padding: 16px; font: 12px/1.45 ui-monospace, monospace;
+        white-space: pre-wrap; word-break: break-word; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<pre id="out"></pre>
+<script src="report.js"></script>
+<script>
+  // ndk_cpu64_test.js in the browser: ?arg=v5-arm&arg=--bench&arg=200 passes arguments.
+  var outEl = document.getElementById('out');
+  function emit(text) {
+    var line = document.createElement('span');
+    if (/passed, 0 failed/.test(text)) line.className = 'ok';
+    if (/^FAIL|failed|ndk_cpu:|Abort/.test(text) && !/ 0 failed/.test(text)) line.className = 'bad';
+    line.textContent = text + '\n';
+    outEl.appendChild(line);
+    arcReport(text);
+  }
+  var Module = {
+    arguments: new URLSearchParams(location.search).getAll('arg'),
+    print: emit,
+    printErr: emit,
+    onExit: function (code) { emit('EXIT ' + code); document.title = 'EXIT ' + code; },
+    onAbort: function (what) { emit('ABORT ' + what); },
+  };
+</script>
+<script src="ndk_cpu64_test.js"></script>
+</body>
+</html>

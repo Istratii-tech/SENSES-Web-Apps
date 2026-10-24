@@ -1,0 +1,89 @@
+diff --git a/frameworks/av/media/libstagefright/DataURISource.cpp b/frameworks/av/media/libstagefright/DataURISource.cpp
+index 2c393142..9ad80177 100644
+--- a/frameworks/av/media/libstagefright/DataURISource.cpp
++++ b/frameworks/av/media/libstagefright/DataURISource.cpp
+@@ -28,7 +28,7 @@ sp<DataURISource> DataURISource::Create(const char *uri) {
+         return NULL;
+     }
+ 
+-    char *commaPos = strrchr(uri, ',');
++    const char *commaPos = strrchr(uri, ',');
+ 
+     if (commaPos == NULL) {
+         return NULL;
+diff --git a/frameworks/native/libs/gui/GLConsumer.cpp b/frameworks/native/libs/gui/GLConsumer.cpp
+index 757e08a9..5cfd1999 100644
+--- a/frameworks/native/libs/gui/GLConsumer.cpp
++++ b/frameworks/native/libs/gui/GLConsumer.cpp
+@@ -1087,6 +1087,9 @@ GLConsumer::EglImage::EglImage(sp<GraphicBuffer> graphicBuffer) :
+ }
+ 
+ GLConsumer::EglImage::~EglImage() {
++#ifdef ARC_WASM
++    return;  // no EGLImage was made (see bindToTextureTarget)
++#endif
+     if (mEglImage != EGL_NO_IMAGE_KHR) {
+         if (!eglDestroyImageKHR(mEglDisplay, mEglImage)) {
+            ALOGE("~EglImage: eglDestroyImageKHR failed");
+@@ -1098,6 +1101,14 @@ GLConsumer::EglImage::~EglImage() {
+ status_t GLConsumer::EglImage::createIfNeeded(EGLDisplay eglDisplay,
+                                               const Rect& cropRect,
+                                               bool forceCreation) {
++#ifdef ARC_WASM
++    // arc-wasm: the in-process SurfaceFlinger's buffers are software gralloc
++    // memory, which no EGLImage can wrap; bindToTextureTarget uploads them.
++    mEglDisplay = eglDisplay;
++    mCropRect = cropRect;
++    mEglImage = reinterpret_cast<EGLImageKHR>(this);
++    return OK;
++#endif
+     // If there's an image and it's no longer valid, destroy it.
+     bool haveImage = mEglImage != EGL_NO_IMAGE_KHR;
+     bool displayInvalid = mEglDisplay != eglDisplay;
+@@ -1133,6 +1144,46 @@ status_t GLConsumer::EglImage::createIfNeeded(EGLDisplay eglDisplay,
+ }
+ 
+ void GLConsumer::EglImage::bindToTextureTarget(uint32_t texTarget) {
++#ifdef ARC_WASM
++    // arc-wasm: the buffer's pixels into the texture bound to texTarget
++    // (graphics_translation takes TexImage2D into an external texture, which
++    // it emulates as a TEXTURE_2D). Rows as in memory, as an EGLImage of the
++    // buffer would have them: getTransformMatrix's flip applies as usual.
++    const sp<GraphicBuffer>& b = mGraphicBuffer;
++    GLenum format, type;
++    size_t bpp;
++    switch (b->getPixelFormat()) {
++        case HAL_PIXEL_FORMAT_RGBA_8888:
++        case HAL_PIXEL_FORMAT_RGBX_8888:
++            format = GL_RGBA; type = GL_UNSIGNED_BYTE; bpp = 4;
++            break;
++        case HAL_PIXEL_FORMAT_RGB_565:
++            format = GL_RGB; type = GL_UNSIGNED_SHORT_5_6_5; bpp = 2;
++            break;
++        default:
++            ALOGE("bindToTextureTarget: no upload of pixel format %d", b->getPixelFormat());
++            return;
++    }
++    void* vaddr = NULL;
++    if (b->lock(GRALLOC_USAGE_SW_READ_OFTEN, &vaddr) != NO_ERROR || vaddr == NULL) {
++        ALOGE("bindToTextureTarget: cannot lock the buffer");
++        return;
++    }
++    const uint32_t w = b->getWidth(), h = b->getHeight(), stride = b->getStride();
++    const uint8_t* pixels = static_cast<const uint8_t*>(vaddr);
++    uint8_t* packed = NULL;
++    if (stride != w) {
++        packed = new uint8_t[w * h * bpp];
++        for (uint32_t y = 0; y < h; y++)
++            memcpy(packed + y * w * bpp, pixels + y * stride * bpp, w * bpp);
++        pixels = packed;
++    }
++    glPixelStorei(GL_UNPACK_ALIGNMENT, bpp == 4 ? 4 : 2);
++    glTexImage2D(texTarget, 0, format, w, h, 0, format, type, pixels);
++    delete[] packed;
++    b->unlock();
++    return;
++#endif
+     glEGLImageTargetTexture2DOES(texTarget,
+             static_cast<GLeglImageOES>(mEglImage));
+ }

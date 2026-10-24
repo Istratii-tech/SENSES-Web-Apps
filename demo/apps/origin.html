@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>SENSES — перенос приложения</title>
+<link rel="stylesheet" href="senses.css">
+<style>
+  /* The app origin's end of a move (topic per-app-origin, origins.js serve()):
+     the library opened this window and sends the app's files; it closes by
+     itself when they are in. Not cross-origin isolated (sw.js, tools/serve.py):
+     the library must keep its handle on it. */
+  body { display: flex; min-height: 100vh; align-items: center; justify-content: center; }
+  .box { width: 100%; max-width: 380px; padding: 24px; box-sizing: border-box; text-align: center; }
+  .logo { height: 26px; display: block; margin: 0 auto 18px; }
+  #what { font-size: 16px; }
+  #what.error { color: var(--bad); }
+  #where { color: var(--muted); font-size: 13px; margin-top: 10px; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<div class="box">
+  <img class="logo" src="icon-192.png" alt="" style="height:56px;border-radius:12px">
+  <div id="what">Подключаюсь к библиотеке…</div>
+  <div class="bar" id="bar"><div></div></div>
+  <div id="where"></div>
+</div>
+<script src="report.js"></script>
+<script src="senses.js"></script>
+<script src="store.js"></script>
+<script src="origins.js"></script>
+<script>
+(function () {
+  'use strict';
+  var S = Senses, $ = S.$;
+  $('where').textContent = 'Отдельное хранилище: ' + location.host;
+  S.bar($('bar'), null);
+  SensesOrigins.serve(SensesStore, function (text, fraction, error) {
+    $('what').textContent = text;
+    $('what').classList.toggle('error', !!error);
+    if (error) $('bar').hidden = true;
+    else S.bar($('bar'), fraction);
+  }, S.log);
+})();
+</script>
+</body>
+</html>

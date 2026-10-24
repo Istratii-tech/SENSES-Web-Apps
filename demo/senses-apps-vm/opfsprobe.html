@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<!--
+  OPFS of this origin, step by step (topic opfs-after-kill,
+  docs/topics/opfs-after-kill.md): what a VM's OPFS thread does at its start
+  (shim/opfs/library_arc_opfs.js, openRoot), done by a worker that reports
+  every step (opfsprobe-worker.js) to tools/serve.py (POST /__log) *before* it starts it, so a call
+  that never returns -- or blocks the worker -- shows as the last "begin".
+
+  ?steps=info,tree,probe,vmprobe,big,handles,idb,locks (default: all)
+  ?steps=fill&fill=MB[&keep=1][&fillname=NAME][&filldir=DIR]  a file grown
+                  to MB in 16 MB writes (the origin's quota: where a write
+                  blocks), removed unless keep
+  ?steps=rm&rm=NAME,...  files at the root removed first
+  ?steps=caches   sizes of the origin's Cache Storage (page)
+  &next=S&nexturl=URL  the tab goes to URL after S seconds
+  ?steps=lock     a second worker on a file the first keeps a sync access
+                  handle of (opfsprobe-worker.js, lockHolder); &hold=MS
+  ?big=MB         size of the "big" write (default 64)
+  ?timeout=MS     per async step (default 8000)
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OPFS probe</title>
+<style>body{font:12px/1.4 ui-monospace,monospace;margin:8px;white-space:pre-wrap}</style>
+</head>
+<body>
+<div id="out"></div>
+<script>
+'use strict';
+const out = document.getElementById('out');
+const params = new URLSearchParams(location.search);
+const steps = (params.get('steps') || 'info,tree,probe,vmprobe,big,handles,locks,idb').split(',');
+function show(line) { out.textContent += line + '\n'; }
+async function report(line) {
+  show(line);
+  try { await fetch('/__log', {method: 'POST', body: 'opfsprobe[p] ' + line}); } catch (e) {}
+}
+(async () => {
+  await report('page: ' + navigator.userAgent + ' isolated ' + self.crossOriginIsolated);
+  if (steps.includes('info')) {
+    try {
+      const est = await navigator.storage.estimate();
+      await report('estimate: usage ' + Math.round(est.usage / 1048576) + ' MB of quota ' +
+                   Math.round(est.quota / 1048576) + ' MB; persisted ' +
+                   (navigator.storage.persisted ? await navigator.storage.persisted() : '?'));
+    } catch (e) { await report('estimate: ' + e); }
+  }
+  if (steps.includes('lock')) {
+    const holder = new Worker('opfsprobe-worker.js?' + params.toString());
+    const other = new Worker('opfsprobe-worker.js?' + params.toString());
+    other.onmessage = (e) => report('via page: ' + e.data);
+    holder.onmessage = (e) => {
+      if (e.data && e.data.held !== undefined) {
+        other.postMessage({role: 'other'});
+        setTimeout(() => holder.postMessage({role: 'release'}), +(params.get('hold') || 30000));
+      } else report('via page: ' + e.data);
+    };
+    holder.postMessage({role: 'holder'});
+    return;
+  }
+  let beats = 0;
+  setInterval(() => { if (++beats % 3 === 0) report('page alive ' + beats * 5 + ' s'); }, 5000);
+  if (steps.includes('caches') && self.caches) {
+    // Cache Storage counts in the origin's quota too (the shell's service
+    // worker keeps every system it ran: demo/apps/sw.js).
+    let total = 0;
+    for (const name of await caches.keys()) {
+      const c = await caches.open(name);
+      let bytes = 0, n = 0;
+      for (const req of await c.keys()) {
+        const r = await c.match(req);
+        const len = +(r && r.headers.get('Content-Length')) || (r ? (await r.blob()).size : 0);
+        bytes += len; n++;
+      }
+      total += bytes;
+      await report('cache ' + name + ': ' + n + ' entries, ' + Math.round(bytes / 1048576) + ' MB');
+    }
+    await report('caches: ' + Math.round(total / 1048576) + ' MB');
+  }
+  // &next=S&nexturl=URL: after S seconds this tab goes to URL (location.replace):
+  // does leaving the page release a storage request it waits for?
+  if (params.get('next')) {
+    setTimeout(() => { report('leaving for ' + params.get('nexturl')); location.replace(params.get('nexturl')); },
+               1000 * +params.get('next'));
+  }
+  const w = new Worker('opfsprobe-worker.js?' + params.toString());
+  // Also through the page: a worker whose own fetch hangs still shows.
+  w.onmessage = (e) => report('via page: ' + e.data);
+  w.onerror = (e) => report('worker error: ' + e.message);
+  w.postMessage({steps});
+})();
+</script>
+</body>
+</html>

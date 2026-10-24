@@ -1,0 +1,3241 @@
+diff --git a/art/runtime/atomic.h b/art/runtime/atomic.h
+index 87de506a..fb77d73c 100644
+--- a/art/runtime/atomic.h
++++ b/art/runtime/atomic.h
+@@ -204,7 +204,16 @@ class PACKED(sizeof(T)) Atomic : public std::atomic<T> {
+   // There has been some discussion of eventually disallowing word
+   // tearing for Java data loads.
+   T LoadJavaData() const {
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm (art-speed): WebAssembly has only sequentially consistent
++    // atomics (a relaxed load becomes one: a load-acquire and an alignment
++    // check in the engine's code). A plain aligned access does not tear,
++    // which is all Java requires of non-volatile fields (64-bit ones may
++    // tear anyway, JLS 17.7). volatile: one load per call, as before.
++    return *reinterpret_cast<const volatile T*>(this);
++#else
+     return this->load(std::memory_order_relaxed);
++#endif
+   }
+ 
+   // Load from memory with a total ordering.
+@@ -220,7 +229,12 @@ class PACKED(sizeof(T)) Atomic : public std::atomic<T> {
+ 
+   // Word tearing allowed, but may race.
+   void StoreJavaData(T desired) {
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm (art-speed): see LoadJavaData.
++    *reinterpret_cast<volatile T*>(this) = desired;
++#else
+     this->store(desired, std::memory_order_relaxed);
++#endif
+   }
+ 
+   // Store to memory with release ordering.
+diff --git a/art/runtime/instrumentation.cc b/art/runtime/instrumentation.cc
+index d37ddcb8..497365ca 100644
+--- a/art/runtime/instrumentation.cc
++++ b/art/runtime/instrumentation.cc
+@@ -602,6 +602,10 @@ static void ResetQuickAllocEntryPointsForThread(Thread* thread, void* arg ATTRIB
+   thread->ResetQuickAllocEntryPointsForThread();
+ }
+ 
++#if defined(__EMSCRIPTEN__)
++bool g_art_wasm_alloc_entrypoints_instrumented = false;
++#endif
++
+ void Instrumentation::SetEntrypointsInstrumented(bool instrumented) {
+   Thread* self = Thread::Current();
+   Runtime* runtime = Runtime::Current();
+@@ -614,6 +618,9 @@ void Instrumentation::SetEntrypointsInstrumented(bool instrumented) {
+   {
+     MutexLock mu(self, *Locks::runtime_shutdown_lock_);
+     SetQuickAllocEntryPointsInstrumented(instrumented);
++#if defined(__EMSCRIPTEN__)
++    g_art_wasm_alloc_entrypoints_instrumented = instrumented;
++#endif
+     ResetQuickAllocEntryPoints();
+   }
+   if (runtime->IsStarted()) {
+diff --git a/art/runtime/instrumentation.h b/art/runtime/instrumentation.h
+index db8e9c25..abc09710 100644
+--- a/art/runtime/instrumentation.h
++++ b/art/runtime/instrumentation.h
+@@ -40,6 +40,14 @@ class Thread;
+ 
+ namespace instrumentation {
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm (art-speed): whether the quick allocation entrypoints are the
++// instrumented ones (allocation tracking, stats, GC stress, valgrind), set
++// with them (all threads suspended). The interpreter allocates with the
++// uninstrumented code, as compiled code does, when they are not.
++extern bool g_art_wasm_alloc_entrypoints_instrumented;
++#endif
++
+ // Interpreter handler tables.
+ enum InterpreterHandlerTable {
+   kMainHandlerTable = 0,          // Main handler table: no suspend check, no instrumentation.
+diff --git a/art/runtime/interpreter/interpreter.h b/art/runtime/interpreter/interpreter.h
+index 75d73639..85181094 100644
+--- a/art/runtime/interpreter/interpreter.h
++++ b/art/runtime/interpreter/interpreter.h
+@@ -41,6 +41,12 @@ void ArtWasmInterpreterJni(Thread* self, ArtMethod* method, mirror::Object* rece
+ void ArtWasmInvokeProxy(Thread* self, ArtMethod* proxy_method, uint32_t* args, JValue* result,
+                         const char* shorty)
+     SHARED_LOCKS_REQUIRED(Locks::mutator_lock_);
++// arc-wasm (art-speed): a native method called by the interpreter, in its
++// frame |sf| (not pushed yet); intrinsics for some natives
++// (shim/art/intrinsics_wasm.cc), installed by Runtime::Start.
++void ArtWasmCallNative(Thread* self, ShadowFrame* sf, JValue* result)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_);
++void ArtWasmInstallIntrinsics(Thread* self) SHARED_LOCKS_REQUIRED(Locks::mutator_lock_);
+ #endif
+ 
+ // Called by ArtMethod::Invoke, shadow frames arguments are taken from the args array.
+diff --git a/art/runtime/interpreter/interpreter_common.cc b/art/runtime/interpreter/interpreter_common.cc
+index e5ed7033..29f92b76 100644
+--- a/art/runtime/interpreter/interpreter_common.cc
++++ b/art/runtime/interpreter/interpreter_common.cc
+@@ -477,23 +477,6 @@ void AbortTransactionV(Thread* self, const char* fmt, va_list args) {
+   Runtime::Current()->AbortTransactionAndThrowAbortError(self, abort_msg);
+ }
+ 
+-#if defined(ART_WASM_FLAT_CALLS)
+-// Whether a call to |m| from the interpreter can be flat: |m| runs in the
+-// interpreter without access checks (as the flat caller does), outside a
+-// transaction, and nobody listens to method entry or exit.
+-static inline bool ArtWasmCanCallFlat(Thread* self, ArtMethod* m)
+-    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
+-  Runtime* const runtime = Runtime::Current();
+-  if (!m->IsPreverified() || !runtime->IsStarted() || runtime->IsActiveTransaction() ||
+-      m->GetEntryPointFromInterpreter() != artInterpreterToInterpreterBridge ||
+-      Dbg::IsForcedInterpreterNeededForCalling(self, m)) {
+-    return false;
+-  }
+-  const instrumentation::Instrumentation* const instrumentation = runtime->GetInstrumentation();
+-  return !instrumentation->HasMethodEntryListeners() && !instrumentation->HasMethodExitListeners();
+-}
+-#endif
+-
+ template<bool is_range, bool do_assignability_check>
+ bool DoCall(ArtMethod* called_method, Thread* self, ShadowFrame& shadow_frame,
+             const Instruction* inst, uint16_t inst_data, JValue* result) {
+@@ -544,8 +527,20 @@ bool DoCall(ArtMethod* called_method, Thread* self, ShadowFrame& shadow_frame,
+ #else
+   void* memory = alloca(ShadowFrame::ComputeSize(num_regs));
+ #endif
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (art-speed): the fast path below writes all of the callee's
++  // argument registers before anything can look at the frame (not with
++  // string_init, which skips one; the slow path registers the frame for the
++  // GC while it fills it).
++  ShadowFrame* new_shadow_frame(
++      string_init || do_assignability_check
++          ? ShadowFrame::Create(num_regs, &shadow_frame, called_method, 0, memory)
++                  : ShadowFrame::CreateForCall(num_regs, num_ins, &shadow_frame, called_method,
++                                               memory));
++#else
+   ShadowFrame* new_shadow_frame(ShadowFrame::Create(num_regs, &shadow_frame, called_method, 0,
+                                                     memory));
++#endif
+ 
+   // Initialize new shadow frame.
+   size_t first_dest_reg = num_regs - num_ins;
+@@ -693,6 +688,13 @@ bool DoCall(ArtMethod* called_method, Thread* self, ShadowFrame& shadow_frame,
+     } else {
+       entry = new_shadow_frame->GetMethod()->GetEntryPointFromInterpreter();
+     }
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm (art-speed): a native runs in the frame built above, without
++    // ArtMethod::Invoke and a second frame (shim/art/jni_call_wasm.cc).
++    if (entry == artInterpreterToCompiledCodeBridge && new_shadow_frame->GetMethod()->IsNative()) {
++      ArtWasmCallNative(self, new_shadow_frame, result);
++    } else
++#endif
+     entry(self, code_item, new_shadow_frame, result);
+   } else {
+     UnstartedRuntime::Invoke(self, code_item, new_shadow_frame, result, first_dest_reg);
+diff --git a/art/runtime/interpreter/interpreter_common.h b/art/runtime/interpreter/interpreter_common.h
+index 17ecca01..2abf245c 100644
+--- a/art/runtime/interpreter/interpreter_common.h
++++ b/art/runtime/interpreter/interpreter_common.h
+@@ -41,6 +41,12 @@
+ #include "thread.h"
+ #include "well_known_classes.h"
+ 
++#if defined(__EMSCRIPTEN__)
++#include "debugger.h"
++#include "instrumentation.h"
++#include "interpreter_frames_wasm.h"  // shim/art: the frame stack of flat calls
++#endif
++
+ using ::art::ArtMethod;
+ using ::art::mirror::Array;
+ using ::art::mirror::BooleanArray;
+@@ -66,10 +72,21 @@ namespace interpreter {
+ // callee's frame on the thread's frame stack and returns it through
+ // t_art_flat_out instead of running it.
+ #define ART_WASM_FLAT_CALLS 1
+-extern thread_local ShadowFrame** t_art_flat_out;
+-extern thread_local ShadowFrame* t_art_flat_caller;
+-void* ArtWasmFlatFrameAlloc(size_t bytes);
+-void ArtWasmFlatFrameFree(void* frame);
++
++// Whether a call to |m| from the interpreter can be flat: |m| runs in the
++// interpreter without access checks (as the flat caller does), outside a
++// transaction, and nobody listens to method entry or exit.
++static inline bool ArtWasmCanCallFlat(Thread* self, ArtMethod* m)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++  Runtime* const runtime = Runtime::Current();
++  if (!m->IsPreverified() || !runtime->IsStarted() || runtime->IsActiveTransaction() ||
++      m->GetEntryPointFromInterpreter() != artInterpreterToInterpreterBridge ||
++      Dbg::IsForcedInterpreterNeededForCalling(self, m)) {
++    return false;
++  }
++  const instrumentation::Instrumentation* const instrumentation = runtime->GetInstrumentation();
++  return !instrumentation->HasMethodEntryListeners() && !instrumentation->HasMethodExitListeners();
++}
+ #endif
+ 
+ // External references to both interpreter implementations.
+diff --git a/art/runtime/interpreter/interpreter_switch_impl.cc b/art/runtime/interpreter/interpreter_switch_impl.cc
+index e5cce89c..cbd1b2f1 100644
+--- a/art/runtime/interpreter/interpreter_switch_impl.cc
++++ b/art/runtime/interpreter/interpreter_switch_impl.cc
+@@ -32,6 +32,7 @@ namespace interpreter {
+     } else {                                                                                    \
+       int32_t displacement = static_cast<int32_t>(found_dex_pc) - static_cast<int32_t>(dex_pc); \
+       inst = inst->RelativeAt(displacement);                                                    \
++      ART_WASM_LISTENERS_CHECK(inst);                                                           \
+     }                                                                                           \
+   } while (false)
+ 
+@@ -75,10 +76,18 @@ namespace interpreter {
+     t_art_flat_out = nullptr;                                           \
+     if (flat_callee == nullptr) {                                       \
+       POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);            \
+-    } else if (UNLIKELY(!ArtWasmFlatEnter(self, flat_callee))) {        \
++    } else {                                                            \
++      ART_WASM_FLAT_ENTER(flat_callee);                                 \
++    }                                                                   \
++  } while (false)
++
++// Continues in the frame of a flat call (|_callee|, built, not pushed yet).
++#define ART_WASM_FLAT_ENTER(_callee)                                    \
++  do {                                                                  \
++    if (UNLIKELY(!ArtWasmFlatEnter(self, _callee))) {                   \
+       HANDLE_PENDING_EXCEPTION();                                       \
+     } else {                                                            \
+-      flat_sf = flat_callee;                                            \
++      flat_sf = _callee;                                                \
+       code_item = flat_sf->GetMethod()->GetCodeItem();                  \
+       insns = code_item->insns_;                                        \
+       inst = Instruction::At(insns);                                    \
+@@ -87,30 +96,427 @@ namespace interpreter {
+     }                                                                   \
+   } while (false)
+ 
++// arc-wasm (art-speed): invoke-* with the common case first: the method is
++// already resolved and runs in the interpreter (ArtWasmTryFlatInvoke builds
++// its frame here); otherwise, or when the call would throw, DoInvoke.
++#define ART_WASM_FLAT_INVOKE_FAST(_type, _is_range, ...)                \
++  do {                                                                  \
++    ShadowFrame* fast_callee = kFlatCalls                               \
++        ? ArtWasmTryFlatInvoke<_type, _is_range>(self, flat_sf, inst, inst_data) \
++        : nullptr;                                                      \
++    if (fast_callee == kArtWasmEmptyCall) {                             \
++      QuasiAtomic::ThreadFenceForConstructor(); /* its return-void */   \
++      inst = inst->Next_3xx();                                          \
++    } else if (fast_callee != nullptr) {                                \
++      ART_WASM_FLAT_ENTER(fast_callee);                                 \
++    } else {                                                            \
++      ART_WASM_FLAT_INVOKE(__VA_ARGS__);                                \
++    }                                                                   \
++  } while (false)
++
++// ArtWasmTryFlatInvoke's result for invoke-direct of a method whose code
++// is one return-void (Object.<init> of every object allocation, empty
++// constructors and private methods): nothing to run. Like Dalvik's
++// invoke-object-init: in the flat loop nobody listens to the call
++// (ArtWasmCanCallFlat), and ART registers finalizable objects when it
++// allocates them, not in Object.<init>.
++static ShadowFrame* const kArtWasmEmptyCall = reinterpret_cast<ShadowFrame*>(8);
++
++// arc-wasm (art-speed): new-instance and new-array out of the loop, with
++// the allocation code compiled code would use: uninstrumented (the
++// thread-local RosAlloc path) unless the allocation entrypoints are
++// instrumented (see instrumentation.h). AOSP's interpreter always takes
++// the instrumented path.
++template<bool do_access_check>
++NO_INLINE static Object* ArtWasmNewInstance(Thread* self, ArtMethod* method, uint32_t type_idx)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++  Class* c = ResolveVerifyAndClinit(type_idx, method, self, false, do_access_check);
++  if (UNLIKELY(c == nullptr)) {
++    return nullptr;
++  }
++  gc::AllocatorType allocator_type = Runtime::Current()->GetHeap()->GetCurrentAllocator();
++  if (UNLIKELY(c->IsStringClass())) {
++    mirror::SetStringCountVisitor visitor(0);
++    return String::Alloc<true>(self, 0, allocator_type, visitor);
++  }
++  if (instrumentation::g_art_wasm_alloc_entrypoints_instrumented) {
++    return AllocObjectFromCode<do_access_check, true>(type_idx, method, self, allocator_type);
++  }
++  return AllocObjectFromCode<do_access_check, false>(type_idx, method, self, allocator_type);
++}
++
++template<bool do_access_check>
++NO_INLINE static Object* ArtWasmNewArray(Thread* self, ArtMethod* method, uint32_t type_idx,
++                                         int32_t length)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++  gc::AllocatorType allocator_type = Runtime::Current()->GetHeap()->GetCurrentAllocator();
++  if (instrumentation::g_art_wasm_alloc_entrypoints_instrumented) {
++    return AllocArrayFromCode<do_access_check, true>(type_idx, length, method, self,
++                                                     allocator_type);
++  }
++  return AllocArrayFromCode<do_access_check, false>(type_idx, length, method, self,
++                                                    allocator_type);
++}
++
++// AssignRegister of interpreter_common.cc.
++ALWAYS_INLINE static void ArtWasmAssignRegister(ShadowFrame* new_shadow_frame,
++                                                const ShadowFrame& shadow_frame,
++                                                size_t dest_reg, size_t src_reg)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++  uint32_t src_value = shadow_frame.GetVReg(src_reg);
++  mirror::Object* o = shadow_frame.GetVRegReference<kVerifyNone>(src_reg);
++  if (src_value == reinterpret_cast<uintptr_t>(o)) {
++    new_shadow_frame->SetVRegReference(dest_reg, o);
++  } else {
++    new_shadow_frame->SetVReg(dest_reg, src_value);
++  }
++}
++
++// What DoInvoke (FindMethodFromCode without access checks, then DoCall's
++// fast path) does for a call to an interpreted method whose reference is
++// resolved, when it can be flat: returns the callee's frame with the
++// arguments, not pushed. nullptr for everything else (unresolved, null
++// receiver, abstract, native, String.<init>, IMT conflict, frame stack full):
++// DoInvoke handles those as before.
++template<InvokeType type, bool is_range>
++ALWAYS_INLINE static ShadowFrame* ArtWasmTryFlatInvoke(Thread* self, ShadowFrame* caller,
++                                                       const Instruction* inst,
++                                                       uint16_t inst_data)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++  const uint32_t method_idx = is_range ? inst->VRegB_3rc() : inst->VRegB_35c();
++  const uint32_t vregC = is_range ? inst->VRegC_3rc() : inst->VRegC_35c();
++  mirror::Object* receiver = nullptr;
++  if (type != kStatic) {
++    receiver = caller->GetVRegReference(vregC);
++    if (UNLIKELY(receiver == nullptr)) {
++      return nullptr;
++    }
++  }
++  ArtMethod* const referrer = caller->GetMethod();
++  ArtMethod* const resolved = referrer->GetDexCacheResolvedMethod(method_idx, sizeof(void*));
++  if (UNLIKELY(resolved == nullptr || resolved->IsRuntimeMethod())) {
++    return nullptr;
++  }
++  ArtMethod* m;
++  switch (type) {
++    case kStatic:
++    case kDirect:
++      m = resolved;
++      break;
++    case kVirtual:
++      // The class of an object is instantiable: its vtable is embedded
++      // (Class::GetVTableEntry would check, DoInvokeVirtualQuick CHECKs).
++      m = receiver->GetClass()->GetEmbeddedVTableEntry(resolved->GetMethodIndex(), sizeof(void*));
++      break;
++    case kSuper:
++      m = referrer->GetDeclaringClass()->GetSuperClass()->GetVTableEntry(
++          resolved->GetMethodIndex(), sizeof(void*));
++      break;
++    case kInterface: {
++      const uint32_t imt_index = resolved->GetDexMethodIndex() % mirror::Class::kImtSize;
++      m = receiver->GetClass()->GetEmbeddedImTableEntry(imt_index, sizeof(void*));
++      if (UNLIKELY(m->IsImtConflictMethod() || m->IsImtUnimplementedMethod())) {
++        return nullptr;
++      }
++      break;
++    }
++    default:
++      return nullptr;
++  }
++  const DexFile::CodeItem* const code_item = m->GetCodeItem();
++  if (UNLIKELY(code_item == nullptr || m->IsAbstract() ||
++               (type == kDirect && m->IsConstructor() &&
++                m->GetDeclaringClass()->IsStringClass()) ||
++               !ArtWasmCanCallFlat(self, m))) {
++    return nullptr;
++  }
++  if (type == kDirect && code_item->insns_size_in_code_units_ == 1 &&
++      ((code_item->insns_[0] & 0xff) == Instruction::RETURN_VOID ||
++       (code_item->insns_[0] & 0xff) == Instruction::RETURN_VOID_NO_BARRIER)) {
++    return kArtWasmEmptyCall;
++  }
++  const uint16_t num_regs = code_item->registers_size_;
++  const uint16_t num_ins = is_range ? inst->VRegA_3rc(inst_data) : inst->VRegA_35c(inst_data);
++  DCHECK_EQ(num_ins, code_item->ins_size_);
++  void* memory = ArtWasmFlatFrameAlloc(ShadowFrame::ComputeSize(num_regs));
++  if (UNLIKELY(memory == nullptr)) {
++    return nullptr;
++  }
++  ShadowFrame* callee = ShadowFrame::CreateForCall(num_regs, num_ins, caller, m, memory);
++  const size_t first_dest_reg = num_regs - num_ins;
++  if (is_range) {
++    for (size_t src_reg = vregC, dest_reg = first_dest_reg; dest_reg < num_regs;
++         ++dest_reg, ++src_reg) {
++      ArtWasmAssignRegister(callee, *caller, dest_reg, src_reg);
++    }
++  } else {
++    uint16_t reg_list = inst->Fetch16(2);
++    uint16_t count = num_ins;
++    if (count == 5) {
++      ArtWasmAssignRegister(callee, *caller, first_dest_reg + 4U, (inst_data >> 8) & 0x0f);
++      --count;
++    }
++    for (size_t arg_index = 0; arg_index < count; ++arg_index, reg_list >>= 4) {
++      ArtWasmAssignRegister(callee, *caller, first_dest_reg + arg_index, reg_list & 0x0f);
++    }
++  }
++  return callee;
++}
++
++// arc-wasm (art-speed): sget/sput (DoFieldGet/DoFieldPut of static fields)
++// with the common case inline: the field is resolved, its class
++// initialized, no field listeners; FindFieldFromCode without access checks
++// would return the same field.
++template<bool do_access_check>
++ALWAYS_INLINE static ArtField* ArtWasmResolvedStaticField(const ShadowFrame& sf,
++                                                          const Instruction* inst)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++  if (do_access_check) {
++    return nullptr;
++  }
++  ArtField* f = sf.GetMethod()->GetDeclaringClass()->GetDexCache()->GetResolvedField(
++      inst->VRegB_21c(), sizeof(void*));
++  if (UNLIKELY(f == nullptr || !f->IsStatic() || !f->GetDeclaringClass()->IsInitialized())) {
++    return nullptr;
++  }
++  return f;
++}
++
++template<FindFieldType find_type, Primitive::Type field_type, bool do_access_check>
++ALWAYS_INLINE static bool ArtWasmSGet(Thread* self, ShadowFrame& sf, const Instruction* inst,
++                                      uint16_t inst_data,
++                                      const instrumentation::Instrumentation* instrumentation)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++  ArtField* f = ArtWasmResolvedStaticField<do_access_check>(sf, inst);
++  if (UNLIKELY(f == nullptr || instrumentation->HasFieldReadListeners())) {
++    return DoFieldGet<find_type, field_type, do_access_check>(self, sf, inst, inst_data);
++  }
++  mirror::Class* obj = f->GetDeclaringClass();
++  const uint32_t vregA = inst->VRegA_21c(inst_data);
++  switch (field_type) {
++    case Primitive::kPrimBoolean: sf.SetVReg(vregA, f->GetBoolean(obj)); break;
++    case Primitive::kPrimByte: sf.SetVReg(vregA, f->GetByte(obj)); break;
++    case Primitive::kPrimChar: sf.SetVReg(vregA, f->GetChar(obj)); break;
++    case Primitive::kPrimShort: sf.SetVReg(vregA, f->GetShort(obj)); break;
++    case Primitive::kPrimInt: sf.SetVReg(vregA, f->GetInt(obj)); break;
++    case Primitive::kPrimLong: sf.SetVRegLong(vregA, f->GetLong(obj)); break;
++    case Primitive::kPrimNot: sf.SetVRegReference(vregA, f->GetObject(obj)); break;
++    default: UNREACHABLE();
++  }
++  return true;
++}
++
++template<FindFieldType find_type, Primitive::Type field_type, bool do_access_check,
++         bool transaction_active>
++ALWAYS_INLINE static bool ArtWasmSPut(Thread* self, const ShadowFrame& sf,
++                                      const Instruction* inst, uint16_t inst_data,
++                                      const instrumentation::Instrumentation* instrumentation)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++  ArtField* f = ArtWasmResolvedStaticField<do_access_check>(sf, inst);
++  if (UNLIKELY(f == nullptr || instrumentation->HasFieldWriteListeners())) {
++    return DoFieldPut<find_type, field_type, do_access_check, transaction_active>(
++        self, sf, inst, inst_data);
++  }
++  mirror::Class* obj = f->GetDeclaringClass();
++  const uint32_t vregA = inst->VRegA_21c(inst_data);
++  switch (field_type) {
++    case Primitive::kPrimBoolean:
++      f->SetBoolean<transaction_active>(obj, sf.GetVReg(vregA));
++      break;
++    case Primitive::kPrimByte: f->SetByte<transaction_active>(obj, sf.GetVReg(vregA)); break;
++    case Primitive::kPrimChar: f->SetChar<transaction_active>(obj, sf.GetVReg(vregA)); break;
++    case Primitive::kPrimShort: f->SetShort<transaction_active>(obj, sf.GetVReg(vregA)); break;
++    case Primitive::kPrimInt: f->SetInt<transaction_active>(obj, sf.GetVReg(vregA)); break;
++    case Primitive::kPrimLong: f->SetLong<transaction_active>(obj, sf.GetVRegLong(vregA)); break;
++    case Primitive::kPrimNot:
++      f->SetObj<transaction_active>(obj, sf.GetVRegReference(vregA));
++      break;
++    default: UNREACHABLE();
++  }
++  return true;
++}
++
++// arc-wasm (art-speed): DoIGetQuick and DoIPutQuick with the common case
++// inline (non-null object, no field listeners).
++template<Primitive::Type field_type>
++ALWAYS_INLINE static bool ArtWasmIGetQuick(ShadowFrame& sf, const Instruction* inst,
++                                           uint16_t inst_data,
++                                           const instrumentation::Instrumentation* instrumentation)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++  Object* obj = sf.GetVRegReference(inst->VRegB_22c(inst_data));
++  if (UNLIKELY(obj == nullptr || instrumentation->HasFieldReadListeners())) {
++    return DoIGetQuick<field_type>(sf, inst, inst_data);
++  }
++  const MemberOffset field_offset(inst->VRegC_22c());
++  const uint32_t vregA = inst->VRegA_22c(inst_data);
++  switch (field_type) {
++    case Primitive::kPrimInt:
++      sf.SetVReg(vregA, static_cast<int32_t>(obj->GetField32(field_offset)));
++      break;
++    case Primitive::kPrimBoolean:
++      sf.SetVReg(vregA, static_cast<int32_t>(obj->GetFieldBoolean(field_offset)));
++      break;
++    case Primitive::kPrimByte:
++      sf.SetVReg(vregA, static_cast<int32_t>(obj->GetFieldByte(field_offset)));
++      break;
++    case Primitive::kPrimChar:
++      sf.SetVReg(vregA, static_cast<int32_t>(obj->GetFieldChar(field_offset)));
++      break;
++    case Primitive::kPrimShort:
++      sf.SetVReg(vregA, static_cast<int32_t>(obj->GetFieldShort(field_offset)));
++      break;
++    case Primitive::kPrimLong:
++      sf.SetVRegLong(vregA, static_cast<int64_t>(obj->GetField64(field_offset)));
++      break;
++    case Primitive::kPrimNot:
++      sf.SetVRegReference(vregA, obj->GetFieldObject<mirror::Object>(field_offset));
++      break;
++    default:
++      UNREACHABLE();
++  }
++  return true;
++}
++
++template<Primitive::Type field_type, bool transaction_active>
++ALWAYS_INLINE static bool ArtWasmIPutQuick(const ShadowFrame& sf, const Instruction* inst,
++                                           uint16_t inst_data,
++                                           const instrumentation::Instrumentation* instrumentation)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++  Object* obj = sf.GetVRegReference(inst->VRegB_22c(inst_data));
++  if (UNLIKELY(obj == nullptr || instrumentation->HasFieldWriteListeners())) {
++    return DoIPutQuick<field_type, transaction_active>(sf, inst, inst_data);
++  }
++  const MemberOffset field_offset(inst->VRegC_22c());
++  const uint32_t vregA = inst->VRegA_22c(inst_data);
++  switch (field_type) {
++    case Primitive::kPrimBoolean:
++      obj->SetFieldBoolean<transaction_active>(field_offset, sf.GetVReg(vregA));
++      break;
++    case Primitive::kPrimByte:
++      obj->SetFieldByte<transaction_active>(field_offset, sf.GetVReg(vregA));
++      break;
++    case Primitive::kPrimChar:
++      obj->SetFieldChar<transaction_active>(field_offset, sf.GetVReg(vregA));
++      break;
++    case Primitive::kPrimShort:
++      obj->SetFieldShort<transaction_active>(field_offset, sf.GetVReg(vregA));
++      break;
++    case Primitive::kPrimInt:
++      obj->SetField32<transaction_active>(field_offset, sf.GetVReg(vregA));
++      break;
++    case Primitive::kPrimLong:
++      obj->SetField64<transaction_active>(field_offset, sf.GetVRegLong(vregA));
++      break;
++    case Primitive::kPrimNot:
++      obj->SetFieldObject<transaction_active>(field_offset, sf.GetVRegReference(vregA));
++      break;
++    default:
++      UNREACHABLE();
++  }
++  return true;
++}
++
+ // What artInterpreterToInterpreterBridge does before running a method:
+ // push its frame, initialize the class of a static method. On failure the
+ // frame is gone and an exception is pending.
+-static inline bool ArtWasmFlatEnter(Thread* self, ShadowFrame* callee)
++NO_INLINE static bool ArtWasmFlatEnterInitialize(Thread* self, ShadowFrame* callee,
++                                                 mirror::Class* declaring_class)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++  StackHandleScope<1> hs(self);
++  HandleWrapper<Class> h_declaring_class(hs.NewHandleWrapper(&declaring_class));
++  if (UNLIKELY(!Runtime::Current()->GetClassLinker()->EnsureInitialized(
++      self, h_declaring_class, true, true))) {
++    DCHECK(self->IsExceptionPending());
++    self->PopShadowFrame();
++    ArtWasmFlatFrameFree(callee);
++    return false;
++  }
++  return true;
++}
++
++ALWAYS_INLINE static bool ArtWasmFlatEnter(Thread* self, ShadowFrame* callee)
+     SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
+   self->PushShadowFrame(callee);
+   ArtMethod* const method = callee->GetMethod();
+   if (method->IsStatic()) {
+     mirror::Class* declaring_class = method->GetDeclaringClass();
+     if (UNLIKELY(!declaring_class->IsInitialized())) {
+-      StackHandleScope<1> hs(self);
+-      HandleWrapper<Class> h_declaring_class(hs.NewHandleWrapper(&declaring_class));
+-      if (UNLIKELY(!Runtime::Current()->GetClassLinker()->EnsureInitialized(
+-          self, h_declaring_class, true, true))) {
+-        DCHECK(self->IsExceptionPending());
+-        self->PopShadowFrame();
+-        ArtWasmFlatFrameFree(callee);
+-        return false;
+-      }
++      return ArtWasmFlatEnterInitialize(self, callee, declaring_class);
+     }
+   }
+   return true;
+ }
++// Every kYieldBranches-th backward branch, the loop returns to
++// ExecuteSwitchImpl, which calls it again at the same branch (executed
++// again: branches have no side effects). V8 has no on-stack replacement for
++// WebAssembly: a call that started in baseline (Liftoff) code stays there
++// until it returns, and with flat calls the outermost loop runs a thread's
++// whole Java call tree (for an app, Looper.loop() never returns). A new
++// call runs the optimized code once it is ready.
++#define ART_WASM_BACKWARD_BRANCH()                                  \
++  do {                                                              \
++    shadow_frame.SetDexPC(dex_pc);                                  \
++    ART_WASM_SUSPEND_CHECK();                                       \
++    if (kFlatCalls && UNLIKELY(--yield_countdown == 0)) {           \
++      ART_WASM_YIELD(false, false);                                 \
++    }                                                               \
++  } while (false)
++
++// Returns to ExecuteSwitchImpl, which continues at the current instruction
++// (its dex pc stored): after the thread's suspend check if |_suspend|, in
++// the loop that calls listeners if |_listeners|.
++#define ART_WASM_YIELD(_suspend, _listeners)                        \
++  do {                                                              \
++    resume->sf = flat_sf;                                           \
++    resume->depth = flat_depth;                                     \
++    resume->result_register = result_register;                     \
++    resume->yielded = true;                                         \
++    resume->suspend = (_suspend);                                   \
++    resume->dex_pc_listeners = (_listeners);                        \
++    return JValue();                                                \
++  } while (false)
++
++// Thread::AllowThreadSuspension (at backward branches and returns). In the
++// flat loop the suspend check runs in ExecuteSwitchImpl, which then
++// executes the instruction again: a call here made the JavaScript engine
++// save registers on the stack on every return and branch.
++#define ART_WASM_SUSPEND_CHECK()                                    \
++  do {                                                              \
++    if (kFlatCalls) {                                               \
++      if (UNLIKELY(self->TestAllFlags())) {                         \
++        shadow_frame.SetDexPC(dex_pc);                              \
++        ART_WASM_YIELD(true, false);                                \
++      }                                                             \
++    } else {                                                        \
++      self->AllowThreadSuspension();                                \
++    }                                                               \
++  } while (false)
++
++// Method exit listeners in the flat loop: the return is executed again in
++// the loop that calls them.
++#define ART_WASM_EXIT_LISTENERS_CHECK()                                     \
++  do {                                                                      \
++    if (kFlatCalls && UNLIKELY(instrumentation->HasMethodExitListeners())) { \
++      ART_WASM_YIELD(false, true);                                          \
++    }                                                                       \
++  } while (false)
++
++static constexpr uint32_t kYieldBranches = 65536;
++
++// Where ExecuteSwitchImplLoop continues after it yielded.
++struct ArtWasmResume {
++  ShadowFrame* sf;  // the current frame (a flat callee, or the method's own)
++  size_t depth;     // flat_depth
++  JValue result_register;
++  bool yielded;
++  bool dex_pc_listeners;  // continue with the loop that calls listeners
++  bool suspend;           // run the thread's suspend check, then continue
++};
+ #else
++#define ART_WASM_BACKWARD_BRANCH() self->AllowThreadSuspension()
++#define ART_WASM_SUSPEND_CHECK() self->AllowThreadSuspension()
++#define ART_WASM_EXIT_LISTENERS_CHECK() do { } while (false)
++#define kFlatCalls false
+ #define ART_WASM_FLAT_UNWIND() return JValue()
+ #define ART_WASM_FLAT_RETURN(_result) return _result
+ #define ART_WASM_FLAT_INVOKE(...)                            \
+@@ -118,8 +523,75 @@ static inline bool ArtWasmFlatEnter(Thread* self, ShadowFrame* callee)
+     bool success = __VA_ARGS__;                              \
+     POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);   \
+   } while (false)
++#define ART_WASM_FLAT_INVOKE_FAST(_type, _is_range, ...) ART_WASM_FLAT_INVOKE(__VA_ARGS__)
++#define ArtWasmIGetQuick(sf, inst, inst_data, instrumentation) DoIGetQuick(sf, inst, inst_data)
++#define ArtWasmIPutQuick(sf, inst, inst_data, instrumentation) DoIPutQuick(sf, inst, inst_data)
++#define ArtWasmSGet(self, sf, inst, inst_data, instrumentation) DoFieldGet(self, sf, inst, inst_data)
++#define ArtWasmSPut(self, sf, inst, inst_data, instrumentation) DoFieldPut(self, sf, inst, inst_data)
+ #endif
+ 
++#if defined(ART_WASM_FLAT_CALLS)
++// arc-wasm (art-speed): in the flat loop (kFlatCalls) the frame's dex pc is
++// stored by the instructions that need it: those that can throw, call,
++// allocate or suspend the thread (PREAMBLE), and backward branches before
++// their suspend check. The others (moves, constants, arithmetic that cannot
++// throw, comparisons, branches) use ART_WASM_PREAMBLE_PURE: nothing can look
++// at the frame while they run (another thread walks this stack only at a
++// suspend point), and the next instruction that can stores its own dex pc.
++//
++// Dex pc listeners (a debugger) are not called from the flat loop: when it
++// finds there are some (ART_WASM_LISTENERS_CHECK), it returns to
++// ExecuteSwitchImpl, which continues in the loop with access checks, where
++// every instruction calls them as in AOSP. A call in each case (or at the
++// top of the loop) made the JavaScript engine save and reload registers on
++// the stack for every instruction.
++#define ART_WASM_AOSP_PREAMBLE()                                                                \
++  do {                                                                                          \
++    if (UNLIKELY(instrumentation->HasDexPcListeners())) {                                       \
++      instrumentation->DexPcMovedEvent(self, shadow_frame.GetThisObject(code_item->ins_size_),  \
++                                       shadow_frame.GetMethod(), dex_pc);                       \
++    }                                                                                           \
++  } while (false)
++#define PREAMBLE()                     \
++  do {                                 \
++    shadow_frame.SetDexPC(dex_pc);     \
++    if (!kFlatCalls) {                 \
++      ART_WASM_AOSP_PREAMBLE();        \
++    }                                  \
++  } while (false)
++#define ART_WASM_PREAMBLE_PURE()       \
++  do {                                 \
++    if (!kFlatCalls) {                 \
++      shadow_frame.SetDexPC(dex_pc);   \
++      ART_WASM_AOSP_PREAMBLE();        \
++    }                                  \
++  } while (false)
++// Dex pc listeners can only be added while this thread is suspended (with
++// the mutator lock held exclusively), so the flat loop checks for them where
++// it may have been: when it is entered, after an instruction that may call
++// out (ART_WASM_AFTER_CALLS, after the switch), and after an exception is
++// handled. Instructions that cannot suspend (moves, arithmetic, branches
++// with their suspend check outside, array and quick field access) go to the
++// next one directly (ART_WASM_NEXT_INSTRUCTION).
++#define ART_WASM_LISTENERS_CHECK(_inst)                                         \
++  do {                                                                          \
++    if (kFlatCalls && UNLIKELY(instrumentation->HasDexPcListeners())) {         \
++      shadow_frame.SetDexPC((_inst)->GetDexPc(insns));                          \
++      ART_WASM_YIELD(false, true);                                              \
++    }                                                                           \
++  } while (false)
++#define ART_WASM_AFTER_CALLS() ART_WASM_LISTENERS_CHECK(inst)
++#define ART_WASM_NEXT_INSTRUCTION() continue
++// Field listeners (quick field access calls them): the rest in the loop that
++// calls listeners.
++#define ART_WASM_LEAVE_FOR_LISTENERS(_has_listeners)                            \
++  do {                                                                          \
++    if (kFlatCalls && UNLIKELY(_has_listeners)) {                               \
++      shadow_frame.SetDexPC(dex_pc);                                            \
++      ART_WASM_YIELD(false, true);                                              \
++    }                                                                           \
++  } while (false)
++#else
+ // Code to run before each dex instruction.
+ #define PREAMBLE()                                                                              \
+   do {                                                                                          \
+@@ -128,10 +600,24 @@ static inline bool ArtWasmFlatEnter(Thread* self, ShadowFrame* callee)
+                                        shadow_frame.GetMethod(), dex_pc);                       \
+     }                                                                                           \
+   } while (false)
++#define ART_WASM_PREAMBLE_PURE() PREAMBLE()
++#define ART_WASM_LISTENERS_CHECK(_inst) do { } while (false)
++#define ART_WASM_AFTER_CALLS() do { } while (false)
++#define ART_WASM_NEXT_INSTRUCTION() break
++#define ART_WASM_LEAVE_FOR_LISTENERS(_has_listeners) do { } while (false)
++#endif
+ 
++#if defined(ART_WASM_FLAT_CALLS)
++template<bool do_access_check, bool transaction_active>
++NO_INLINE static JValue ExecuteSwitchImplLoop(Thread* self, const DexFile::CodeItem* code_item,
++                                              ShadowFrame& shadow_frame, JValue result_register,
++                                              ArtWasmResume* resume)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++#else
+ template<bool do_access_check, bool transaction_active>
+ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+                          ShadowFrame& shadow_frame, JValue result_register) {
++#endif
+   bool do_assignability_check = do_access_check;
+   if (UNLIKELY(!shadow_frame.HasReferenceArray())) {
+     LOG(FATAL) << "Invalid shadow frame for interpreter use";
+@@ -141,16 +627,23 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+   // "shadow_frame" below is the current frame: this method's, or one entered
+   // by a flat call (flat_depth of them are on top of this method's).
+   constexpr bool kFlatCalls = !do_access_check && !transaction_active;
+-  size_t flat_depth = 0;
++  const bool resuming = resume->sf != nullptr;
++  size_t flat_depth = resume->depth;
+   JValue flat_result;
+-  ShadowFrame* flat_sf = &shadow_frame;
++  ShadowFrame* flat_sf = resuming ? resume->sf : &shadow_frame;
++  uint32_t yield_countdown = kYieldBranches;
++  if (resuming) {
++    code_item = flat_sf->GetMethod()->GetCodeItem();
++  }
+ #define shadow_frame (*flat_sf)
++#else
++  constexpr bool resuming = false;
+ #endif
+   self->VerifyStack();
+ 
+   uint32_t dex_pc = shadow_frame.GetDexPC();
+   const auto* const instrumentation = Runtime::Current()->GetInstrumentation();
+-  if (LIKELY(dex_pc == 0)) {  // We are entering the method as opposed to deoptimizing.
++  if (LIKELY(dex_pc == 0) && !resuming) {  // We are entering the method as opposed to deoptimizing.
+     if (kIsDebugBuild) {
+         self->AssertNoPendingException();
+     }
+@@ -162,99 +655,103 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+   const uint16_t* insns = code_item->insns_;  // arc-wasm: changes with flat calls
+   const Instruction* inst = Instruction::At(insns + dex_pc);
+   uint16_t inst_data;
++  ART_WASM_LISTENERS_CHECK(inst);
+   while (true) {
+     dex_pc = inst->GetDexPc(insns);
+-    shadow_frame.SetDexPC(dex_pc);
++#if !defined(ART_WASM_FLAT_CALLS)
++    shadow_frame.SetDexPC(dex_pc);  // arc-wasm: in PREAMBLE (below)
++#endif
+     TraceExecution(shadow_frame, inst, dex_pc);
+     inst_data = inst->Fetch16(0);
+     switch (inst->Opcode(inst_data)) {
+       case Instruction::NOP:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MOVE:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_12x(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MOVE_FROM16:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22x(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_22x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MOVE_16:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_32x(),
+                              shadow_frame.GetVReg(inst->VRegB_32x()));
+         inst = inst->Next_3xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MOVE_WIDE:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_12x(inst_data),
+                                  shadow_frame.GetVRegLong(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MOVE_WIDE_FROM16:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_22x(inst_data),
+                                  shadow_frame.GetVRegLong(inst->VRegB_22x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MOVE_WIDE_16:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_32x(),
+                                  shadow_frame.GetVRegLong(inst->VRegB_32x()));
+         inst = inst->Next_3xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MOVE_OBJECT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegReference(inst->VRegA_12x(inst_data),
+                                       shadow_frame.GetVRegReference(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MOVE_OBJECT_FROM16:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegReference(inst->VRegA_22x(inst_data),
+                                       shadow_frame.GetVRegReference(inst->VRegB_22x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MOVE_OBJECT_16:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegReference(inst->VRegA_32x(),
+                                       shadow_frame.GetVRegReference(inst->VRegB_32x()));
+         inst = inst->Next_3xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MOVE_RESULT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_11x(inst_data), result_register.GetI());
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MOVE_RESULT_WIDE:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_11x(inst_data), result_register.GetJ());
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MOVE_RESULT_OBJECT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegReference(inst->VRegA_11x(inst_data), result_register.GetL());
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MOVE_EXCEPTION: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         Throwable* exception = self->GetException();
+         DCHECK(exception != nullptr) << "No pending exception on MOVE_EXCEPTION instruction";
+         shadow_frame.SetVRegReference(inst->VRegA_11x(inst_data), exception);
+         self->ClearException();
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::RETURN_VOID_NO_BARRIER: {
+         PREAMBLE();
+         JValue result;
+-        self->AllowThreadSuspension();
+-        if (UNLIKELY(instrumentation->HasMethodExitListeners())) {
++        ART_WASM_SUSPEND_CHECK();
++        ART_WASM_EXIT_LISTENERS_CHECK();
++        if (!kFlatCalls && UNLIKELY(instrumentation->HasMethodExitListeners())) {
+           instrumentation->MethodExitEvent(self, shadow_frame.GetThisObject(code_item->ins_size_),
+                                            shadow_frame.GetMethod(), inst->GetDexPc(insns),
+                                            result);
+@@ -265,8 +762,9 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         PREAMBLE();
+         QuasiAtomic::ThreadFenceForConstructor();
+         JValue result;
+-        self->AllowThreadSuspension();
+-        if (UNLIKELY(instrumentation->HasMethodExitListeners())) {
++        ART_WASM_SUSPEND_CHECK();
++        ART_WASM_EXIT_LISTENERS_CHECK();
++        if (!kFlatCalls && UNLIKELY(instrumentation->HasMethodExitListeners())) {
+           instrumentation->MethodExitEvent(self, shadow_frame.GetThisObject(code_item->ins_size_),
+                                            shadow_frame.GetMethod(), inst->GetDexPc(insns),
+                                            result);
+@@ -278,8 +776,9 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         JValue result;
+         result.SetJ(0);
+         result.SetI(shadow_frame.GetVReg(inst->VRegA_11x(inst_data)));
+-        self->AllowThreadSuspension();
+-        if (UNLIKELY(instrumentation->HasMethodExitListeners())) {
++        ART_WASM_SUSPEND_CHECK();
++        ART_WASM_EXIT_LISTENERS_CHECK();
++        if (!kFlatCalls && UNLIKELY(instrumentation->HasMethodExitListeners())) {
+           instrumentation->MethodExitEvent(self, shadow_frame.GetThisObject(code_item->ins_size_),
+                                            shadow_frame.GetMethod(), inst->GetDexPc(insns),
+                                            result);
+@@ -290,8 +789,9 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         PREAMBLE();
+         JValue result;
+         result.SetJ(shadow_frame.GetVRegLong(inst->VRegA_11x(inst_data)));
+-        self->AllowThreadSuspension();
+-        if (UNLIKELY(instrumentation->HasMethodExitListeners())) {
++        ART_WASM_SUSPEND_CHECK();
++        ART_WASM_EXIT_LISTENERS_CHECK();
++        if (!kFlatCalls && UNLIKELY(instrumentation->HasMethodExitListeners())) {
+           instrumentation->MethodExitEvent(self, shadow_frame.GetThisObject(code_item->ins_size_),
+                                            shadow_frame.GetMethod(), inst->GetDexPc(insns),
+                                            result);
+@@ -301,7 +801,8 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+       case Instruction::RETURN_OBJECT: {
+         PREAMBLE();
+         JValue result;
+-        self->AllowThreadSuspension();
++        ART_WASM_SUSPEND_CHECK();
++        ART_WASM_EXIT_LISTENERS_CHECK();
+         const size_t ref_idx = inst->VRegA_11x(inst_data);
+         Object* obj_result = shadow_frame.GetVRegReference(ref_idx);
+         if (do_assignability_check && obj_result != nullptr) {
+@@ -323,7 +824,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+           }
+         }
+         result.SetL(obj_result);
+-        if (UNLIKELY(instrumentation->HasMethodExitListeners())) {
++        if (!kFlatCalls && UNLIKELY(instrumentation->HasMethodExitListeners())) {
+           instrumentation->MethodExitEvent(self, shadow_frame.GetThisObject(code_item->ins_size_),
+                                            shadow_frame.GetMethod(), inst->GetDexPc(insns),
+                                            result);
+@@ -331,7 +832,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         ART_WASM_FLAT_RETURN(result);
+       }
+       case Instruction::CONST_4: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t dst = inst->VRegA_11n(inst_data);
+         int4_t val = inst->VRegB_11n(inst_data);
+         shadow_frame.SetVReg(dst, val);
+@@ -339,10 +840,10 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+           shadow_frame.SetVRegReference(dst, nullptr);
+         }
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::CONST_16: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint8_t dst = inst->VRegA_21s(inst_data);
+         int16_t val = inst->VRegB_21s();
+         shadow_frame.SetVReg(dst, val);
+@@ -350,10 +851,10 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+           shadow_frame.SetVRegReference(dst, nullptr);
+         }
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::CONST: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint8_t dst = inst->VRegA_31i(inst_data);
+         int32_t val = inst->VRegB_31i();
+         shadow_frame.SetVReg(dst, val);
+@@ -361,10 +862,10 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+           shadow_frame.SetVRegReference(dst, nullptr);
+         }
+         inst = inst->Next_3xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::CONST_HIGH16: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint8_t dst = inst->VRegA_21h(inst_data);
+         int32_t val = static_cast<int32_t>(inst->VRegB_21h() << 16);
+         shadow_frame.SetVReg(dst, val);
+@@ -372,29 +873,29 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+           shadow_frame.SetVRegReference(dst, nullptr);
+         }
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::CONST_WIDE_16:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_21s(inst_data), inst->VRegB_21s());
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::CONST_WIDE_32:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_31i(inst_data), inst->VRegB_31i());
+         inst = inst->Next_3xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::CONST_WIDE:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_51l(inst_data), inst->VRegB_51l());
+         inst = inst->Next_51l();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::CONST_WIDE_HIGH16:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_21h(inst_data),
+                                  static_cast<uint64_t>(inst->VRegB_21h()) << 48);
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::CONST_STRING: {
+         PREAMBLE();
+         String* s = ResolveString(self, shadow_frame,  inst->VRegB_21c());
+@@ -494,11 +995,15 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+           shadow_frame.SetVReg(inst->VRegA_12x(inst_data), array->AsArray()->GetLength());
+           inst = inst->Next_1xx();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::NEW_INSTANCE: {
+         PREAMBLE();
+         Object* obj = nullptr;
++#if defined(ART_WASM_FLAT_CALLS)
++        obj = ArtWasmNewInstance<do_access_check>(self, shadow_frame.GetMethod(),
++                                                  inst->VRegB_21c());
++#else
+         Class* c = ResolveVerifyAndClinit(inst->VRegB_21c(), shadow_frame.GetMethod(),
+                                           self, false, do_access_check);
+         if (LIKELY(c != nullptr)) {
+@@ -512,6 +1017,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+               Runtime::Current()->GetHeap()->GetCurrentAllocator());
+           }
+         }
++#endif
+         if (UNLIKELY(obj == nullptr)) {
+           HANDLE_PENDING_EXCEPTION();
+         } else {
+@@ -532,9 +1038,14 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+       case Instruction::NEW_ARRAY: {
+         PREAMBLE();
+         int32_t length = shadow_frame.GetVReg(inst->VRegB_22c(inst_data));
++#if defined(ART_WASM_FLAT_CALLS)
++        Object* obj = ArtWasmNewArray<do_access_check>(self, shadow_frame.GetMethod(),
++                                                       inst->VRegC_22c(), length);
++#else
+         Object* obj = AllocArrayFromCode<do_access_check, true>(
+             inst->VRegC_22c(), length, shadow_frame.GetMethod(), self,
+             Runtime::Current()->GetHeap()->GetCurrentAllocator());
++#endif
+         if (UNLIKELY(obj == nullptr)) {
+           HANDLE_PENDING_EXCEPTION();
+         } else {
+@@ -594,49 +1105,49 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         break;
+       }
+       case Instruction::GOTO: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         int8_t offset = inst->VRegA_10t(inst_data);
+         if (IsBackwardBranch(offset)) {
+-          self->AllowThreadSuspension();
++          ART_WASM_BACKWARD_BRANCH();
+         }
+         inst = inst->RelativeAt(offset);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::GOTO_16: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         int16_t offset = inst->VRegA_20t();
+         if (IsBackwardBranch(offset)) {
+-          self->AllowThreadSuspension();
++          ART_WASM_BACKWARD_BRANCH();
+         }
+         inst = inst->RelativeAt(offset);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::GOTO_32: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         int32_t offset = inst->VRegA_30t();
+         if (IsBackwardBranch(offset)) {
+-          self->AllowThreadSuspension();
++          ART_WASM_BACKWARD_BRANCH();
+         }
+         inst = inst->RelativeAt(offset);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::PACKED_SWITCH: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         int32_t offset = DoPackedSwitch(inst, shadow_frame, inst_data);
+         if (IsBackwardBranch(offset)) {
+-          self->AllowThreadSuspension();
++          ART_WASM_BACKWARD_BRANCH();
+         }
+         inst = inst->RelativeAt(offset);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::SPARSE_SWITCH: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         int32_t offset = DoSparseSwitch(inst, shadow_frame, inst_data);
+         if (IsBackwardBranch(offset)) {
+-          self->AllowThreadSuspension();
++          ART_WASM_BACKWARD_BRANCH();
+         }
+         inst = inst->RelativeAt(offset);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+ 
+ #if defined(__clang__)
+@@ -645,7 +1156,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+ #endif
+ 
+       case Instruction::CMPL_FLOAT: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         float val1 = shadow_frame.GetVRegFloat(inst->VRegB_23x());
+         float val2 = shadow_frame.GetVRegFloat(inst->VRegC_23x());
+         int32_t result;
+@@ -658,10 +1169,10 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         }
+         shadow_frame.SetVReg(inst->VRegA_23x(inst_data), result);
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::CMPG_FLOAT: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         float val1 = shadow_frame.GetVRegFloat(inst->VRegB_23x());
+         float val2 = shadow_frame.GetVRegFloat(inst->VRegC_23x());
+         int32_t result;
+@@ -674,10 +1185,10 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         }
+         shadow_frame.SetVReg(inst->VRegA_23x(inst_data), result);
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::CMPL_DOUBLE: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         double val1 = shadow_frame.GetVRegDouble(inst->VRegB_23x());
+         double val2 = shadow_frame.GetVRegDouble(inst->VRegC_23x());
+         int32_t result;
+@@ -690,11 +1201,11 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         }
+         shadow_frame.SetVReg(inst->VRegA_23x(inst_data), result);
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+ 
+       case Instruction::CMPG_DOUBLE: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         double val1 = shadow_frame.GetVRegDouble(inst->VRegB_23x());
+         double val2 = shadow_frame.GetVRegDouble(inst->VRegC_23x());
+         int32_t result;
+@@ -707,7 +1218,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         }
+         shadow_frame.SetVReg(inst->VRegA_23x(inst_data), result);
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+ 
+ #if defined(__clang__)
+@@ -715,7 +1226,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+ #endif
+ 
+       case Instruction::CMP_LONG: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         int64_t val1 = shadow_frame.GetVRegLong(inst->VRegB_23x());
+         int64_t val2 = shadow_frame.GetVRegLong(inst->VRegC_23x());
+         int32_t result;
+@@ -728,169 +1239,169 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         }
+         shadow_frame.SetVReg(inst->VRegA_23x(inst_data), result);
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IF_EQ: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         if (shadow_frame.GetVReg(inst->VRegA_22t(inst_data)) ==
+             shadow_frame.GetVReg(inst->VRegB_22t(inst_data))) {
+           int16_t offset = inst->VRegC_22t();
+           if (IsBackwardBranch(offset)) {
+-            self->AllowThreadSuspension();
++            ART_WASM_BACKWARD_BRANCH();
+           }
+           inst = inst->RelativeAt(offset);
+         } else {
+           inst = inst->Next_2xx();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IF_NE: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         if (shadow_frame.GetVReg(inst->VRegA_22t(inst_data)) !=
+             shadow_frame.GetVReg(inst->VRegB_22t(inst_data))) {
+           int16_t offset = inst->VRegC_22t();
+           if (IsBackwardBranch(offset)) {
+-            self->AllowThreadSuspension();
++            ART_WASM_BACKWARD_BRANCH();
+           }
+           inst = inst->RelativeAt(offset);
+         } else {
+           inst = inst->Next_2xx();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IF_LT: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         if (shadow_frame.GetVReg(inst->VRegA_22t(inst_data)) <
+             shadow_frame.GetVReg(inst->VRegB_22t(inst_data))) {
+           int16_t offset = inst->VRegC_22t();
+           if (IsBackwardBranch(offset)) {
+-            self->AllowThreadSuspension();
++            ART_WASM_BACKWARD_BRANCH();
+           }
+           inst = inst->RelativeAt(offset);
+         } else {
+           inst = inst->Next_2xx();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IF_GE: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         if (shadow_frame.GetVReg(inst->VRegA_22t(inst_data)) >=
+             shadow_frame.GetVReg(inst->VRegB_22t(inst_data))) {
+           int16_t offset = inst->VRegC_22t();
+           if (IsBackwardBranch(offset)) {
+-            self->AllowThreadSuspension();
++            ART_WASM_BACKWARD_BRANCH();
+           }
+           inst = inst->RelativeAt(offset);
+         } else {
+           inst = inst->Next_2xx();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IF_GT: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         if (shadow_frame.GetVReg(inst->VRegA_22t(inst_data)) >
+         shadow_frame.GetVReg(inst->VRegB_22t(inst_data))) {
+           int16_t offset = inst->VRegC_22t();
+           if (IsBackwardBranch(offset)) {
+-            self->AllowThreadSuspension();
++            ART_WASM_BACKWARD_BRANCH();
+           }
+           inst = inst->RelativeAt(offset);
+         } else {
+           inst = inst->Next_2xx();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IF_LE: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         if (shadow_frame.GetVReg(inst->VRegA_22t(inst_data)) <=
+             shadow_frame.GetVReg(inst->VRegB_22t(inst_data))) {
+           int16_t offset = inst->VRegC_22t();
+           if (IsBackwardBranch(offset)) {
+-            self->AllowThreadSuspension();
++            ART_WASM_BACKWARD_BRANCH();
+           }
+           inst = inst->RelativeAt(offset);
+         } else {
+           inst = inst->Next_2xx();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IF_EQZ: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         if (shadow_frame.GetVReg(inst->VRegA_21t(inst_data)) == 0) {
+           int16_t offset = inst->VRegB_21t();
+           if (IsBackwardBranch(offset)) {
+-            self->AllowThreadSuspension();
++            ART_WASM_BACKWARD_BRANCH();
+           }
+           inst = inst->RelativeAt(offset);
+         } else {
+           inst = inst->Next_2xx();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IF_NEZ: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         if (shadow_frame.GetVReg(inst->VRegA_21t(inst_data)) != 0) {
+           int16_t offset = inst->VRegB_21t();
+           if (IsBackwardBranch(offset)) {
+-            self->AllowThreadSuspension();
++            ART_WASM_BACKWARD_BRANCH();
+           }
+           inst = inst->RelativeAt(offset);
+         } else {
+           inst = inst->Next_2xx();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IF_LTZ: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         if (shadow_frame.GetVReg(inst->VRegA_21t(inst_data)) < 0) {
+           int16_t offset = inst->VRegB_21t();
+           if (IsBackwardBranch(offset)) {
+-            self->AllowThreadSuspension();
++            ART_WASM_BACKWARD_BRANCH();
+           }
+           inst = inst->RelativeAt(offset);
+         } else {
+           inst = inst->Next_2xx();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IF_GEZ: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         if (shadow_frame.GetVReg(inst->VRegA_21t(inst_data)) >= 0) {
+           int16_t offset = inst->VRegB_21t();
+           if (IsBackwardBranch(offset)) {
+-            self->AllowThreadSuspension();
++            ART_WASM_BACKWARD_BRANCH();
+           }
+           inst = inst->RelativeAt(offset);
+         } else {
+           inst = inst->Next_2xx();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IF_GTZ: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         if (shadow_frame.GetVReg(inst->VRegA_21t(inst_data)) > 0) {
+           int16_t offset = inst->VRegB_21t();
+           if (IsBackwardBranch(offset)) {
+-            self->AllowThreadSuspension();
++            ART_WASM_BACKWARD_BRANCH();
+           }
+           inst = inst->RelativeAt(offset);
+         } else {
+           inst = inst->Next_2xx();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IF_LEZ:  {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         if (shadow_frame.GetVReg(inst->VRegA_21t(inst_data)) <= 0) {
+           int16_t offset = inst->VRegB_21t();
+           if (IsBackwardBranch(offset)) {
+-            self->AllowThreadSuspension();
++            ART_WASM_BACKWARD_BRANCH();
+           }
+           inst = inst->RelativeAt(offset);
+         } else {
+           inst = inst->Next_2xx();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::AGET_BOOLEAN: {
+         PREAMBLE();
+@@ -908,7 +1419,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         } else {
+           HANDLE_PENDING_EXCEPTION();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::AGET_BYTE: {
+         PREAMBLE();
+@@ -926,7 +1437,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         } else {
+           HANDLE_PENDING_EXCEPTION();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::AGET_CHAR: {
+         PREAMBLE();
+@@ -944,7 +1455,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         } else {
+           HANDLE_PENDING_EXCEPTION();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::AGET_SHORT: {
+         PREAMBLE();
+@@ -962,7 +1473,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         } else {
+           HANDLE_PENDING_EXCEPTION();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::AGET: {
+         PREAMBLE();
+@@ -981,7 +1492,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         } else {
+           HANDLE_PENDING_EXCEPTION();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::AGET_WIDE:  {
+         PREAMBLE();
+@@ -1000,7 +1511,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         } else {
+           HANDLE_PENDING_EXCEPTION();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::AGET_OBJECT: {
+         PREAMBLE();
+@@ -1018,7 +1529,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         } else {
+           HANDLE_PENDING_EXCEPTION();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::APUT_BOOLEAN: {
+         PREAMBLE();
+@@ -1037,7 +1548,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         } else {
+           HANDLE_PENDING_EXCEPTION();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::APUT_BYTE: {
+         PREAMBLE();
+@@ -1056,7 +1567,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         } else {
+           HANDLE_PENDING_EXCEPTION();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::APUT_CHAR: {
+         PREAMBLE();
+@@ -1075,7 +1586,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         } else {
+           HANDLE_PENDING_EXCEPTION();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::APUT_SHORT: {
+         PREAMBLE();
+@@ -1094,7 +1605,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         } else {
+           HANDLE_PENDING_EXCEPTION();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::APUT: {
+         PREAMBLE();
+@@ -1114,7 +1625,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         } else {
+           HANDLE_PENDING_EXCEPTION();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::APUT_WIDE: {
+         PREAMBLE();
+@@ -1134,7 +1645,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         } else {
+           HANDLE_PENDING_EXCEPTION();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::APUT_OBJECT: {
+         PREAMBLE();
+@@ -1153,7 +1664,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         } else {
+           HANDLE_PENDING_EXCEPTION();
+         }
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IGET_BOOLEAN: {
+         PREAMBLE();
+@@ -1206,92 +1717,99 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+       }
+       case Instruction::IGET_QUICK: {
+         PREAMBLE();
+-        bool success = DoIGetQuick<Primitive::kPrimInt>(shadow_frame, inst, inst_data);
++        ART_WASM_LEAVE_FOR_LISTENERS(instrumentation->HasFieldReadListeners());
++        bool success = ArtWasmIGetQuick<Primitive::kPrimInt>(shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IGET_WIDE_QUICK: {
+         PREAMBLE();
+-        bool success = DoIGetQuick<Primitive::kPrimLong>(shadow_frame, inst, inst_data);
++        ART_WASM_LEAVE_FOR_LISTENERS(instrumentation->HasFieldReadListeners());
++        bool success = ArtWasmIGetQuick<Primitive::kPrimLong>(shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IGET_OBJECT_QUICK: {
+         PREAMBLE();
+-        bool success = DoIGetQuick<Primitive::kPrimNot>(shadow_frame, inst, inst_data);
++        ART_WASM_LEAVE_FOR_LISTENERS(instrumentation->HasFieldReadListeners());
++        bool success = ArtWasmIGetQuick<Primitive::kPrimNot>(shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IGET_BOOLEAN_QUICK: {
+         PREAMBLE();
+-        bool success = DoIGetQuick<Primitive::kPrimBoolean>(shadow_frame, inst, inst_data);
++        ART_WASM_LEAVE_FOR_LISTENERS(instrumentation->HasFieldReadListeners());
++        bool success = ArtWasmIGetQuick<Primitive::kPrimBoolean>(shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IGET_BYTE_QUICK: {
+         PREAMBLE();
+-        bool success = DoIGetQuick<Primitive::kPrimByte>(shadow_frame, inst, inst_data);
++        ART_WASM_LEAVE_FOR_LISTENERS(instrumentation->HasFieldReadListeners());
++        bool success = ArtWasmIGetQuick<Primitive::kPrimByte>(shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IGET_CHAR_QUICK: {
+         PREAMBLE();
+-        bool success = DoIGetQuick<Primitive::kPrimChar>(shadow_frame, inst, inst_data);
++        ART_WASM_LEAVE_FOR_LISTENERS(instrumentation->HasFieldReadListeners());
++        bool success = ArtWasmIGetQuick<Primitive::kPrimChar>(shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IGET_SHORT_QUICK: {
+         PREAMBLE();
+-        bool success = DoIGetQuick<Primitive::kPrimShort>(shadow_frame, inst, inst_data);
++        ART_WASM_LEAVE_FOR_LISTENERS(instrumentation->HasFieldReadListeners());
++        bool success = ArtWasmIGetQuick<Primitive::kPrimShort>(shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::SGET_BOOLEAN: {
+         PREAMBLE();
+-        bool success = DoFieldGet<StaticPrimitiveRead, Primitive::kPrimBoolean, do_access_check>(
+-            self, shadow_frame, inst, inst_data);
++        bool success = ArtWasmSGet<StaticPrimitiveRead, Primitive::kPrimBoolean, do_access_check>(
++            self, shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+         break;
+       }
+       case Instruction::SGET_BYTE: {
+         PREAMBLE();
+-        bool success = DoFieldGet<StaticPrimitiveRead, Primitive::kPrimByte, do_access_check>(
+-            self, shadow_frame, inst, inst_data);
++        bool success = ArtWasmSGet<StaticPrimitiveRead, Primitive::kPrimByte, do_access_check>(
++            self, shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+         break;
+       }
+       case Instruction::SGET_CHAR: {
+         PREAMBLE();
+-        bool success = DoFieldGet<StaticPrimitiveRead, Primitive::kPrimChar, do_access_check>(
+-            self, shadow_frame, inst, inst_data);
++        bool success = ArtWasmSGet<StaticPrimitiveRead, Primitive::kPrimChar, do_access_check>(
++            self, shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+         break;
+       }
+       case Instruction::SGET_SHORT: {
+         PREAMBLE();
+-        bool success = DoFieldGet<StaticPrimitiveRead, Primitive::kPrimShort, do_access_check>(
+-            self, shadow_frame, inst, inst_data);
++        bool success = ArtWasmSGet<StaticPrimitiveRead, Primitive::kPrimShort, do_access_check>(
++            self, shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+         break;
+       }
+       case Instruction::SGET: {
+         PREAMBLE();
+-        bool success = DoFieldGet<StaticPrimitiveRead, Primitive::kPrimInt, do_access_check>(
+-            self, shadow_frame, inst, inst_data);
++        bool success = ArtWasmSGet<StaticPrimitiveRead, Primitive::kPrimInt, do_access_check>(
++            self, shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+         break;
+       }
+       case Instruction::SGET_WIDE: {
+         PREAMBLE();
+-        bool success = DoFieldGet<StaticPrimitiveRead, Primitive::kPrimLong, do_access_check>(
+-            self, shadow_frame, inst, inst_data);
++        bool success = ArtWasmSGet<StaticPrimitiveRead, Primitive::kPrimLong, do_access_check>(
++            self, shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+         break;
+       }
+       case Instruction::SGET_OBJECT: {
+         PREAMBLE();
+-        bool success = DoFieldGet<StaticObjectRead, Primitive::kPrimNot, do_access_check>(
+-            self, shadow_frame, inst, inst_data);
++        bool success = ArtWasmSGet<StaticObjectRead, Primitive::kPrimNot, do_access_check>(
++            self, shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+         break;
+       }
+@@ -1346,159 +1864,166 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+       }
+       case Instruction::IPUT_QUICK: {
+         PREAMBLE();
+-        bool success = DoIPutQuick<Primitive::kPrimInt, transaction_active>(
+-            shadow_frame, inst, inst_data);
++        ART_WASM_LEAVE_FOR_LISTENERS(instrumentation->HasFieldWriteListeners());
++        bool success = ArtWasmIPutQuick<Primitive::kPrimInt, transaction_active>(
++            shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IPUT_BOOLEAN_QUICK: {
+         PREAMBLE();
+-        bool success = DoIPutQuick<Primitive::kPrimBoolean, transaction_active>(
+-            shadow_frame, inst, inst_data);
++        ART_WASM_LEAVE_FOR_LISTENERS(instrumentation->HasFieldWriteListeners());
++        bool success = ArtWasmIPutQuick<Primitive::kPrimBoolean, transaction_active>(
++            shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IPUT_BYTE_QUICK: {
+         PREAMBLE();
+-        bool success = DoIPutQuick<Primitive::kPrimByte, transaction_active>(
+-            shadow_frame, inst, inst_data);
++        ART_WASM_LEAVE_FOR_LISTENERS(instrumentation->HasFieldWriteListeners());
++        bool success = ArtWasmIPutQuick<Primitive::kPrimByte, transaction_active>(
++            shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IPUT_CHAR_QUICK: {
+         PREAMBLE();
+-        bool success = DoIPutQuick<Primitive::kPrimChar, transaction_active>(
+-            shadow_frame, inst, inst_data);
++        ART_WASM_LEAVE_FOR_LISTENERS(instrumentation->HasFieldWriteListeners());
++        bool success = ArtWasmIPutQuick<Primitive::kPrimChar, transaction_active>(
++            shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IPUT_SHORT_QUICK: {
+         PREAMBLE();
+-        bool success = DoIPutQuick<Primitive::kPrimShort, transaction_active>(
+-            shadow_frame, inst, inst_data);
++        ART_WASM_LEAVE_FOR_LISTENERS(instrumentation->HasFieldWriteListeners());
++        bool success = ArtWasmIPutQuick<Primitive::kPrimShort, transaction_active>(
++            shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IPUT_WIDE_QUICK: {
+         PREAMBLE();
+-        bool success = DoIPutQuick<Primitive::kPrimLong, transaction_active>(
+-            shadow_frame, inst, inst_data);
++        ART_WASM_LEAVE_FOR_LISTENERS(instrumentation->HasFieldWriteListeners());
++        bool success = ArtWasmIPutQuick<Primitive::kPrimLong, transaction_active>(
++            shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::IPUT_OBJECT_QUICK: {
+         PREAMBLE();
+-        bool success = DoIPutQuick<Primitive::kPrimNot, transaction_active>(
+-            shadow_frame, inst, inst_data);
++        ART_WASM_LEAVE_FOR_LISTENERS(instrumentation->HasFieldWriteListeners());
++        bool success = ArtWasmIPutQuick<Primitive::kPrimNot, transaction_active>(
++            shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::SPUT_BOOLEAN: {
+         PREAMBLE();
+-        bool success = DoFieldPut<StaticPrimitiveWrite, Primitive::kPrimBoolean, do_access_check,
+-            transaction_active>(self, shadow_frame, inst, inst_data);
++        bool success = ArtWasmSPut<StaticPrimitiveWrite, Primitive::kPrimBoolean, do_access_check,
++            transaction_active>(self, shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+         break;
+       }
+       case Instruction::SPUT_BYTE: {
+         PREAMBLE();
+-        bool success = DoFieldPut<StaticPrimitiveWrite, Primitive::kPrimByte, do_access_check,
+-            transaction_active>(self, shadow_frame, inst, inst_data);
++        bool success = ArtWasmSPut<StaticPrimitiveWrite, Primitive::kPrimByte, do_access_check,
++            transaction_active>(self, shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+         break;
+       }
+       case Instruction::SPUT_CHAR: {
+         PREAMBLE();
+-        bool success = DoFieldPut<StaticPrimitiveWrite, Primitive::kPrimChar, do_access_check,
+-            transaction_active>(self, shadow_frame, inst, inst_data);
++        bool success = ArtWasmSPut<StaticPrimitiveWrite, Primitive::kPrimChar, do_access_check,
++            transaction_active>(self, shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+         break;
+       }
+       case Instruction::SPUT_SHORT: {
+         PREAMBLE();
+-        bool success = DoFieldPut<StaticPrimitiveWrite, Primitive::kPrimShort, do_access_check,
+-            transaction_active>(self, shadow_frame, inst, inst_data);
++        bool success = ArtWasmSPut<StaticPrimitiveWrite, Primitive::kPrimShort, do_access_check,
++            transaction_active>(self, shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+         break;
+       }
+       case Instruction::SPUT: {
+         PREAMBLE();
+-        bool success = DoFieldPut<StaticPrimitiveWrite, Primitive::kPrimInt, do_access_check,
+-            transaction_active>(self, shadow_frame, inst, inst_data);
++        bool success = ArtWasmSPut<StaticPrimitiveWrite, Primitive::kPrimInt, do_access_check,
++            transaction_active>(self, shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+         break;
+       }
+       case Instruction::SPUT_WIDE: {
+         PREAMBLE();
+-        bool success = DoFieldPut<StaticPrimitiveWrite, Primitive::kPrimLong, do_access_check,
+-            transaction_active>(self, shadow_frame, inst, inst_data);
++        bool success = ArtWasmSPut<StaticPrimitiveWrite, Primitive::kPrimLong, do_access_check,
++            transaction_active>(self, shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+         break;
+       }
+       case Instruction::SPUT_OBJECT: {
+         PREAMBLE();
+-        bool success = DoFieldPut<StaticObjectWrite, Primitive::kPrimNot, do_access_check,
+-            transaction_active>(self, shadow_frame, inst, inst_data);
++        bool success = ArtWasmSPut<StaticObjectWrite, Primitive::kPrimNot, do_access_check,
++            transaction_active>(self, shadow_frame, inst, inst_data, instrumentation);
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+         break;
+       }
+       case Instruction::INVOKE_VIRTUAL: {
+         PREAMBLE();
+-        ART_WASM_FLAT_INVOKE(DoInvoke<kVirtual, false, do_access_check>(
++        ART_WASM_FLAT_INVOKE_FAST(kVirtual, false, DoInvoke<kVirtual, false, do_access_check>(
+             self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_VIRTUAL_RANGE: {
+         PREAMBLE();
+-        ART_WASM_FLAT_INVOKE(DoInvoke<kVirtual, true, do_access_check>(
++        ART_WASM_FLAT_INVOKE_FAST(kVirtual, true, DoInvoke<kVirtual, true, do_access_check>(
+             self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_SUPER: {
+         PREAMBLE();
+-        ART_WASM_FLAT_INVOKE(DoInvoke<kSuper, false, do_access_check>(
++        ART_WASM_FLAT_INVOKE_FAST(kSuper, false, DoInvoke<kSuper, false, do_access_check>(
+             self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_SUPER_RANGE: {
+         PREAMBLE();
+-        ART_WASM_FLAT_INVOKE(DoInvoke<kSuper, true, do_access_check>(
++        ART_WASM_FLAT_INVOKE_FAST(kSuper, true, DoInvoke<kSuper, true, do_access_check>(
+             self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_DIRECT: {
+         PREAMBLE();
+-        ART_WASM_FLAT_INVOKE(DoInvoke<kDirect, false, do_access_check>(
++        ART_WASM_FLAT_INVOKE_FAST(kDirect, false, DoInvoke<kDirect, false, do_access_check>(
+             self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_DIRECT_RANGE: {
+         PREAMBLE();
+-        ART_WASM_FLAT_INVOKE(DoInvoke<kDirect, true, do_access_check>(
++        ART_WASM_FLAT_INVOKE_FAST(kDirect, true, DoInvoke<kDirect, true, do_access_check>(
+             self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_INTERFACE: {
+         PREAMBLE();
+-        ART_WASM_FLAT_INVOKE(DoInvoke<kInterface, false, do_access_check>(
++        ART_WASM_FLAT_INVOKE_FAST(kInterface, false, DoInvoke<kInterface, false, do_access_check>(
+             self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_INTERFACE_RANGE: {
+         PREAMBLE();
+-        ART_WASM_FLAT_INVOKE(DoInvoke<kInterface, true, do_access_check>(
++        ART_WASM_FLAT_INVOKE_FAST(kInterface, true, DoInvoke<kInterface, true, do_access_check>(
+             self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_STATIC: {
+         PREAMBLE();
+-        ART_WASM_FLAT_INVOKE(DoInvoke<kStatic, false, do_access_check>(
++        ART_WASM_FLAT_INVOKE_FAST(kStatic, false, DoInvoke<kStatic, false, do_access_check>(
+             self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_STATIC_RANGE: {
+         PREAMBLE();
+-        ART_WASM_FLAT_INVOKE(DoInvoke<kStatic, true, do_access_check>(
++        ART_WASM_FLAT_INVOKE_FAST(kStatic, true, DoInvoke<kStatic, true, do_access_check>(
+             self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+@@ -1515,168 +2040,168 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         break;
+       }
+       case Instruction::NEG_INT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(
+             inst->VRegA_12x(inst_data), -shadow_frame.GetVReg(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::NOT_INT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(
+             inst->VRegA_12x(inst_data), ~shadow_frame.GetVReg(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::NEG_LONG:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(
+             inst->VRegA_12x(inst_data), -shadow_frame.GetVRegLong(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::NOT_LONG:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(
+             inst->VRegA_12x(inst_data), ~shadow_frame.GetVRegLong(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::NEG_FLOAT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegFloat(
+             inst->VRegA_12x(inst_data), -shadow_frame.GetVRegFloat(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::NEG_DOUBLE:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegDouble(
+             inst->VRegA_12x(inst_data), -shadow_frame.GetVRegDouble(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::INT_TO_LONG:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_12x(inst_data),
+                                  shadow_frame.GetVReg(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::INT_TO_FLOAT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegFloat(inst->VRegA_12x(inst_data),
+                                   shadow_frame.GetVReg(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::INT_TO_DOUBLE:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegDouble(inst->VRegA_12x(inst_data),
+                                    shadow_frame.GetVReg(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::LONG_TO_INT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_12x(inst_data),
+                              shadow_frame.GetVRegLong(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::LONG_TO_FLOAT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegFloat(inst->VRegA_12x(inst_data),
+                                   shadow_frame.GetVRegLong(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::LONG_TO_DOUBLE:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegDouble(inst->VRegA_12x(inst_data),
+                                    shadow_frame.GetVRegLong(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::FLOAT_TO_INT: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         float val = shadow_frame.GetVRegFloat(inst->VRegB_12x(inst_data));
+         int32_t result = art_float_to_integral<int32_t, float>(val);
+         shadow_frame.SetVReg(inst->VRegA_12x(inst_data), result);
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::FLOAT_TO_LONG: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         float val = shadow_frame.GetVRegFloat(inst->VRegB_12x(inst_data));
+         int64_t result = art_float_to_integral<int64_t, float>(val);
+         shadow_frame.SetVRegLong(inst->VRegA_12x(inst_data), result);
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::FLOAT_TO_DOUBLE:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegDouble(inst->VRegA_12x(inst_data),
+                                    shadow_frame.GetVRegFloat(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::DOUBLE_TO_INT: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         double val = shadow_frame.GetVRegDouble(inst->VRegB_12x(inst_data));
+         int32_t result = art_float_to_integral<int32_t, double>(val);
+         shadow_frame.SetVReg(inst->VRegA_12x(inst_data), result);
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::DOUBLE_TO_LONG: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         double val = shadow_frame.GetVRegDouble(inst->VRegB_12x(inst_data));
+         int64_t result = art_float_to_integral<int64_t, double>(val);
+         shadow_frame.SetVRegLong(inst->VRegA_12x(inst_data), result);
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::DOUBLE_TO_FLOAT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegFloat(inst->VRegA_12x(inst_data),
+                                   shadow_frame.GetVRegDouble(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::INT_TO_BYTE:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_12x(inst_data), static_cast<int8_t>(
+             shadow_frame.GetVReg(inst->VRegB_12x(inst_data))));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::INT_TO_CHAR:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_12x(inst_data), static_cast<uint16_t>(
+             shadow_frame.GetVReg(inst->VRegB_12x(inst_data))));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::INT_TO_SHORT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_12x(inst_data), static_cast<int16_t>(
+             shadow_frame.GetVReg(inst->VRegB_12x(inst_data))));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::ADD_INT: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_23x(inst_data),
+                              SafeAdd(shadow_frame.GetVReg(inst->VRegB_23x()),
+                                      shadow_frame.GetVReg(inst->VRegC_23x())));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::SUB_INT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_23x(inst_data),
+                              SafeSub(shadow_frame.GetVReg(inst->VRegB_23x()),
+                                      shadow_frame.GetVReg(inst->VRegC_23x())));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MUL_INT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_23x(inst_data),
+                              SafeMul(shadow_frame.GetVReg(inst->VRegB_23x()),
+                                      shadow_frame.GetVReg(inst->VRegC_23x())));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::DIV_INT: {
+         PREAMBLE();
+         bool success = DoIntDivide(shadow_frame, inst->VRegA_23x(inst_data),
+                                    shadow_frame.GetVReg(inst->VRegB_23x()),
+                                    shadow_frame.GetVReg(inst->VRegC_23x()));
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::REM_INT: {
+         PREAMBLE();
+@@ -1684,222 +2209,222 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+                                       shadow_frame.GetVReg(inst->VRegB_23x()),
+                                       shadow_frame.GetVReg(inst->VRegC_23x()));
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::SHL_INT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_23x(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_23x()) <<
+                              (shadow_frame.GetVReg(inst->VRegC_23x()) & 0x1f));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::SHR_INT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_23x(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_23x()) >>
+                              (shadow_frame.GetVReg(inst->VRegC_23x()) & 0x1f));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::USHR_INT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_23x(inst_data),
+                              static_cast<uint32_t>(shadow_frame.GetVReg(inst->VRegB_23x())) >>
+                              (shadow_frame.GetVReg(inst->VRegC_23x()) & 0x1f));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::AND_INT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_23x(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_23x()) &
+                              shadow_frame.GetVReg(inst->VRegC_23x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::OR_INT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_23x(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_23x()) |
+                              shadow_frame.GetVReg(inst->VRegC_23x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::XOR_INT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_23x(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_23x()) ^
+                              shadow_frame.GetVReg(inst->VRegC_23x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::ADD_LONG:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_23x(inst_data),
+                                  SafeAdd(shadow_frame.GetVRegLong(inst->VRegB_23x()),
+                                          shadow_frame.GetVRegLong(inst->VRegC_23x())));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::SUB_LONG:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_23x(inst_data),
+                                  SafeSub(shadow_frame.GetVRegLong(inst->VRegB_23x()),
+                                          shadow_frame.GetVRegLong(inst->VRegC_23x())));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MUL_LONG:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_23x(inst_data),
+                                  SafeMul(shadow_frame.GetVRegLong(inst->VRegB_23x()),
+                                          shadow_frame.GetVRegLong(inst->VRegC_23x())));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::DIV_LONG:
+         PREAMBLE();
+         DoLongDivide(shadow_frame, inst->VRegA_23x(inst_data),
+                      shadow_frame.GetVRegLong(inst->VRegB_23x()),
+                      shadow_frame.GetVRegLong(inst->VRegC_23x()));
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(self->IsExceptionPending(), Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::REM_LONG:
+         PREAMBLE();
+         DoLongRemainder(shadow_frame, inst->VRegA_23x(inst_data),
+                         shadow_frame.GetVRegLong(inst->VRegB_23x()),
+                         shadow_frame.GetVRegLong(inst->VRegC_23x()));
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(self->IsExceptionPending(), Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::AND_LONG:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_23x(inst_data),
+                                  shadow_frame.GetVRegLong(inst->VRegB_23x()) &
+                                  shadow_frame.GetVRegLong(inst->VRegC_23x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::OR_LONG:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_23x(inst_data),
+                                  shadow_frame.GetVRegLong(inst->VRegB_23x()) |
+                                  shadow_frame.GetVRegLong(inst->VRegC_23x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::XOR_LONG:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_23x(inst_data),
+                                  shadow_frame.GetVRegLong(inst->VRegB_23x()) ^
+                                  shadow_frame.GetVRegLong(inst->VRegC_23x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::SHL_LONG:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_23x(inst_data),
+                                  shadow_frame.GetVRegLong(inst->VRegB_23x()) <<
+                                  (shadow_frame.GetVReg(inst->VRegC_23x()) & 0x3f));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::SHR_LONG:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_23x(inst_data),
+                                  shadow_frame.GetVRegLong(inst->VRegB_23x()) >>
+                                  (shadow_frame.GetVReg(inst->VRegC_23x()) & 0x3f));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::USHR_LONG:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegLong(inst->VRegA_23x(inst_data),
+                                  static_cast<uint64_t>(shadow_frame.GetVRegLong(inst->VRegB_23x())) >>
+                                  (shadow_frame.GetVReg(inst->VRegC_23x()) & 0x3f));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::ADD_FLOAT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegFloat(inst->VRegA_23x(inst_data),
+                                   shadow_frame.GetVRegFloat(inst->VRegB_23x()) +
+                                   shadow_frame.GetVRegFloat(inst->VRegC_23x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::SUB_FLOAT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegFloat(inst->VRegA_23x(inst_data),
+                                   shadow_frame.GetVRegFloat(inst->VRegB_23x()) -
+                                   shadow_frame.GetVRegFloat(inst->VRegC_23x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MUL_FLOAT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegFloat(inst->VRegA_23x(inst_data),
+                                   shadow_frame.GetVRegFloat(inst->VRegB_23x()) *
+                                   shadow_frame.GetVRegFloat(inst->VRegC_23x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::DIV_FLOAT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegFloat(inst->VRegA_23x(inst_data),
+                                   shadow_frame.GetVRegFloat(inst->VRegB_23x()) /
+                                   shadow_frame.GetVRegFloat(inst->VRegC_23x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::REM_FLOAT:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegFloat(inst->VRegA_23x(inst_data),
+                                   fmodf(shadow_frame.GetVRegFloat(inst->VRegB_23x()),
+                                         shadow_frame.GetVRegFloat(inst->VRegC_23x())));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::ADD_DOUBLE:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegDouble(inst->VRegA_23x(inst_data),
+                                    shadow_frame.GetVRegDouble(inst->VRegB_23x()) +
+                                    shadow_frame.GetVRegDouble(inst->VRegC_23x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::SUB_DOUBLE:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegDouble(inst->VRegA_23x(inst_data),
+                                    shadow_frame.GetVRegDouble(inst->VRegB_23x()) -
+                                    shadow_frame.GetVRegDouble(inst->VRegC_23x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MUL_DOUBLE:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegDouble(inst->VRegA_23x(inst_data),
+                                    shadow_frame.GetVRegDouble(inst->VRegB_23x()) *
+                                    shadow_frame.GetVRegDouble(inst->VRegC_23x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::DIV_DOUBLE:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegDouble(inst->VRegA_23x(inst_data),
+                                    shadow_frame.GetVRegDouble(inst->VRegB_23x()) /
+                                    shadow_frame.GetVRegDouble(inst->VRegC_23x()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::REM_DOUBLE:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVRegDouble(inst->VRegA_23x(inst_data),
+                                    fmod(shadow_frame.GetVRegDouble(inst->VRegB_23x()),
+                                         shadow_frame.GetVRegDouble(inst->VRegC_23x())));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::ADD_INT_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVReg(vregA, SafeAdd(shadow_frame.GetVReg(vregA),
+                                             shadow_frame.GetVReg(inst->VRegB_12x(inst_data))));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::SUB_INT_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVReg(vregA,
+                              SafeSub(shadow_frame.GetVReg(vregA),
+                                      shadow_frame.GetVReg(inst->VRegB_12x(inst_data))));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::MUL_INT_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVReg(vregA,
+                              SafeMul(shadow_frame.GetVReg(vregA),
+                                      shadow_frame.GetVReg(inst->VRegB_12x(inst_data))));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::DIV_INT_2ADDR: {
+         PREAMBLE();
+@@ -1907,7 +2432,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         bool success = DoIntDivide(shadow_frame, vregA, shadow_frame.GetVReg(vregA),
+                                    shadow_frame.GetVReg(inst->VRegB_12x(inst_data)));
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_1xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::REM_INT_2ADDR: {
+         PREAMBLE();
+@@ -1915,88 +2440,88 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         bool success = DoIntRemainder(shadow_frame, vregA, shadow_frame.GetVReg(vregA),
+                                       shadow_frame.GetVReg(inst->VRegB_12x(inst_data)));
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_1xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::SHL_INT_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVReg(vregA,
+                              shadow_frame.GetVReg(vregA) <<
+                              (shadow_frame.GetVReg(inst->VRegB_12x(inst_data)) & 0x1f));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::SHR_INT_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVReg(vregA,
+                              shadow_frame.GetVReg(vregA) >>
+                              (shadow_frame.GetVReg(inst->VRegB_12x(inst_data)) & 0x1f));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::USHR_INT_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVReg(vregA,
+                              static_cast<uint32_t>(shadow_frame.GetVReg(vregA)) >>
+                              (shadow_frame.GetVReg(inst->VRegB_12x(inst_data)) & 0x1f));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::AND_INT_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVReg(vregA,
+                              shadow_frame.GetVReg(vregA) &
+                              shadow_frame.GetVReg(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::OR_INT_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVReg(vregA,
+                              shadow_frame.GetVReg(vregA) |
+                              shadow_frame.GetVReg(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::XOR_INT_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVReg(vregA,
+                              shadow_frame.GetVReg(vregA) ^
+                              shadow_frame.GetVReg(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::ADD_LONG_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegLong(vregA,
+                                  SafeAdd(shadow_frame.GetVRegLong(vregA),
+                                          shadow_frame.GetVRegLong(inst->VRegB_12x(inst_data))));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::SUB_LONG_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegLong(vregA,
+                                  SafeSub(shadow_frame.GetVRegLong(vregA),
+                                          shadow_frame.GetVRegLong(inst->VRegB_12x(inst_data))));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::MUL_LONG_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegLong(vregA,
+                                  SafeMul(shadow_frame.GetVRegLong(vregA),
+                                          shadow_frame.GetVRegLong(inst->VRegB_12x(inst_data))));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::DIV_LONG_2ADDR: {
+         PREAMBLE();
+@@ -2004,7 +2529,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         DoLongDivide(shadow_frame, vregA, shadow_frame.GetVRegLong(vregA),
+                     shadow_frame.GetVRegLong(inst->VRegB_12x(inst_data)));
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(self->IsExceptionPending(), Next_1xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::REM_LONG_2ADDR: {
+         PREAMBLE();
+@@ -2012,180 +2537,180 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         DoLongRemainder(shadow_frame, vregA, shadow_frame.GetVRegLong(vregA),
+                         shadow_frame.GetVRegLong(inst->VRegB_12x(inst_data)));
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(self->IsExceptionPending(), Next_1xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::AND_LONG_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegLong(vregA,
+                                  shadow_frame.GetVRegLong(vregA) &
+                                  shadow_frame.GetVRegLong(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::OR_LONG_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegLong(vregA,
+                                  shadow_frame.GetVRegLong(vregA) |
+                                  shadow_frame.GetVRegLong(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::XOR_LONG_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegLong(vregA,
+                                  shadow_frame.GetVRegLong(vregA) ^
+                                  shadow_frame.GetVRegLong(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::SHL_LONG_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegLong(vregA,
+                                  shadow_frame.GetVRegLong(vregA) <<
+                                  (shadow_frame.GetVReg(inst->VRegB_12x(inst_data)) & 0x3f));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::SHR_LONG_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegLong(vregA,
+                                  shadow_frame.GetVRegLong(vregA) >>
+                                  (shadow_frame.GetVReg(inst->VRegB_12x(inst_data)) & 0x3f));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::USHR_LONG_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegLong(vregA,
+                                  static_cast<uint64_t>(shadow_frame.GetVRegLong(vregA)) >>
+                                  (shadow_frame.GetVReg(inst->VRegB_12x(inst_data)) & 0x3f));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::ADD_FLOAT_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegFloat(vregA,
+                                   shadow_frame.GetVRegFloat(vregA) +
+                                   shadow_frame.GetVRegFloat(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::SUB_FLOAT_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegFloat(vregA,
+                                   shadow_frame.GetVRegFloat(vregA) -
+                                   shadow_frame.GetVRegFloat(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::MUL_FLOAT_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegFloat(vregA,
+                                   shadow_frame.GetVRegFloat(vregA) *
+                                   shadow_frame.GetVRegFloat(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::DIV_FLOAT_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegFloat(vregA,
+                                   shadow_frame.GetVRegFloat(vregA) /
+                                   shadow_frame.GetVRegFloat(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::REM_FLOAT_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegFloat(vregA,
+                                   fmodf(shadow_frame.GetVRegFloat(vregA),
+                                         shadow_frame.GetVRegFloat(inst->VRegB_12x(inst_data))));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::ADD_DOUBLE_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegDouble(vregA,
+                                    shadow_frame.GetVRegDouble(vregA) +
+                                    shadow_frame.GetVRegDouble(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::SUB_DOUBLE_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegDouble(vregA,
+                                    shadow_frame.GetVRegDouble(vregA) -
+                                    shadow_frame.GetVRegDouble(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::MUL_DOUBLE_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegDouble(vregA,
+                                    shadow_frame.GetVRegDouble(vregA) *
+                                    shadow_frame.GetVRegDouble(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::DIV_DOUBLE_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegDouble(vregA,
+                                    shadow_frame.GetVRegDouble(vregA) /
+                                    shadow_frame.GetVRegDouble(inst->VRegB_12x(inst_data)));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::REM_DOUBLE_2ADDR: {
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         uint4_t vregA = inst->VRegA_12x(inst_data);
+         shadow_frame.SetVRegDouble(vregA,
+                                    fmod(shadow_frame.GetVRegDouble(vregA),
+                                         shadow_frame.GetVRegDouble(inst->VRegB_12x(inst_data))));
+         inst = inst->Next_1xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::ADD_INT_LIT16:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22s(inst_data),
+                              SafeAdd(shadow_frame.GetVReg(inst->VRegB_22s(inst_data)),
+                                      inst->VRegC_22s()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::RSUB_INT_LIT16:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22s(inst_data),
+                              SafeSub(inst->VRegC_22s(),
+                                      shadow_frame.GetVReg(inst->VRegB_22s(inst_data))));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MUL_INT_LIT16:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22s(inst_data),
+                              SafeMul(shadow_frame.GetVReg(inst->VRegB_22s(inst_data)),
+                                      inst->VRegC_22s()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::DIV_INT_LIT16: {
+         PREAMBLE();
+         bool success = DoIntDivide(shadow_frame, inst->VRegA_22s(inst_data),
+                                    shadow_frame.GetVReg(inst->VRegB_22s(inst_data)),
+                                    inst->VRegC_22s());
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::REM_INT_LIT16: {
+         PREAMBLE();
+@@ -2193,103 +2718,103 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+                                       shadow_frame.GetVReg(inst->VRegB_22s(inst_data)),
+                                       inst->VRegC_22s());
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::AND_INT_LIT16:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22s(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_22s(inst_data)) &
+                              inst->VRegC_22s());
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::OR_INT_LIT16:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22s(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_22s(inst_data)) |
+                              inst->VRegC_22s());
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::XOR_INT_LIT16:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22s(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_22s(inst_data)) ^
+                              inst->VRegC_22s());
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::ADD_INT_LIT8:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22b(inst_data),
+                              SafeAdd(shadow_frame.GetVReg(inst->VRegB_22b()), inst->VRegC_22b()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::RSUB_INT_LIT8:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22b(inst_data),
+                              SafeSub(inst->VRegC_22b(), shadow_frame.GetVReg(inst->VRegB_22b())));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::MUL_INT_LIT8:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22b(inst_data),
+                              SafeMul(shadow_frame.GetVReg(inst->VRegB_22b()), inst->VRegC_22b()));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::DIV_INT_LIT8: {
+         PREAMBLE();
+         bool success = DoIntDivide(shadow_frame, inst->VRegA_22b(inst_data),
+                                    shadow_frame.GetVReg(inst->VRegB_22b()), inst->VRegC_22b());
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::REM_INT_LIT8: {
+         PREAMBLE();
+         bool success = DoIntRemainder(shadow_frame, inst->VRegA_22b(inst_data),
+                                       shadow_frame.GetVReg(inst->VRegB_22b()), inst->VRegC_22b());
+         POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_2xx);
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       }
+       case Instruction::AND_INT_LIT8:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22b(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_22b()) &
+                              inst->VRegC_22b());
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::OR_INT_LIT8:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22b(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_22b()) |
+                              inst->VRegC_22b());
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::XOR_INT_LIT8:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22b(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_22b()) ^
+                              inst->VRegC_22b());
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::SHL_INT_LIT8:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22b(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_22b()) <<
+                              (inst->VRegC_22b() & 0x1f));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::SHR_INT_LIT8:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22b(inst_data),
+                              shadow_frame.GetVReg(inst->VRegB_22b()) >>
+                              (inst->VRegC_22b() & 0x1f));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::USHR_INT_LIT8:
+-        PREAMBLE();
++        ART_WASM_PREAMBLE_PURE();
+         shadow_frame.SetVReg(inst->VRegA_22b(inst_data),
+                              static_cast<uint32_t>(shadow_frame.GetVReg(inst->VRegB_22b())) >>
+                              (inst->VRegC_22b() & 0x1f));
+         inst = inst->Next_2xx();
+-        break;
++        ART_WASM_NEXT_INSTRUCTION();
+       case Instruction::UNUSED_3E ... Instruction::UNUSED_43:
+       case Instruction::UNUSED_F3 ... Instruction::UNUSED_FF:
+       case Instruction::UNUSED_79:
+@@ -2297,6 +2822,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+         UnexpectedOpcode(inst, shadow_frame);
+     }
+ #if defined(ART_WASM_FLAT_CALLS)
++    ART_WASM_AFTER_CALLS();
+     continue;
+   flat_return:
+     // The method of a flat call returned: continue its caller after the
+@@ -2335,6 +2861,34 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+ #endif
+ }  // NOLINT(readability/fn_size)
+ 
++#if defined(ART_WASM_FLAT_CALLS)
++template<bool do_access_check, bool transaction_active>
++JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
++                         ShadowFrame& shadow_frame, JValue result_register) {
++  ArtWasmResume resume = {nullptr, 0, JValue(), false, false, false};
++  JValue result = ExecuteSwitchImplLoop<do_access_check, transaction_active>(
++      self, code_item, shadow_frame, result_register, &resume);
++  while (UNLIKELY(resume.yielded)) {
++    resume.yielded = false;
++    if (resume.suspend) {
++      resume.suspend = false;
++      self->CheckSuspend();
++    }
++    if (UNLIKELY(resume.dex_pc_listeners)) {
++      // The rest of this call (its flat frames too) in the loop with access
++      // checks: it calls the listeners and makes no flat calls.
++      resume.dex_pc_listeners = false;
++      result = ExecuteSwitchImplLoop<true, transaction_active>(
++          self, code_item, shadow_frame, resume.result_register, &resume);
++    } else {
++      result = ExecuteSwitchImplLoop<do_access_check, transaction_active>(
++          self, code_item, shadow_frame, resume.result_register, &resume);
++    }
++  }
++  return result;
++}
++#endif
++
+ // Explicit definitions of ExecuteSwitchImpl.
+ template SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) HOT_ATTR
+ JValue ExecuteSwitchImpl<true, false>(Thread* self, const DexFile::CodeItem* code_item,
+diff --git a/art/runtime/runtime.cc b/art/runtime/runtime.cc
+index fd8f9a2d..1192ce87 100644
+--- a/art/runtime/runtime.cc
++++ b/art/runtime/runtime.cc
+@@ -532,6 +532,13 @@ bool Runtime::Start() {
+   // it touches will have methods linked to the oat file if necessary.
+   ATRACE_BEGIN("InitNativeMethods");
+   InitNativeMethods();
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (art-speed): the interpreter's intrinsics for some natives.
++  {
++    ScopedObjectAccess soa(self);
++    interpreter::ArtWasmInstallIntrinsics(self);
++  }
++#endif
+   ATRACE_END();
+ 
+   // Initialize well known thread group values that may be accessed threads while attaching.
+diff --git a/art/runtime/stack.h b/art/runtime/stack.h
+index 38dfe1b0..b7588cc7 100644
+--- a/art/runtime/stack.h
++++ b/art/runtime/stack.h
+@@ -92,6 +92,24 @@ class ShadowFrame {
+     ShadowFrame* sf = new (memory) ShadowFrame(num_vregs, link, method, dex_pc, true);
+     return sf;
+   }
++
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (art-speed): a frame for a call whose arguments the caller
++  // copies into registers [num_vregs - num_ins, num_vregs). Only the
++  // references of the other registers are cleared (the GC reads the
++  // references; the verifier guarantees a register is written before it is
++  // read): Create's memset is WebAssembly's memory.fill, a call into the
++  // engine, for a few dozen bytes.
++  static ShadowFrame* CreateForCall(uint32_t num_vregs, uint32_t num_ins, ShadowFrame* link,
++                                    ArtMethod* method, void* memory) {
++    ShadowFrame* sf = new (memory) ShadowFrame(num_vregs, link, method);
++    volatile uint32_t* refs = reinterpret_cast<volatile uint32_t*>(&sf->vregs_[num_vregs]);
++    for (uint32_t i = 0, n = num_vregs - num_ins; i < n; ++i) {
++      refs[i] = 0;  // volatile: not turned back into memset
++    }
++    return sf;
++  }
++#endif
+   ~ShadowFrame() {}
+ 
+   bool HasReferenceArray() const {
+@@ -289,6 +307,11 @@ class ShadowFrame {
+     }
+   }
+ 
++#if defined(__EMSCRIPTEN__)
++  ShadowFrame(uint32_t num_vregs, ShadowFrame* link, ArtMethod* method)
++      : number_of_vregs_(num_vregs), link_(link), method_(method), dex_pc_(0) {}
++#endif
++
+   const StackReference<mirror::Object>* References() const {
+     DCHECK(HasReferenceArray());
+     const uint32_t* vreg_end = &vregs_[NumberOfVRegs()];
+diff --git a/art/runtime/verifier/instruction_flags.h b/art/runtime/verifier/instruction_flags.h
+index e67067cd..57b07bfa 100644
+--- a/art/runtime/verifier/instruction_flags.h
++++ b/art/runtime/verifier/instruction_flags.h
+@@ -107,6 +107,18 @@ class InstructionFlags FINAL {
+     SetReturn();
+   }
+ 
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (art-speed): the verifier saw this field access with an object
++  // register of no known class (e.g. constant null); it is not quickened
++  // (the verifier could not infer the field of the quick instruction again).
++  void SetArcNoQuicken() {
++    flags_ |= 1 << kArcNoQuicken;
++  }
++  bool IsArcNoQuicken() const {
++    return (flags_ & (1 << kArcNoQuicken)) != 0;
++  }
++#endif
++
+   std::string ToString() const;
+ 
+  private:
+@@ -126,6 +138,9 @@ class InstructionFlags FINAL {
+     kCompileTimeInfoPoint = 5,
+     // A return instruction.
+     kReturn = 6,
++#if defined(__EMSCRIPTEN__)
++    kArcNoQuicken = 7,
++#endif
+   };
+   uint8_t flags_;
+ };
+diff --git a/art/runtime/verifier/method_verifier.cc b/art/runtime/verifier/method_verifier.cc
+index df9a6da2..b0d0530b 100644
+--- a/art/runtime/verifier/method_verifier.cc
++++ b/art/runtime/verifier/method_verifier.cc
+@@ -164,6 +164,100 @@ MethodVerifier::FailureKind MethodVerifier::VerifyClass(Thread* self,
+       self, &dex_file, dex_cache, class_loader, class_def, allow_soft_failures, error);
+ }
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm (art-speed): quickening (see ArcCollectQuickening).
++static thread_local std::vector<MethodVerifier::ArcQuickEdit>* t_arc_quick_edits = nullptr;
++static thread_local bool t_arc_has_final_instance_field = false;
++
++// ARC_ART_NO_QUICKEN=1 turns quickening off (for comparison).
++static bool ArcQuickeningEnabled() {
++  static const bool enabled = getenv("ARC_ART_NO_QUICKEN") == nullptr;
++  return enabled;
++}
++
++static Instruction::Code ArcQuickFieldOpcode(Instruction::Code op) {
++  switch (op) {
++    case Instruction::IGET: return Instruction::IGET_QUICK;
++    case Instruction::IGET_WIDE: return Instruction::IGET_WIDE_QUICK;
++    case Instruction::IGET_OBJECT: return Instruction::IGET_OBJECT_QUICK;
++    case Instruction::IGET_BOOLEAN: return Instruction::IGET_BOOLEAN_QUICK;
++    case Instruction::IGET_BYTE: return Instruction::IGET_BYTE_QUICK;
++    case Instruction::IGET_CHAR: return Instruction::IGET_CHAR_QUICK;
++    case Instruction::IGET_SHORT: return Instruction::IGET_SHORT_QUICK;
++    case Instruction::IPUT: return Instruction::IPUT_QUICK;
++    case Instruction::IPUT_WIDE: return Instruction::IPUT_WIDE_QUICK;
++    case Instruction::IPUT_OBJECT: return Instruction::IPUT_OBJECT_QUICK;
++    case Instruction::IPUT_BOOLEAN: return Instruction::IPUT_BOOLEAN_QUICK;
++    case Instruction::IPUT_BYTE: return Instruction::IPUT_BYTE_QUICK;
++    case Instruction::IPUT_CHAR: return Instruction::IPUT_CHAR_QUICK;
++    case Instruction::IPUT_SHORT: return Instruction::IPUT_SHORT_QUICK;
++    default: return Instruction::NOP;
++  }
++}
++
++// Called for every instruction the verifier processes: a field access whose
++// object register has no known class (constant null, unresolved) is not
++// quickened, since the verifier must be able to infer the field of a
++// quick instruction when it looks at the method again (NullPointerException
++// messages, FindStringInitMap, FindLocksAtDexPc).
++void MethodVerifier::ArcNoteQuickening(const Instruction* inst) {
++  if (t_arc_quick_edits == nullptr || ArcQuickFieldOpcode(inst->Opcode()) == Instruction::NOP) {
++    return;
++  }
++  if (!work_line_->GetRegisterType(this, inst->VRegB_22c()).HasClass()) {
++    insn_flags_[work_insn_idx_].SetArcNoQuicken();
++  }
++}
++
++// After a method verified without failures: the edits dex2oat's
++// dex-to-dex compiler would make (compiler/dex/dex_to_dex_compiler.cc).
++// Instance field accesses to non-volatile fields resolved by verification
++// become *-quick with the field offset (not iput to a final field of
++// another class); return-void becomes return-void-no-barrier, except in
++// constructors of classes with final instance fields. Only instructions
++// the verifier reached are changed. invoke-virtual is not quickened: the
++// NullPointerException of invoke-virtual-quick names the method found in
++// the vtable instead of the one the instruction refers to.
++void MethodVerifier::ArcCollectQuickening(std::vector<ArcQuickEdit>* edits) {
++  const size_t pointer_size = Runtime::Current()->GetClassLinker()->GetImagePointerSize();
++  const bool keep_barrier = IsInstanceConstructor() && t_arc_has_final_instance_field;
++  uint16_t* const insns = const_cast<uint16_t*>(code_item_->insns_);
++  const uint32_t size = code_item_->insns_size_in_code_units_;
++  for (uint32_t pc = 0; pc < size; pc += Instruction::At(insns + pc)->SizeInCodeUnits()) {
++    const InstructionFlags& flags = insn_flags_[pc];
++    if (!flags.IsOpcode() || !flags.IsVisited()) {
++      continue;
++    }
++    const Instruction* inst = Instruction::At(insns + pc);
++    const Instruction::Code op = inst->Opcode();
++    if (op == Instruction::RETURN_VOID) {
++      if (!keep_barrier) {
++        edits->push_back({insns + pc,
++                          static_cast<uint16_t>((insns[pc] & 0xff00) |
++                                                Instruction::RETURN_VOID_NO_BARRIER),
++                          0, false});
++      }
++      continue;
++    }
++    const Instruction::Code quick = ArcQuickFieldOpcode(op);
++    if (quick == Instruction::NOP || flags.IsArcNoQuicken()) {
++      continue;
++    }
++    ArtField* field = dex_cache_->GetResolvedField(inst->VRegC_22c(), pointer_size);
++    if (field == nullptr || field->IsStatic() || field->IsVolatile() ||
++        field->GetOffset().Uint32Value() > 0xffff) {
++      continue;
++    }
++    const bool is_put = op >= Instruction::IPUT && op <= Instruction::IPUT_SHORT;
++    if (is_put && field->IsFinal() && field->GetDeclaringClass() != GetDeclaringClass().GetClass()) {
++      continue;
++    }
++    edits->push_back({insns + pc, static_cast<uint16_t>((insns[pc] & 0xff00) | quick),
++                      static_cast<uint16_t>(field->GetOffset().Uint32Value()), true});
++  }
++}
++#endif
++
+ MethodVerifier::FailureKind MethodVerifier::VerifyClass(Thread* self,
+                                                         const DexFile* dex_file,
+                                                         Handle<mirror::DexCache> dex_cache,
+@@ -187,9 +281,31 @@ MethodVerifier::FailureKind MethodVerifier::VerifyClass(Thread* self,
+     return kNoFailure;
+   }
+   ClassDataItemIterator it(*dex_file, class_data);
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (art-speed): the methods' quickening edits, applied below if the
++  // whole class verifies without failures. The class is not initialized yet,
++  // so no thread runs its code while it is rewritten (VerifyClass holds the
++  // class's lock, and ClassLinker::InitializeClass waits for it).
++  bool has_final_instance_field = false;
++  while (it.HasNextStaticField()) {
++    it.Next();
++  }
++  while (it.HasNextInstanceField()) {
++    has_final_instance_field |= (it.GetFieldAccessFlags() & kAccFinal) != 0;
++    it.Next();
++  }
++  std::vector<ArcQuickEdit> quick_edits;
++  std::vector<ArcQuickEdit>* const saved_quick_edits = t_arc_quick_edits;
++  const bool saved_has_final_instance_field = t_arc_has_final_instance_field;
++  const bool quicken = Runtime::Current()->IsStarted() && !Runtime::Current()->IsAotCompiler() &&
++                       ArcQuickeningEnabled();
++  t_arc_quick_edits = quicken ? &quick_edits : nullptr;
++  t_arc_has_final_instance_field = has_final_instance_field;
++#else
+   while (it.HasNextStaticField() || it.HasNextInstanceField()) {
+     it.Next();
+   }
++#endif
+   size_t error_count = 0;
+   bool hard_fail = false;
+   ClassLinker* linker = Runtime::Current()->GetClassLinker();
+@@ -281,6 +397,18 @@ MethodVerifier::FailureKind MethodVerifier::VerifyClass(Thread* self,
+     }
+     it.Next();
+   }
++#if defined(__EMSCRIPTEN__)
++  t_arc_quick_edits = saved_quick_edits;
++  t_arc_has_final_instance_field = saved_has_final_instance_field;
++  if (error_count == 0) {
++    for (const ArcQuickEdit& e : quick_edits) {
++      if (e.two_units) {
++        e.insn[1] = e.unit1;
++      }
++      e.insn[0] = e.unit0;
++    }
++  }
++#endif
+   if (error_count == 0) {
+     return kNoFailure;
+   } else {
+@@ -326,6 +454,11 @@ MethodVerifier::FailureKind MethodVerifier::VerifyMethod(Thread* self, uint32_t
+       }
+       result = kSoftFailure;
+     }
++#if defined(__EMSCRIPTEN__)
++    else if (t_arc_quick_edits != nullptr && code_item != nullptr) {
++      verifier.ArcCollectQuickening(t_arc_quick_edits);
++    }
++#endif
+   } else {
+     // Bad method data.
+     CHECK_NE(verifier.failures_.size(), 0U);
+@@ -1630,6 +1763,9 @@ bool MethodVerifier::CodeFlowVerifyInstruction(uint32_t* start_guess) {
+   const uint16_t* insns = code_item_->insns_ + work_insn_idx_;
+   const Instruction* inst = Instruction::At(insns);
+   int opcode_flags = Instruction::FlagsOf(inst->Opcode());
++#if defined(__EMSCRIPTEN__)
++  ArcNoteQuickening(inst);
++#endif
+ 
+   int32_t branch_target = 0;
+   bool just_set_result = false;
+diff --git a/art/runtime/verifier/method_verifier.h b/art/runtime/verifier/method_verifier.h
+index 7b914618..dc20bf97 100644
+--- a/art/runtime/verifier/method_verifier.h
++++ b/art/runtime/verifier/method_verifier.h
+@@ -522,6 +522,23 @@ class MethodVerifier {
+   bool CodeFlowVerifyInstruction(uint32_t* start_guess)
+       SHARED_LOCKS_REQUIRED(Locks::mutator_lock_);
+ 
++#if defined(__EMSCRIPTEN__)
++ public:
++  // arc-wasm (art-speed): quickening after verification, as dex2oat's
++  // dex-to-dex compiler does on a device. One rewrite of an instruction.
++  struct ArcQuickEdit {
++    uint16_t* insn;
++    uint16_t unit0;
++    uint16_t unit1;
++    bool two_units;
++  };
++
++ private:
++  void ArcNoteQuickening(const Instruction* inst) SHARED_LOCKS_REQUIRED(Locks::mutator_lock_);
++  void ArcCollectQuickening(std::vector<ArcQuickEdit>* edits)
++      SHARED_LOCKS_REQUIRED(Locks::mutator_lock_);
++#endif
++
+   // Perform verification of a new array instruction
+   void VerifyNewArray(const Instruction* inst, bool is_filled, bool is_range)
+       SHARED_LOCKS_REQUIRED(Locks::mutator_lock_);

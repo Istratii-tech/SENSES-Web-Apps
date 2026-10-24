@@ -1,0 +1,273 @@
+<!doctype html>
+<!-- The release's setup page (tools/release/senses.py serves it at /__setup/):
+     on a phone, the steps to trust this computer's certificate and then the
+     library over HTTPS; on the computer itself (http://localhost), the code
+     to scan, the addresses and what to check when a phone cannot connect. -->
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>SENSES Web Apps</title>
+<style>
+  :root { --bg: #000; --card: #121212; --btn: #1f1f1f; --fg: #e3e3e3; --muted: #8d8d8d; --ok: #7ee2a8; --bad: #ff7b72; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+               font: 16px/1.5 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; -webkit-text-size-adjust: 100%; }
+  main { max-width: 560px; margin: 0 auto; padding: calc(20px + env(safe-area-inset-top)) 16px 40px; box-sizing: border-box; }
+  h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: .2px; }
+  h2 { font-size: 18px; margin: 26px 0 8px; }
+  .sub { color: var(--muted); margin: 0 0 18px; }
+  .card { background: var(--card); border-radius: 16px; padding: 14px 16px; margin: 12px 0; }
+  ol { padding-left: 22px; margin: 8px 0; } li { margin: 10px 0; }
+  a.button, button { display: block; width: 100%; box-sizing: border-box; border: 0; border-radius: 25px; min-height: 50px;
+                     padding: 13px 16px; margin: 14px 0; background: #e3e3e3; color: #000; font: 600 16px/24px inherit;
+                     text-align: center; text-decoration: none; cursor: pointer; }
+  a.button.second { background: var(--btn); color: var(--fg); font-weight: 500; }
+  b, .ui { color: #fff; font-weight: 600; }
+  .muted, small { color: var(--muted); }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  code { font: 15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #fff; word-break: break-all; }
+  #qr { display: block; width: 240px; height: 240px; margin: 12px auto; border-radius: 10px; background: #fff; }
+  .status { display: flex; gap: 10px; align-items: center; }
+  .dot { width: 10px; height: 10px; border-radius: 5px; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); } .dot.wait { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  [hidden] { display: none !important; }
+</style></head>
+<body><main>
+  <h1>SENSES Web Apps</h1>
+  <p class="sub" id="sub"></p>
+
+  <!-- On the computer -->
+  <section id="computer" hidden>
+    <div class="card status"><span class="dot ok"></span><span data-t="running"></span></div>
+    <h2 data-t="phone_title"></h2>
+    <p data-t="phone_scan"></p>
+    <img id="qr" alt="QR">
+    <p><span data-t="or_type"></span> <code id="phone_url"></code></p>
+    <p class="muted" id="name_line" hidden><span data-t="name_line"></span> <code id="name"></code></p>
+    <div class="card"><div class="status"><span class="dot wait" id="clients_dot"></span><span id="clients"></span></div></div>
+    <h2 data-t="here_title"></h2>
+    <a class="button second" id="open_here" data-t="open_here"></a>
+    <h2 data-t="trouble_title"></h2>
+    <ul id="trouble"></ul>
+    <p class="muted" data-t="keep_open"></p>
+  </section>
+
+  <!-- On a phone -->
+  <section id="phone" hidden>
+    <div class="card status" id="checking"><span class="dot wait"></span><span data-t="checking"></span></div>
+
+    <div id="ready" hidden>
+      <div class="card status"><span class="dot ok"></span><span data-t="ready"></span></div>
+      <a class="button" id="open" data-t="open"></a>
+      <p data-t="home_tip"></p>
+      <p data-t="apk_tip"></p>
+    </div>
+
+    <div id="steps" hidden>
+      <p data-t="why"></p>
+      <div id="ios" hidden>
+        <p class="bad" id="not_safari" data-t="not_safari" hidden></p>
+        <h2 data-t="step1"></h2>
+        <a class="button" href="senses-ca.mobileconfig" data-t="download_profile"></a>
+        <p data-t="ios1"></p>
+        <h2 data-t="step2"></h2>
+        <p data-t="ios2"></p>
+        <h2 data-t="step3"></h2>
+        <p data-t="ios3"></p>
+      </div>
+      <div id="android" hidden>
+        <h2 data-t="step1"></h2>
+        <a class="button" href="senses-ca.crt" data-t="download_cert"></a>
+        <h2 data-t="step2"></h2>
+        <p data-t="android2"></p>
+      </div>
+      <div id="other" hidden>
+        <h2 data-t="step1"></h2>
+        <a class="button" href="senses-ca.crt" data-t="download_cert"></a>
+        <h2 data-t="step2"></h2>
+        <p data-t="other2"></p>
+      </div>
+      <h2 data-t="step_last"></h2>
+      <p data-t="come_back"></p>
+      <div class="card status"><span class="dot wait"></span><span data-t="waiting"></span></div>
+      <p class="muted" data-t="scope"></p>
+    </div>
+    <p class="muted" id="host_note" hidden></p>
+  </section>
+</main>
+<script>
+'use strict';
+var RU = /^ru\b/i.test(navigator.language || '');
+var T = {
+  sub: ['A private server on {computer}. Android apps run on your phone, in the browser.',
+        'Личный сервер на компьютере {computer}. Android-приложения работают в браузере телефона.'],
+  running: ['The server is running.', 'Сервер работает.'],
+  phone_title: ['On your phone', 'На телефоне'],
+  phone_scan: ['Connect the phone to the same Wi-Fi as this computer, open the Camera and point it at the code:',
+               'Подключите телефон к той же сети Wi-Fi, что и компьютер, откройте «Камеру» и наведите на код:'],
+  or_type: ['or type in Safari:', 'или наберите в Safari:'],
+  name_line: ['Its name on the home network:', 'Имя в домашней сети:'],
+  no_clients: ['No phone has opened it yet.', 'Телефон ещё не открывал этот адрес.'],
+  clients: ['Opened from: {list}', 'Открывали с адресов: {list}'],
+  st_steps: ['installing the certificate', 'ставит сертификат'],
+  st_ready: ['ready', 'готов'],
+  here_title: ['On this computer', 'На этом компьютере'],
+  open_here: ['Open SENSES Web Apps here', 'Открыть SENSES Web Apps здесь'],
+  trouble_title: ['If the phone cannot open it', 'Если телефон не открывает адрес'],
+  t_wifi: ['The phone must be on the same Wi-Fi, not a guest network (guest networks keep devices apart).',
+           'Телефон должен быть в той же сети Wi-Fi, не в гостевой (гостевая сеть разделяет устройства).'],
+  t_mac: ['macOS: if the firewall is on, allow incoming connections for python3 (System Settings → Network → Firewall → Options).',
+          'macOS: если брандмауэр включён, разрешите входящие подключения для python3 (Системные настройки → Сеть → Брандмауэр → Параметры).'],
+  t_windows: ['Windows: allow Python on private networks when asked; the Wi-Fi must be a Private network (Settings → Network & internet → Wi-Fi → your network).',
+              'Windows: разрешите Python работать в частных сетях, когда спросят; сеть Wi-Fi должна быть «Частной» (Параметры → Сеть и Интернет → Wi-Fi → ваша сеть).'],
+  t_linux: ['Linux: if a firewall is on, open TCP {ports} and UDP 5353.', 'Linux: если включён брандмауэр, откройте TCP {ports} и UDP 5353.'],
+  t_vpn: ['A VPN on the phone or the computer can hide the home network: turn it off to try.',
+          'VPN на телефоне или компьютере может скрывать домашнюю сеть: попробуйте без него.'],
+  keep_open: ['Keep the server window open while you use the apps.', 'Не закрывайте окно сервера, пока пользуетесь приложениями.'],
+  checking: ['Checking the connection…', 'Проверяю подключение…'],
+  ready: ['This phone trusts the computer. All set.', 'Телефон доверяет компьютеру. Всё готово.'],
+  open: ['Open SENSES Web Apps', 'Открыть SENSES Web Apps'],
+  home_tip: ['Tip: in Safari, tap Share → <b>Add to Home Screen</b> for a full-screen icon.',
+             'Совет: в Safari нажмите «Поделиться» → <b>«На экран „Домой“»</b> — будет значок на весь экран.'],
+  apk_tip: ['Apps: download an Android app (.apk, .apks, .xapk) to the phone, then in SENSES tap <b>Install app</b> and pick the file.',
+            'Приложения: скачайте Android-приложение (.apk, .apks, .xapk) на телефон, затем в SENSES нажмите <b>«Установить приложение»</b> и выберите файл.'],
+  why: ['Once per phone: let it trust this computer. The browser needs HTTPS to run apps, and the computer has its own certificate.',
+        'Один раз для телефона: разрешите ему доверять этому компьютеру. Браузеру для приложений нужен HTTPS, а у компьютера свой сертификат.'],
+  not_safari: ['Open this page in Safari: other browsers on iPhone cannot install the profile.',
+               'Откройте эту страницу в Safari: другие браузеры на iPhone не умеют ставить профиль.'],
+  step1: ['Step 1', 'Шаг 1'], step2: ['Step 2', 'Шаг 2'], step3: ['Step 3', 'Шаг 3'], step_last: ['Then', 'Затем'],
+  download_profile: ['Download the profile', 'Скачать профиль'],
+  download_cert: ['Download the certificate', 'Скачать сертификат'],
+  ios1: ['Safari asks whether the website may download a configuration profile: tap <b>Allow</b>, then <b>Close</b>.',
+         'Safari спросит, разрешить ли загрузку профиля конфигурации: нажмите <b>«Разрешить»</b>, затем <b>«Закрыть»</b>.'],
+  ios2: ['Open <b>Settings</b>. At the top: <b>Profile Downloaded</b> (or General → VPN &amp; Device Management → SENSES Web Apps). Tap <b>Install</b>, enter the passcode, <b>Install</b> again, <b>Done</b>.',
+         'Откройте <b>«Настройки»</b>. Вверху — <b>«Профиль загружен»</b> (или Основные → VPN и управление устройством → SENSES Web Apps). Нажмите <b>«Установить»</b>, введите код-пароль, ещё раз <b>«Установить»</b>, <b>«Готово»</b>.'],
+  ios3: ['Settings → General → About → at the very bottom <b>Certificate Trust Settings</b> → turn on <b>{ca}</b> → <b>Continue</b>.',
+         'Настройки → Основные → Об этом устройстве → в самом низу <b>«Доверие сертификатам»</b> → включите <b>{ca}</b> → <b>«Продолжить»</b>.'],
+  android2: ['Settings → Security → More security settings → Encryption &amp; credentials → <b>Install a certificate</b> → <b>CA certificate</b> → Install anyway → pick <b>senses-ca.crt</b> from Downloads. (Searching Settings for “CA certificate” finds it fastest.)',
+             'Настройки → Безопасность → Другие настройки безопасности → Шифрование и учётные данные → <b>Установить сертификат</b> → <b>Сертификат ЦС</b> → «Всё равно установить» → выберите <b>senses-ca.crt</b> в «Загрузках». (Быстрее всего — поиск в Настройках: «сертификат ЦС».)'],
+  other2: ['Add it to the trusted root certificates. macOS: open it, Keychain Access → the certificate → Trust → Always Trust. Windows: open it → Install Certificate → Current User → Trusted Root Certification Authorities. Firefox: Settings → Certificates → Import.',
+           'Добавьте его в доверенные корневые сертификаты. macOS: откройте файл, «Связка ключей» → сертификат → «Доверие» → «Всегда доверять». Windows: откройте → «Установить сертификат» → «Текущий пользователь» → «Доверенные корневые центры сертификации». Firefox: Настройки → Сертификаты → Импорт.'],
+  come_back: ['Come back to this page: it notices the certificate by itself and shows the <b>Open</b> button.',
+              'Вернитесь на эту страницу: она сама заметит сертификат и покажет кнопку <b>«Открыть»</b>.'],
+  waiting: ['Waiting for the certificate…', 'Жду сертификат…'],
+  scope: ['The certificate was made on that computer and works only for home network addresses (10.x, 172.16–31.x, 192.168.x) and .local names, never for sites on the internet. Remove it any time: Settings → General → VPN &amp; Device Management → SENSES Web Apps → Remove Profile.',
+          'Сертификат создан на том компьютере и действует только для адресов домашней сети (10.x, 172.16–31.x, 192.168.x) и имён .local, для сайтов в интернете — никогда. Удалить можно в любой момент: Настройки → Основные → VPN и управление устройством → SENSES Web Apps → Удалить профиль.'],
+  by_address: ['This phone does not find the computer by name ({name}), so SENSES opens by address. If the router gives the computer another address, the apps will be at the old one: on the router, reserve this address for the computer.',
+               'Телефон не находит компьютер по имени ({name}), поэтому SENSES откроется по адресу. Если роутер выдаст компьютеру другой адрес, приложения останутся на старом: закрепите адрес за компьютером в настройках роутера.'],
+  moved: ['Before, SENSES opened at {old}; now that address does not answer. Your apps live there: check the Wi-Fi and the server window.',
+          'Раньше SENSES открывался по адресу {old}, сейчас он не отвечает. Ваши приложения — там: проверьте Wi-Fi и окно сервера.']
+};
+function t(key, vars) {
+  var s = T[key][RU ? 1 : 0];
+  for (var k in (vars || {})) s = s.split('{' + k + '}').join(vars[k]);
+  return s;
+}
+var info;
+function fill(vars) {
+  document.documentElement.lang = RU ? 'ru' : 'en';
+  [].forEach.call(document.querySelectorAll('[data-t]'), function (el) { el.innerHTML = t(el.dataset.t, vars); });
+}
+function $(id) { return document.getElementById(id); }
+function ping(base, ms) {
+  var ctl = window.AbortController ? new AbortController() : null;
+  var timer = setTimeout(function () { if (ctl) ctl.abort(); }, ms || 4000);
+  return fetch(base + '/__ping', {cache: 'no-store', signal: ctl && ctl.signal})
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) { clearTimeout(timer); return !!(j && j.senses); },
+          function () { clearTimeout(timer); return false; });
+}
+function report(state, host) {
+  try {
+    fetch('report', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                     body: JSON.stringify({state: state, host: host})}).catch(function () {});
+  } catch (e) {}
+}
+function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) {} }
+
+function computer() {
+  $('computer').hidden = false;
+  $('qr').src = 'qr.svg';
+  $('phone_url').textContent = info.phone_url;
+  if (info.name) { $('name_line').hidden = false; $('name').textContent = 'https://' + info.name + ':' + info.port + '/'; }
+  $('open_here').href = 'http://localhost:' + info.port + '/';
+  var tips = ['t_wifi', info.os === 'mac' ? 't_mac' : info.os === 'windows' ? 't_windows' : 't_linux', 't_vpn'];
+  var ports = info.slots ? info.port + ':' + (info.port + info.slots) : info.port;
+  $('trouble').innerHTML = tips.map(function (k) { return '<li>' + t(k, {ports: ports}) + '</li>'; }).join('');
+  function clients(list, reports) {
+    list = list.map(function (ip) { return reports && reports[ip] ? ip + ' (' + t('st_' + reports[ip]) + ')' : ip; });
+    $('clients').textContent = list.length ? t('clients', {list: list.join(', ')}) : t('no_clients');
+    $('clients_dot').className = 'dot ' + (list.length ? 'ok' : 'wait');
+  }
+  clients(info.clients, info.reports);
+  setInterval(function () {
+    fetch('info.json', {cache: 'no-store'}).then(function (r) { return r.json(); }).then(function (j) { clients(j.clients, j.reports); }, function () {});
+  }, 3000);
+}
+
+function phone() {
+  $('phone').hidden = false;
+  var ua = navigator.userAgent;
+  var android = /Android/.test(ua);
+  var ios = !android && (/iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+  var port = info.port;
+  // Where the library lives: by name if this phone resolves it (the origin
+  // then survives a new address), else by address; and the one used before.
+  var before = store('senses-host');
+  var tries = [];
+  if (before) tries.push(before);
+  if (info.name && tries.indexOf(info.name) < 0) tries.push(info.name);
+  if (info.ip && tries.indexOf(info.ip) < 0) tries.push(info.ip);
+  (function next(i) {
+    if (i >= tries.length) return choose(info.ip || location.hostname, true);
+    if (tries[i] === location.hostname) return choose(tries[i]);
+    ping('http://' + tries[i] + ':' + port).then(function (ok) { ok ? choose(tries[i]) : next(i + 1); });
+  })(0);
+
+  function choose(host, fallback) {
+    if (before && host !== before) {
+      $('host_note').hidden = false;
+      $('host_note').textContent = t('moved', {old: before});
+    } else if (info.name && host !== info.name) {
+      $('host_note').hidden = false;
+      $('host_note').textContent = t('by_address', {name: info.name});
+    }
+    var base = 'https://' + (host.indexOf(':') >= 0 ? '[' + host + ']' : host) + ':' + port;
+    $('open').href = base + '/';
+    $('open').onclick = function () { store('senses-host', host); store('senses-opened', '1'); };
+    var shown = false;
+    (function check() {
+      if (location.protocol === 'https:') return ready();
+      ping(base, 5000).then(function (ok) {
+        if (ok) return ready();
+        if (!shown) {
+          shown = true;
+          report('steps', host);
+          $('checking').hidden = true;
+          $('steps').hidden = false;
+          $(ios ? 'ios' : android ? 'android' : 'other').hidden = false;
+          $('not_safari').hidden = !(ios && /CriOS|FxiOS|EdgiOS|OPiOS|YaBrowser/.test(ua));
+        }
+        setTimeout(check, document.hidden ? 6000 : 2500);
+      });
+    })();
+    function ready() {
+      report('ready', host);
+      $('checking').hidden = true;
+      $('steps').hidden = true;
+      $('ready').hidden = false;
+      // Back again (the code scanned another day): straight to the library.
+      if (store('senses-opened') && store('senses-host') === host) location.replace(base + '/');
+    }
+  }
+}
+
+fetch('info.json', {cache: 'no-store'}).then(function (r) { return r.json(); }).then(function (j) {
+  info = j;
+  fill({computer: info.computer, ca: info.ca});
+  $('sub').textContent = t('sub', {computer: info.computer}) + (info.version ? ' · ' + info.version : '');
+  var local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  local ? computer() : phone();
+});
+</script>
+</body></html>

@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenGL ES and sound</title>
+<style>
+  :root { --bg: #0e1016; --fg: #d7dbe5; --muted: #8a90a0; --ok: #6fd28a; --bad: #ff7b72; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #f4f5f8; --fg: #1d2030; --muted: #5a6072; --ok: #1a7f37; --bad: #cf222e; }
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+               font: 14px/1.4 system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px; }
+  header { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+  canvas { display: block; width: 100%; max-width: 640px; aspect-ratio: 4 / 3;
+           background: #000; border-radius: 6px; outline: none; }
+  canvas:focus-visible { box-shadow: 0 0 0 2px var(--muted); }
+  pre { margin: 8px 0 0; font: 12px/1.45 ui-monospace, monospace;
+        white-space: pre-wrap; word-break: break-word; }
+  .bar { display: flex; gap: 12px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+  button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--muted);
+           background: transparent; color: var(--fg); cursor: pointer; }
+  #audio { color: var(--muted); font: 12px ui-monospace, monospace; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .log { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header id="cmd"></header>
+  <!-- The display: an app window (button, status line) over the GL layer of
+       its GLSurfaceView (the GL thread's frames, shim/gles), composited by
+       the in-process SurfaceFlinger (shim/window). Sound: AudioTrack ->
+       in-process mixer -> AudioWorklet (shim/audio/web_audio.js); it starts
+       with the first click or key on the page (autoplay policy). -->
+  <canvas id="canvas" width="640" height="480" tabindex="0"></canvas>
+  <div class="bar">
+    <button id="tone">Play tone</button>
+    <span id="audio">audio: not started</span>
+  </div>
+  <pre id="out"></pre>
+</main>
+<script src="report.js"></script>
+<script>
+  // arcwasm.GlesDemo: a GLSurfaceView with a rotating triangle and an
+  // Android "Play tone" button (a 440 Hz AudioTrack tone). The page button
+  // above does the same: it is the user gesture that starts Web Audio, and
+  // it taps the Android button through the input path.
+  // ?selftest=1: taps the Android button with synthetic DOM events once the
+  // program is ready (Safari; synthetic events start no audio, the tone then
+  // plays through the mixer's clock) and lets it check the tone's playback.
+  // Other programs: ?arg=-cp&arg=/system/framework/arc-tests.jar&arg=arcwasm.GlesTest
+  var params = new URLSearchParams(location.search);
+  var selfTest = params.get('selftest') === '1';
+  var args = params.getAll('arg');
+  if (!args.length) {
+    args = ['-cp', '/system/framework/arc-tests.jar', 'arcwasm.GlesDemo'];
+    if (selfTest) args.push('selftest');
+    if (params.get('seconds')) args.push(params.get('seconds'));
+  }
+  document.getElementById('cmd').textContent = 'dalvikvm ' + args.join(' ');
+  var canvas = document.getElementById('canvas');
+  var outEl = document.getElementById('out');
+  var audioEl = document.getElementById('audio');
+  var started = performance.now();
+  var exited = false;
+  var buttonXY = null;
+  function emit(text) {
+    var line = document.createElement('span');
+    if (/^\[ OK \]|passed, 0 failed|-> OK$/.test(text)) line.className = 'ok';
+    else if (/^\[FAIL\]|Exception|Error|Abort|-> FAIL$/.test(text)) line.className = 'bad';
+    else if (/^[VDIWEF]\//.test(text)) line.className = 'log';
+    line.textContent = text + '\n';
+    outEl.appendChild(line);
+    while (outEl.childNodes.length > 40) outEl.removeChild(outEl.firstChild);
+    arcReport(text);
+    var m = /^GlesDemo: ready button=(\d+),(\d+)/.exec(text);
+    if (m) {
+      buttonXY = [Number(m[1]), Number(m[2])];
+      if (selfTest) setTimeout(tapAndroidButton, 100);
+      if (selfTest && Module.arcwasmAudioSelfCheck) {
+        Module.arcwasmAudioSelfCheck().then(function (r) {
+          var ok = Math.abs(r.peakHz - 440) <= 10 && r.rms > 0.1 && r.played === 8192;
+          emit('page: AudioWorklet over a SharedArrayBuffer ring (OfflineAudioContext): ' +
+               r.peakHz + ' Hz, rms ' + r.rms.toFixed(3) + ', ' + r.played + ' frames read' +
+               (ok ? ' -> OK' : ' -> FAIL'));
+        }, function (e) { emit('page: audio self-check failed: ' + e + ' -> FAIL'); });
+      }
+    }
+  }
+  // A tap on the canvas in display coordinates (synthetic DOM events, which
+  // shim/input/browser_input.js turns into MotionEvents).
+  function tap(x, y) {
+    var rect = canvas.getBoundingClientRect();
+    ['pointerdown', 'pointerup'].forEach(function (type, i) {
+      var init = { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse',
+                   isPrimary: true,
+                   clientX: rect.left + x * rect.width / canvas.width,
+                   clientY: rect.top + y * rect.height / canvas.height,
+                   pressure: i ? 0 : 0.5, buttons: i ? 0 : 1 };
+      var e = typeof PointerEvent === 'function' ? new PointerEvent(type, init)
+                                                 : new MouseEvent(type, init);
+      if (e.pointerId === undefined) {
+        Object.defineProperty(e, 'pointerId', { value: 1 });
+        Object.defineProperty(e, 'pointerType', { value: 'mouse' });
+        Object.defineProperty(e, 'pressure', { value: init.pressure });
+      }
+      setTimeout(function () { if (!exited) canvas.dispatchEvent(e); }, i * 60);
+    });
+  }
+  function tapAndroidButton() {
+    if (buttonXY) tap(buttonXY[0], buttonXY[1]);
+  }
+  document.getElementById('tone').addEventListener('click', function () {
+    if (Module.arcwasmAudioResume) Module.arcwasmAudioResume();  // the user gesture
+    tapAndroidButton();
+  });
+  // What the page outputs, measured after the worklet (AnalyserNode).
+  var heard = false;
+  setInterval(function () {
+    var s = Module.arcwasmAudioStats ? Module.arcwasmAudioStats() : { state: 'none' };
+    if (s.state === 'none') return;
+    var tone = s.rms > 0.01 ? s.peakHz + ' Hz, rms ' + s.rms.toFixed(3) : 'silent';
+    audioEl.textContent = 'audio: ' + s.state + ', ' + s.rate + ' Hz, played ' + s.played +
+                          ' frames, underruns ' + s.underruns + ', output ' + tone;
+    var now = s.rms > 0.01 && Math.abs(s.peakHz - 440) <= 15;
+    if (now && !heard) emit('page: the output carries ' + tone + ' (' + s.state + ')');
+    heard = now;
+  }, 200);
+  var Module = {
+    arguments: args,
+    canvas: canvas,
+    print: emit,
+    printErr: emit,
+    onExit: function (code) {
+      exited = true;
+      emit('EXIT ' + code + ' after ' + Math.round(performance.now() - started) + ' ms');
+      document.title = 'EXIT ' + code;
+    },
+    onAbort: function (what) { emit('ABORT ' + what); },
+  };
+</script>
+<script src="dalvikvm.js"></script>
+</body>
+</html>

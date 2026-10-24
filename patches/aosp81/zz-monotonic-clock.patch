@@ -1,0 +1,32 @@
+diff --git a/system/core/libutils/Timers.cpp b/system/core/libutils/Timers.cpp
+index b2df9a58f..684d3c5dc 100644
+--- a/system/core/libutils/Timers.cpp
++++ b/system/core/libutils/Timers.cpp
+@@ -22,7 +22,14 @@
+ #include <limits.h>
+ #include <time.h>
+ 
+-#if defined(__ANDROID__)
++// arc-wasm (topic unity2022-menu-hang): the POSIX clocks here too. With
++// gettimeofday SystemClock.uptimeMillis(), Looper and SurfaceFlinger's vsyncs
++// ran on the wall clock (Date.now()) and System.nanoTime() on the monotonic one
++// (performance.now()); they drift apart, and Choreographer compares the two: a
++// frame callback due at uptimeMillis() never came due by nanoTime(), and the
++// frames stopped (Unity 2022). The uptime clocks are the monotonic one (WASI has
++// no BOOTTIME; nothing sleeps).
++#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
+ nsecs_t systemTime(int clock)
+ {
+     static const clockid_t clocks[] = {
+@@ -30,7 +37,11 @@ nsecs_t systemTime(int clock)
+             CLOCK_MONOTONIC,
+             CLOCK_PROCESS_CPUTIME_ID,
+             CLOCK_THREAD_CPUTIME_ID,
++#if defined(__EMSCRIPTEN__)
++            CLOCK_MONOTONIC
++#else
+             CLOCK_BOOTTIME
++#endif
+     };
+     struct timespec t;
+     t.tv_sec = t.tv_nsec = 0;

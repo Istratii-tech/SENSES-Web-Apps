@@ -1,0 +1,11 @@
+specific_include_rules = {
+  ".*\.h": [
+    # common/*.h should not #include base/ files since the headers could be
+    # used by mods/ where base/ is not always accessible.
+    "-base",
+  ],
+  "unittest_main\.cc": [
+    "+gtest"
+  ]
+}
+

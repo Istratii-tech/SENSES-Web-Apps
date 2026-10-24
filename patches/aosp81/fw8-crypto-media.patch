@@ -1,0 +1,147 @@
+diff --git a/external/conscrypt/common/src/jni/main/cpp/NativeCrypto.cpp b/external/conscrypt/common/src/jni/main/cpp/NativeCrypto.cpp
+index 521295fa5..8f4287ce9 100644
+--- a/external/conscrypt/common/src/jni/main/cpp/NativeCrypto.cpp
++++ b/external/conscrypt/common/src/jni/main/cpp/NativeCrypto.cpp
+@@ -3332,10 +3332,12 @@ static void NativeCrypto_HMAC_CTX_free(JNIEnv*, jclass, jlong hmacCtxRef) {
+     delete hmacCtx;
+ }
+ 
++// arc-wasm: the Java method takes "long evp_md" (wasm calls a function only
++// through its exact type; ARM read the low word of the long as an object).
+ static void NativeCrypto_HMAC_Init_ex(JNIEnv* env, jclass, jobject hmacCtxRef, jbyteArray keyArray,
+-                                      jobject evpMdRef) {
++                                      jlong evpMdRef) {
+     HMAC_CTX* hmacCtx = fromContextObject<HMAC_CTX>(env, hmacCtxRef);
+-    const EVP_MD* md = reinterpret_cast<const EVP_MD*>(evpMdRef);
++    const EVP_MD* md = reinterpret_cast<const EVP_MD*>(static_cast<uintptr_t>(evpMdRef));
+     JNI_TRACE("HMAC_Init_ex(%p, %p, %p)", hmacCtx, keyArray, md);
+     if (hmacCtx == nullptr) {
+         return;
+@@ -3737,7 +3739,8 @@ static jlong NativeCrypto_X509_get_notAfter(JNIEnv* env, jclass, jlong x509Ref)
+     return reinterpret_cast<uintptr_t>(notAfter);
+ }
+ 
+-static long NativeCrypto_X509_get_version(JNIEnv*, jclass, jlong x509Ref) {
++// arc-wasm: jlong as in Java (C long is 32 bits in wasm32 and on ARM).
++static jlong NativeCrypto_X509_get_version(JNIEnv*, jclass, jlong x509Ref) {
+     X509* x509 = reinterpret_cast<X509*>(static_cast<uintptr_t>(x509Ref));
+     JNI_TRACE("X509_get_version(%p)", x509);
+ 
+@@ -4077,7 +4080,8 @@ static jbyteArray NativeCrypto_X509_CRL_get_issuer_name(JNIEnv* env, jclass, jlo
+     return ASN1ToByteArray<X509_NAME>(env, X509_CRL_get_issuer(crl), i2d_X509_NAME);
+ }
+ 
+-static long NativeCrypto_X509_CRL_get_version(JNIEnv*, jclass, jlong x509CrlRef) {
++// arc-wasm: jlong as in Java (C long is 32 bits in wasm32 and on ARM).
++static jlong NativeCrypto_X509_CRL_get_version(JNIEnv*, jclass, jlong x509CrlRef) {
+     X509_CRL* crl = reinterpret_cast<X509_CRL*>(static_cast<uintptr_t>(x509CrlRef));
+     JNI_TRACE("X509_CRL_get_version(%p)", crl);
+ 
+@@ -8512,7 +8516,8 @@ static jint NativeCrypto_SSL_get_error(JNIEnv* env, jclass, jlong ssl_address, j
+     return SSL_get_error(ssl, ret);
+ }
+ 
+-static jstring NativeCrypto_SSL_get_error_string(JNIEnv* env, jclass, jint number) {
++// arc-wasm: the Java method takes "long errorNumber".
++static jstring NativeCrypto_SSL_get_error_string(JNIEnv* env, jclass, jlong number) {
+     char buf[256];
+     ERR_error_string(static_cast<uint32_t>(number), buf);
+     return env->NewStringUTF(buf);
+diff --git a/frameworks/av/include/media/VolumeShaper.h b/frameworks/av/include/media/VolumeShaper.h
+index 302641ff1..924209d8a 100644
+--- a/frameworks/av/include/media/VolumeShaper.h
++++ b/frameworks/av/include/media/VolumeShaper.h
+@@ -559,7 +559,16 @@ public:
+         if (clock_gettime(CLOCK_MONOTONIC, &tv) != 0) {
+             return 0; // system is really sick, just return 0 for consistency.
+         }
++#if defined(__EMSCRIPTEN__)
++        // arc-wasm: Emscripten's CLOCK_MONOTONIC counts from about the epoch
++        // (~1.8e15 us), not from boot; Translate<float> then loses all
++        // precision. Clock-time shapers only need differences: count from
++        // the first call in the process.
++        static const int64_t base = convertTimespecToUs(tv);
++        return convertTimespecToUs(tv) - base;
++#else
+         return convertTimespecToUs(tv);
++#endif
+     }
+ 
+     /* Native implementation of VolumeShaper.  This is NOT mirrored
+diff --git a/frameworks/av/media/libstagefright/MediaExtractor.cpp b/frameworks/av/media/libstagefright/MediaExtractor.cpp
+index c91c82b1b..a1f505e2c 100644
+--- a/frameworks/av/media/libstagefright/MediaExtractor.cpp
++++ b/frameworks/av/media/libstagefright/MediaExtractor.cpp
+@@ -29,7 +29,9 @@
+ #include "include/MPEG2TSExtractor.h"
+ #include "include/FLACExtractor.h"
+ #include "include/AACExtractor.h"
++#ifndef ARC_WASM  // arc-wasm: no sonivox (MIDI) in this build
+ #include "include/MidiExtractor.h"
++#endif
+ 
+ #include "matroska/MatroskaExtractor.h"
+ 
+@@ -191,8 +193,10 @@ sp<MediaExtractor> MediaExtractor::CreateFromService(
+         ret = new AACExtractor(source, meta);
+     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_CONTAINER_MPEG2PS)) {
+         ret = new MPEG2PSExtractor(source);
++#ifndef ARC_WASM
+     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_MIDI)) {
+         ret = new MidiExtractor(source);
++#endif
+     }
+ 
+     if (ret != NULL) {
+@@ -286,7 +290,9 @@ void MediaExtractor::RegisterDefaultSniffers() {
+     RegisterSniffer_l(SniffMP3);
+     RegisterSniffer_l(SniffAAC);
+     RegisterSniffer_l(SniffMPEG2PS);
++#ifndef ARC_WASM
+     RegisterSniffer_l(SniffMidi);
++#endif
+ 
+     gSniffersRegistered = true;
+ }
+diff --git a/frameworks/av/media/ndk/NdkMediaCodec.cpp b/frameworks/av/media/ndk/NdkMediaCodec.cpp
+index f313e901c..e5f92335c 100644
+--- a/frameworks/av/media/ndk/NdkMediaCodec.cpp
++++ b/frameworks/av/media/ndk/NdkMediaCodec.cpp
+@@ -320,9 +320,11 @@ uint8_t* AMediaCodec_getOutputBuffer(AMediaCodec *mData, size_t idx, size_t *out
+     return NULL;
+ }
+ 
++// arc-wasm: int32_t, as the header declares them (_off_t_compat; off_t is 64 bits in
++// wasm32, 32 in the NDK's ABI; the build defines __USE_FILE_OFFSET64).
+ EXPORT
+ media_status_t AMediaCodec_queueInputBuffer(AMediaCodec *mData,
+-        size_t idx, off_t offset, size_t size, uint64_t time, uint32_t flags) {
++        size_t idx, int32_t offset, size_t size, uint64_t time, uint32_t flags) {
+ 
+     AString errorMsg;
+     status_t ret = mData->mCodec->queueInputBuffer(idx, offset, size, time, flags, &errorMsg);
+@@ -501,7 +503,7 @@ EXPORT
+ media_status_t AMediaCodec_queueSecureInputBuffer(
+         AMediaCodec* codec,
+         size_t idx,
+-        off_t offset,
++        int32_t offset,  // arc-wasm: as declared (see above)
+         AMediaCodecCryptoInfo* crypto,
+         uint64_t time,
+         uint32_t flags) {
+diff --git a/frameworks/base/core/jni/android_media_AudioTrack.cpp b/frameworks/base/core/jni/android_media_AudioTrack.cpp
+index c7ed599d1..d32932cec 100644
+--- a/frameworks/base/core/jni/android_media_AudioTrack.cpp
++++ b/frameworks/base/core/jni/android_media_AudioTrack.cpp
+@@ -845,8 +845,9 @@ static void android_media_AudioTrack_set_playback_params(JNIEnv *env,  jobject t
+ 
+ 
+ // ----------------------------------------------------------------------------
+-static jobject android_media_AudioTrack_get_playback_params(JNIEnv *env,  jobject thiz,
+-        jobject params) {
++// arc-wasm: no third argument, as the Java method "()Landroid/media/PlaybackParams;"
++// (wasm calls a function only through its exact type).
++static jobject android_media_AudioTrack_get_playback_params(JNIEnv *env,  jobject thiz) {
+     sp<AudioTrack> lpTrack = getAudioTrack(env, thiz);
+     if (lpTrack == NULL) {
+         jniThrowException(env, "java/lang/IllegalStateException",

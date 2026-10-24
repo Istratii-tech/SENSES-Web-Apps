@@ -1,0 +1,126 @@
+diff --git a/libcore/crypto/src/main/native/org_conscrypt_NativeCrypto.cpp b/libcore/crypto/src/main/native/org_conscrypt_NativeCrypto.cpp
+index cc5abbde..270eb603 100644
+--- a/libcore/crypto/src/main/native/org_conscrypt_NativeCrypto.cpp
++++ b/libcore/crypto/src/main/native/org_conscrypt_NativeCrypto.cpp
+@@ -3039,7 +3039,7 @@ static jlong NativeCrypto_EVP_get_digestbyname(JNIEnv* env, jclass, jstring algo
+ /*
+  * public static native int EVP_MD_size(int)
+  */
+-static jint NativeCrypto_EVP_MD_size(JNIEnv* env, jclass, jint evpMdRef) {
++static jint NativeCrypto_EVP_MD_size(JNIEnv* env, jclass, jlong evpMdRef) {
+     EVP_MD* evp_md = reinterpret_cast<EVP_MD*>(evpMdRef);
+     JNI_TRACE("NativeCrypto_EVP_MD_size(%p)", evp_md);
+ 
+@@ -3131,9 +3131,15 @@ static void NativeCrypto_EVP_DigestSignInit(JNIEnv* env, jclass, jlong evpMdCtxR
+     JNI_TRACE("EVP_DigestSignInit(%p, %p, %p) => success", mdCtx, md, pkey);
+ }
+ 
+-static void NativeCrypto_EVP_DigestSignUpdate(JNIEnv* env, jclass, jint evpMdCtxRef,
+-        jbyteArray inJavaBytes, jint inOffset, jint inLength)
++// arc-wasm: the Java declaration is EVP_DigestSignUpdate(long, byte[]); the
++// C function took two more arguments (offset, length) that Java never
++// passed, which 32-bit ARM tolerated (garbage registers) and WebAssembly
++// does not (exact function types). Update with the whole array.
++static void NativeCrypto_EVP_DigestSignUpdate(JNIEnv* env, jclass, jlong evpMdCtxRef,
++        jbyteArray inJavaBytes)
+ {
++    const jint inOffset = 0;
++    const jint inLength = inJavaBytes == NULL ? 0 : env->GetArrayLength(inJavaBytes);
+     EVP_MD_CTX* mdCtx = reinterpret_cast<EVP_MD_CTX*>(evpMdCtxRef);
+     JNI_TRACE("EVP_DigestSignUpdate(%p, %p, %d, %d)", mdCtx, inJavaBytes, inOffset, inLength);
+ 
+@@ -4096,7 +4102,7 @@ static jlong NativeCrypto_X509_get_notAfter(JNIEnv* env, jclass, jlong x509Ref)
+     return reinterpret_cast<uintptr_t>(notAfter);
+ }
+ 
+-static long NativeCrypto_X509_get_version(JNIEnv*, jclass, jlong x509Ref) {
++static jlong NativeCrypto_X509_get_version(JNIEnv*, jclass, jlong x509Ref) {
+     X509* x509 = reinterpret_cast<X509*>(static_cast<uintptr_t>(x509Ref));
+     JNI_TRACE("X509_get_version(%p)", x509);
+ 
+@@ -4444,7 +4450,7 @@ static jbyteArray NativeCrypto_X509_CRL_get_issuer_name(JNIEnv* env, jclass, jlo
+     return ASN1ToByteArray<X509_NAME, i2d_X509_NAME>(env, X509_CRL_get_issuer(crl));
+ }
+ 
+-static long NativeCrypto_X509_CRL_get_version(JNIEnv*, jclass, jlong x509CrlRef) {
++static jlong NativeCrypto_X509_CRL_get_version(JNIEnv*, jclass, jlong x509CrlRef) {
+     X509_CRL* crl = reinterpret_cast<X509_CRL*>(static_cast<uintptr_t>(x509CrlRef));
+     JNI_TRACE("X509_CRL_get_version(%p)", crl);
+ 
+@@ -4500,7 +4506,7 @@ static jbyteArray X509Type_get_ext_oid(JNIEnv* env, T* x509Type, jstring oidStri
+     return ASN1ToByteArray<ASN1_OCTET_STRING, i2d_ASN1_OCTET_STRING>(env, ext->value);
+ }
+ 
+-static jint NativeCrypto_X509_CRL_get_ext(JNIEnv* env, jclass, jlong x509CrlRef, jstring oid) {
++static jlong NativeCrypto_X509_CRL_get_ext(JNIEnv* env, jclass, jlong x509CrlRef, jstring oid) {
+     X509_CRL* crl = reinterpret_cast<X509_CRL*>(static_cast<uintptr_t>(x509CrlRef));
+     JNI_TRACE("X509_CRL_get_ext(%p, %p)", crl, oid);
+     X509_EXTENSION* ext = X509Type_get_ext<X509_CRL, X509_CRL_get_ext_by_OBJ, X509_CRL_get_ext>(
+@@ -4509,7 +4515,7 @@ static jint NativeCrypto_X509_CRL_get_ext(JNIEnv* env, jclass, jlong x509CrlRef,
+     return reinterpret_cast<uintptr_t>(ext);
+ }
+ 
+-static jint NativeCrypto_X509_REVOKED_get_ext(JNIEnv* env, jclass, jlong x509RevokedRef,
++static jlong NativeCrypto_X509_REVOKED_get_ext(JNIEnv* env, jclass, jlong x509RevokedRef,
+         jstring oid) {
+     X509_REVOKED* revoked = reinterpret_cast<X509_REVOKED*>(static_cast<uintptr_t>(x509RevokedRef));
+     JNI_TRACE("X509_REVOKED_get_ext(%p, %p)", revoked, oid);
+@@ -7023,7 +7029,7 @@ static void debug_print_session_key(SSL_SESSION* session)
+ /**
+  * Perform SSL handshake
+  */
+-static jlong NativeCrypto_SSL_do_handshake(JNIEnv* env, jclass, jlong ssl_address, jobject fdObject,
++static jint NativeCrypto_SSL_do_handshake(JNIEnv* env, jclass, jlong ssl_address, jobject fdObject,
+         jobject shc, jint timeout_millis, jboolean client_mode, jbyteArray npnProtocols,
+         jbyteArray alpnProtocols) {
+     SSL* ssl = to_SSL(env, ssl_address, true);
+diff --git a/libcore/luni/src/main/native/libcore_icu_NativeBreakIterator.cpp b/libcore/luni/src/main/native/libcore_icu_NativeBreakIterator.cpp
+index 5d715c97..0c8c3c92 100644
+--- a/libcore/luni/src/main/native/libcore_icu_NativeBreakIterator.cpp
++++ b/libcore/luni/src/main/native/libcore_icu_NativeBreakIterator.cpp
+@@ -119,7 +119,7 @@ class BreakIteratorAccessor {
+   } \
+   return reinterpret_cast<uintptr_t>(it)
+ 
+-static jint NativeBreakIterator_cloneImpl(JNIEnv* env, jclass, jlong address) {
++static jlong NativeBreakIterator_cloneImpl(JNIEnv* env, jclass, jlong address) {
+   BreakIteratorAccessor it(env, address);
+   return reinterpret_cast<uintptr_t>(it->clone());
+ }
+@@ -143,19 +143,19 @@ static jint NativeBreakIterator_followingImpl(JNIEnv* env, jclass, jlong address
+   return it->following(offset);
+ }
+ 
+-static jint NativeBreakIterator_getCharacterInstanceImpl(JNIEnv* env, jclass, jstring javaLocale) {
++static jlong NativeBreakIterator_getCharacterInstanceImpl(JNIEnv* env, jclass, jstring javaLocale) {
+   MAKE_BREAK_ITERATOR_INSTANCE(BreakIterator::createCharacterInstance);
+ }
+ 
+-static jint NativeBreakIterator_getLineInstanceImpl(JNIEnv* env, jclass, jstring javaLocale) {
++static jlong NativeBreakIterator_getLineInstanceImpl(JNIEnv* env, jclass, jstring javaLocale) {
+   MAKE_BREAK_ITERATOR_INSTANCE(BreakIterator::createLineInstance);
+ }
+ 
+-static jint NativeBreakIterator_getSentenceInstanceImpl(JNIEnv* env, jclass, jstring javaLocale) {
++static jlong NativeBreakIterator_getSentenceInstanceImpl(JNIEnv* env, jclass, jstring javaLocale) {
+   MAKE_BREAK_ITERATOR_INSTANCE(BreakIterator::createSentenceInstance);
+ }
+ 
+-static jint NativeBreakIterator_getWordInstanceImpl(JNIEnv* env, jclass, jstring javaLocale) {
++static jlong NativeBreakIterator_getWordInstanceImpl(JNIEnv* env, jclass, jstring javaLocale) {
+   MAKE_BREAK_ITERATOR_INSTANCE(BreakIterator::createWordInstance);
+ }
+ 
+diff --git a/libcore/luni/src/main/native/libcore_icu_NativeCollation.cpp b/libcore/luni/src/main/native/libcore_icu_NativeCollation.cpp
+index 9ac7745a..47afdae4 100644
+--- a/libcore/luni/src/main/native/libcore_icu_NativeCollation.cpp
++++ b/libcore/luni/src/main/native/libcore_icu_NativeCollation.cpp
+@@ -55,7 +55,7 @@ static jint NativeCollation_getAttribute(JNIEnv* env, jclass, jlong address, jin
+     return result;
+ }
+ 
+-static jlong NativeCollation_getCollationElementIterator(JNIEnv* env, jclass, jlong address, jstring javaSource) {
++static jint NativeCollation_getCollationElementIterator(JNIEnv* env, jclass, jlong address, jstring javaSource) {
+     ScopedStringChars source(env, javaSource);
+     if (source.get() == NULL) {
+         return -1;

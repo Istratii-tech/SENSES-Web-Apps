@@ -1,0 +1,21 @@
+diff --git a/art/runtime/gc/allocator/rosalloc.cc b/art/runtime/gc/allocator/rosalloc.cc
+index d5d3540b1..5bf0f9f6e 100644
+--- a/art/runtime/gc/allocator/rosalloc.cc
++++ b/art/runtime/gc/allocator/rosalloc.cc
+@@ -71,7 +71,16 @@ RosAlloc::RosAlloc(void* base, size_t capacity, size_t max_capacity,
+   if (!kMadviseZeroes) {
+     memset(base_, 0, max_capacity);
+   }
++#ifdef __EMSCRIPTEN__
++  // arc-wasm: no madvise here. The mem map is a fresh anonymous mapping (the
++  // heap's, zero) or one its owner has just madvised itself (Clear(),
++  // PreZygoteFork, collector transitions), and on wasm madvise zeroes every
++  // page (shim/wasm_mm): all of max_capacity, the whole -Xmx (256 MB on an
++  // iPhone), became the tab's memory before the app allocated anything --
++  // iOS counts touched pages of the wasm memory (docs/topics/ios-mem.md).
++#else
+   CHECK_EQ(madvise(base_, max_capacity, MADV_DONTNEED), 0);
++#endif
+   if (!initialized_) {
+     Initialize();
+   }

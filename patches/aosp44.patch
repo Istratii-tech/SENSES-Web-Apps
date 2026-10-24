@@ -1,0 +1,506 @@
+diff --git a/dalvik/libdex/SysUtil.h b/dalvik/libdex/SysUtil.h
+index c02ec6ed..7329703e 100644
+--- a/dalvik/libdex/SysUtil.h
++++ b/dalvik/libdex/SysUtil.h
+@@ -31,7 +31,11 @@
+  *
+  * Must be a power of 2.
+  */
+-#ifdef PAGE_SHIFT
++#if defined(__wasm__)
++/* arc-wasm: what sysconf(_SC_PAGESIZE) reports (WebAssembly's page size;
++ * the kernel layer's mmap works in these units). */
++#define SYSTEM_PAGE_SIZE        65536
++#elif defined(PAGE_SHIFT)
+ #define SYSTEM_PAGE_SIZE        (1<<PAGE_SHIFT)
+ #else
+ #define SYSTEM_PAGE_SIZE        4096
+diff --git a/dalvik/vm/Atomic.cpp b/dalvik/vm/Atomic.cpp
+index ccbf64af..fcab8b4e 100644
+--- a/dalvik/vm/Atomic.cpp
++++ b/dalvik/vm/Atomic.cpp
+@@ -30,6 +30,11 @@
+ #elif defined(__i386__) || defined(__x86_64__)
+ #define NEED_PTHREADS_QUASI_ATOMICS 1
+ 
++#elif defined(__wasm__)
++// arc-wasm: the portable (mutex-striped) version; wasm has 64-bit atomics,
++// but these are not on a hot path.
++#define NEED_PTHREADS_QUASI_ATOMICS 1
++
+ #elif defined(__mips__)
+ #define NEED_PTHREADS_QUASI_ATOMICS 1
+ 
+diff --git a/dalvik/vm/JarFile.cpp b/dalvik/vm/JarFile.cpp
+index e643a5fe..c620c530 100644
+--- a/dalvik/vm/JarFile.cpp
++++ b/dalvik/vm/JarFile.cpp
+@@ -179,6 +179,46 @@ bail:
+     return result;
+ }
+ 
++#if defined(__wasm__)
++/*
++ * arc-wasm: reads a stored or deflated zip entry into "buf" (exactly
++ * "len" bytes). libdex can only extract to a file descriptor.
++ */
++static bool extractEntryToMemory(const ZipArchive* pArchive, ZipEntry entry,
++    u1* buf, size_t len)
++{
++    int method;
++    size_t uncompLen, compLen;
++    off_t offset;
++    if (dexZipGetEntryInfo(pArchive, entry, &method, &uncompLen, &compLen,
++            &offset, NULL, NULL) != 0 || uncompLen != len)
++        return false;
++    u1* comp = (method == kCompressStored) ? buf : (u1*) malloc(compLen);
++    if (comp == NULL)
++        return false;
++    bool ok = TEMP_FAILURE_RETRY(pread(dexZipGetArchiveFd(pArchive), comp,
++            compLen, offset)) == (ssize_t) compLen;
++    if (ok && method == kCompressDeflated) {
++        z_stream zs;
++        memset(&zs, 0, sizeof(zs));
++        zs.next_in = comp;
++        zs.avail_in = compLen;
++        zs.next_out = buf;
++        zs.avail_out = len;
++        ok = inflateInit2(&zs, -MAX_WBITS) == Z_OK;
++        if (ok) {
++            ok = inflate(&zs, Z_FINISH) == Z_STREAM_END && zs.total_out == len;
++            inflateEnd(&zs);
++        }
++    } else if (method != kCompressStored) {
++        ok = false;
++    }
++    if (comp != buf)
++        free(comp);
++    return ok;
++}
++#endif
++
+ /*
+  * Open a Jar file.  It's okay if it's just a Zip archive without all of
+  * the Jar trimmings, but we do insist on finding "classes.dex" inside
+@@ -244,6 +284,50 @@ tryArchive:
+          * "classes.dex".
+          */
+         entry = dexZipFindEntry(&archive, kDexInJarName);
++#if defined(__wasm__)
++        /*
++         * arc-wasm: dexopt runs in a fork()ed child, and there is no fork
++         * in a browser. Extract classes.dex into memory and prepare it in
++         * place instead, as dvmRawDexFileOpenArray() does for byte arrays.
++         * Classes get verified at load time rather than ahead of time, and
++         * the bytecode is not optimized.
++         */
++        if (entry != NULL) {
++            size_t dexLen = dexGetZipEntryUncompLen(&archive, entry);
++            u1* dexBytes = (u1*) malloc(dexLen);
++            if (dexBytes == NULL ||
++                !extractEntryToMemory(&archive, entry, dexBytes, dexLen) ||
++                !dvmPrepareDexInMemory(dexBytes, dexLen, &pDvmDex)) {
++                ALOGE("Unable to extract+prepare DEX from '%s'", fileName);
++                free(dexBytes);
++                goto bail;
++            }
++            /* dexBytes now belongs to pDvmDex for the life of the VM. */
++            goto opened;
++        }
++#endif
++#if defined(__wasm__)
++        /*
++         * arc-wasm: dexopt runs in a fork()ed child, and there is no fork
++         * in a browser. Extract classes.dex into memory and prepare it in
++         * place instead, as dvmRawDexFileOpenArray() does for byte arrays.
++         * Classes get verified at load time rather than ahead of time, and
++         * the bytecode is not optimized.
++         */
++        if (entry != NULL) {
++            size_t dexLen = dexGetZipEntryUncompLen(&archive, entry);
++            u1* dexBytes = (u1*) malloc(dexLen);
++            if (dexBytes == NULL ||
++                !extractEntryToMemory(&archive, entry, dexBytes, dexLen) ||
++                !dvmPrepareDexInMemory(dexBytes, dexLen, &pDvmDex)) {
++                ALOGE("Unable to extract+prepare DEX from '%s'", fileName);
++                free(dexBytes);
++                goto bail;
++            }
++            /* dexBytes now belongs to pDvmDex for the life of the VM. */
++            goto opened;
++        }
++#endif
+         if (entry != NULL) {
+             bool newFile = false;
+ 
+@@ -345,6 +429,9 @@ tryArchive:
+         locked = false;
+     }
+ 
++#if defined(__wasm__)
++opened:
++#endif
+     ALOGV("Successfully opened '%s' in '%s'", kDexInJarName, fileName);
+ 
+     *ppJarFile = (JarFile*) calloc(1, sizeof(JarFile));
+diff --git a/dalvik/vm/Native.cpp b/dalvik/vm/Native.cpp
+index a12c4e00..7ace9138 100644
+--- a/dalvik/vm/Native.cpp
++++ b/dalvik/vm/Native.cpp
+@@ -25,6 +25,14 @@
+ 
+ #include <stdlib.h>
+ #include <dlfcn.h>
++#if defined(__wasm__)
++// arc-wasm: libraries linked into the executable (libjavacore, ...) are
++// found by name; see shim/dalvik/static_jni_libs.h.
++#include "static_jni_libs.h"
++#define dlopen arc_wasm_dlopen
++#define dlsym arc_wasm_dlsym
++#define dlerror arc_wasm_dlerror
++#endif
+ 
+ static void freeSharedLibEntry(void* ptr);
+ static void* lookupSharedLibMethod(const Method* method);
+@@ -52,6 +60,22 @@ void dvmNativeShutdown()
+ }
+ 
+ 
++#if defined(__wasm__)
++/*
++ * arc-wasm: internal natives are DalvikNativeFunc (two arguments) but get
++ * called as DalvikBridgeFunc (four). Native ABIs ignore the extra
++ * arguments; WebAssembly traps on an indirect call through a mismatched
++ * function type. So internal natives are installed behind this bridge,
++ * with the real function kept in method->insns (unused for natives that
++ * are not JNI).
++ */
++static void callInternalNative(const u4* args, JValue* pResult,
++    const Method* method, Thread* self)
++{
++    ((DalvikNativeFunc) method->insns)(args, pResult);
++}
++#endif
++
+ /*
+  * Resolve a native method and invoke it.
+  *
+@@ -101,9 +125,15 @@ void dvmResolveNativeMethod(const u4* args, JValue* pResult,
+             ALOGE("Failing on %s.%s", method->clazz->descriptor, method->name);
+             dvmAbort();     // harsh, but this is VM-internal problem
+         }
++#if defined(__wasm__)
++        dvmSetNativeFunc((Method*) method, callInternalNative,
++                         (const u2*) infunc);
++        callInternalNative(args, pResult, method, self);
++#else
+         DalvikBridgeFunc dfunc = (DalvikBridgeFunc) infunc;
+         dvmSetNativeFunc((Method*) method, dfunc, NULL);
+         dfunc(args, pResult, method, self);
++#endif
+         return;
+     }
+ 
+diff --git a/dalvik/vm/UtfString.cpp b/dalvik/vm/UtfString.cpp
+index 2307fb4a..12789cb8 100644
+--- a/dalvik/vm/UtfString.cpp
++++ b/dalvik/vm/UtfString.cpp
+@@ -236,7 +236,7 @@ StringObject* dvmCreateStringFromCstr(const std::string& utf8Str) {
+  * Returns NULL and throws an exception on failure.
+  */
+ StringObject* dvmCreateStringFromCstrAndLength(const char* utf8Str,
+-    size_t utf16Length)
++    u4 utf16Length)  /* arc-wasm: was size_t, not u4 as in UtfString.h */
+ {
+     assert(utf8Str != NULL);
+ 
+diff --git a/dalvik/vm/mterp/c/gotoTargets.cpp b/dalvik/vm/mterp/c/gotoTargets.cpp
+index 452bee8e..10ce6311 100644
+--- a/dalvik/vm/mterp/c/gotoTargets.cpp
++++ b/dalvik/vm/mterp/c/gotoTargets.cpp
+@@ -8,7 +8,7 @@
+  * next instruction.  Here, these are subroutines that return to the caller.
+  */
+ 
+-GOTO_TARGET(filledNewArray, bool methodCallRange, bool)
++GOTO_TARGET(filledNewArray, bool methodCallRange)
+     {
+         ClassObject* arrayClass;
+         ArrayObject* newArray;
+@@ -103,7 +103,7 @@ GOTO_TARGET(filledNewArray, bool methodCallRange, bool)
+ GOTO_TARGET_END
+ 
+ 
+-GOTO_TARGET(invokeVirtual, bool methodCallRange, bool)
++GOTO_TARGET(invokeVirtual, bool methodCallRange)
+     {
+         Method* baseMethod;
+         Object* thisPtr;
+diff --git a/dalvik/vm/mterp/out/InterpC-allstubs.cpp b/dalvik/vm/mterp/out/InterpC-allstubs.cpp
+index 1ef87837..18d69874 100644
+--- a/dalvik/vm/mterp/out/InterpC-allstubs.cpp
++++ b/dalvik/vm/mterp/out/InterpC-allstubs.cpp
+@@ -3094,7 +3094,7 @@ void dvmMterpStdBail(Thread* self)
+  * next instruction.  Here, these are subroutines that return to the caller.
+  */
+ 
+-GOTO_TARGET(filledNewArray, bool methodCallRange, bool)
++GOTO_TARGET(filledNewArray, bool methodCallRange)
+     {
+         ClassObject* arrayClass;
+         ArrayObject* newArray;
+@@ -3189,7 +3189,7 @@ GOTO_TARGET(filledNewArray, bool methodCallRange, bool)
+ GOTO_TARGET_END
+ 
+ 
+-GOTO_TARGET(invokeVirtual, bool methodCallRange, bool)
++GOTO_TARGET(invokeVirtual, bool methodCallRange)
+     {
+         Method* baseMethod;
+         Object* thisPtr;
+diff --git a/dalvik/vm/mterp/out/InterpC-portable.cpp b/dalvik/vm/mterp/out/InterpC-portable.cpp
+index 0328aa88..f731cac1 100644
+--- a/dalvik/vm/mterp/out/InterpC-portable.cpp
++++ b/dalvik/vm/mterp/out/InterpC-portable.cpp
+@@ -3042,7 +3042,7 @@ OP_END
+  * next instruction.  Here, these are subroutines that return to the caller.
+  */
+ 
+-GOTO_TARGET(filledNewArray, bool methodCallRange, bool)
++GOTO_TARGET(filledNewArray, bool methodCallRange)
+     {
+         ClassObject* arrayClass;
+         ArrayObject* newArray;
+@@ -3137,7 +3137,7 @@ GOTO_TARGET(filledNewArray, bool methodCallRange, bool)
+ GOTO_TARGET_END
+ 
+ 
+-GOTO_TARGET(invokeVirtual, bool methodCallRange, bool)
++GOTO_TARGET(invokeVirtual, bool methodCallRange)
+     {
+         Method* baseMethod;
+         Object* thisPtr;
+diff --git a/dalvik/vm/native/InternalNative.cpp b/dalvik/vm/native/InternalNative.cpp
+index 0d06ea7e..1a219bf6 100644
+--- a/dalvik/vm/native/InternalNative.cpp
++++ b/dalvik/vm/native/InternalNative.cpp
+@@ -139,7 +139,12 @@ DalvikNativeFunc dvmLookupInternalNativeMethod(const Method* method)
+  * definitions when a class is first loaded.  This throws the expected
+  * exception so we don't have to explicitly check for it in the interpreter.
+  */
++#if defined(__wasm__)
++void dvmAbstractMethodStub(const u4* args, JValue* pResult,
++    const Method* method, Thread* self)
++#else
+ void dvmAbstractMethodStub(const u4* args, JValue* pResult)
++#endif
+ {
+     ALOGD("--- called into dvmAbstractMethodStub");
+     dvmThrowAbstractMethodError("abstract method not implemented");
+diff --git a/dalvik/vm/native/InternalNative.h b/dalvik/vm/native/InternalNative.h
+index 006fc1e0..8ce45f4d 100644
+--- a/dalvik/vm/native/InternalNative.h
++++ b/dalvik/vm/native/InternalNative.h
+@@ -27,6 +27,12 @@ void dvmInternalNativeShutdown(void);
+ DalvikNativeFunc dvmLookupInternalNativeMethod(const Method* method);
+ 
+ /* exception-throwing stub for abstract methods (DalvikNativeFunc) */
++#if defined(__wasm__)
++/* arc-wasm: installed as a DalvikBridgeFunc, so it must have that type. */
++extern "C" void dvmAbstractMethodStub(const u4* args, JValue* pResult,
++    const Method* method, Thread* self);
++#else
+ extern "C" void dvmAbstractMethodStub(const u4* args, JValue* pResult);
++#endif
+ 
+ #endif  // DALVIK_NATIVE_INTERNALNATIVE_H_
+diff --git a/dalvik/vm/native/java_lang_Object.cpp b/dalvik/vm/native/java_lang_Object.cpp
+index 12f701ff..fe19aac5 100644
+--- a/dalvik/vm/native/java_lang_Object.cpp
++++ b/dalvik/vm/native/java_lang_Object.cpp
+@@ -54,15 +54,30 @@ static void Dalvik_java_lang_Object_getClass(const u4* args, JValue* pResult)
+     RETURN_PTR(thisPtr->clazz);
+ }
+ 
++#if defined(__wasm__)
++/*
++ * arc-wasm: internal natives are called through callInternalNative()
++ * (Native.cpp) with exactly the DalvikNativeFunc arguments, because
++ * WebAssembly traps on calls through a mismatched function type. These
++ * three look "self" up instead of receiving it.
++ */
++#define OBJECT_BRIDGE_PARAMS const u4* args, JValue* pResult
++#define OBJECT_BRIDGE_SELF Thread* self = dvmThreadSelf();
++#else
++#define OBJECT_BRIDGE_PARAMS const u4* args, JValue* pResult, \
++    const Method* method, Thread* self
++#define OBJECT_BRIDGE_SELF
++#endif
++
+ /*
+  * public void notify()
+  *
+  * NOTE: we declare this as a full DalvikBridgeFunc, rather than a
+  * DalvikNativeFunc, because we really want to avoid the "self" lookup.
+  */
+-static void Dalvik_java_lang_Object_notify(const u4* args, JValue* pResult,
+-    const Method* method, Thread* self)
++static void Dalvik_java_lang_Object_notify(OBJECT_BRIDGE_PARAMS)
+ {
++    OBJECT_BRIDGE_SELF
+     Object* thisPtr = (Object*) args[0];
+ 
+     dvmObjectNotify(self, thisPtr);
+@@ -72,9 +87,9 @@ static void Dalvik_java_lang_Object_notify(const u4* args, JValue* pResult,
+ /*
+  * public void notifyAll()
+  */
+-static void Dalvik_java_lang_Object_notifyAll(const u4* args, JValue* pResult,
+-    const Method* method, Thread* self)
++static void Dalvik_java_lang_Object_notifyAll(OBJECT_BRIDGE_PARAMS)
+ {
++    OBJECT_BRIDGE_SELF
+     Object* thisPtr = (Object*) args[0];
+ 
+     dvmObjectNotifyAll(self, thisPtr);
+@@ -84,9 +99,9 @@ static void Dalvik_java_lang_Object_notifyAll(const u4* args, JValue* pResult,
+ /*
+  * public void wait(long ms, int ns) throws InterruptedException
+  */
+-static void Dalvik_java_lang_Object_wait(const u4* args, JValue* pResult,
+-    const Method* method, Thread* self)
++static void Dalvik_java_lang_Object_wait(OBJECT_BRIDGE_PARAMS)
+ {
++    OBJECT_BRIDGE_SELF
+     Object* thisPtr = (Object*) args[0];
+ 
+     dvmObjectWait(self, thisPtr, GET_ARG_LONG(args,1), (s4)args[3], true);
+diff --git a/dalvik/vm/oo/Class.cpp b/dalvik/vm/oo/Class.cpp
+index db5340ef..37c57606 100644
+--- a/dalvik/vm/oo/Class.cpp
++++ b/dalvik/vm/oo/Class.cpp
+@@ -3750,7 +3750,10 @@ static bool computeFieldOffsets(ClassObject* clazz)
+      * We map a C struct directly on top of java/lang/Class objects.  Make
+      * sure we left enough room for the instance fields.
+      */
+-    assert(!dvmIsTheClassClass(clazz) || (size_t)fieldOffset <
++    /* arc-wasm: "<=": fieldOffset is the end of the last field, and
++     * java.lang.Class fills all CLASS_FIELD_SLOTS. (Release builds compile
++     * the assert out, which hid the off-by-one.) */
++    assert(!dvmIsTheClassClass(clazz) || (size_t)fieldOffset <=
+         OFFSETOF_MEMBER(ClassObject, instanceData) + sizeof(clazz->instanceData));
+ 
+     clazz->objectSize = fieldOffset;
+diff --git a/frameworks/base/core/jni/android_os_SystemClock.cpp b/frameworks/base/core/jni/android_os_SystemClock.cpp
+index d20b8005..089a0383 100644
+--- a/frameworks/base/core/jni/android_os_SystemClock.cpp
++++ b/frameworks/base/core/jni/android_os_SystemClock.cpp
+@@ -23,8 +23,10 @@
+ #include <linux/ioctl.h>
+ #include <linux/rtc.h>
+ #include <utils/Atomic.h>
+-#include <linux/android_alarm.h>
+ #endif
++// setCurrentTimeMillis uses /dev/alarm on every target (arc-wasm: the
++// kernel layer has it), so the UAPI header is needed outside Android too.
++#include <linux/android_alarm.h>
+ 
+ #include <sys/time.h>
+ #include <limits.h>
+diff --git a/libcore/libdvm/src/main/java/java/lang/Enum.java b/libcore/libdvm/src/main/java/java/lang/Enum.java
+index 7a0f514a..fee323cb 100644
+--- a/libcore/libdvm/src/main/java/java/lang/Enum.java
++++ b/libcore/libdvm/src/main/java/java/lang/Enum.java
+@@ -147,7 +147,7 @@ public abstract class Enum<E extends Enum<E>> implements Serializable, Comparabl
+      * @see java.lang.Comparable
+      */
+     public final int compareTo(E o) {
+-        return ordinal - o.ordinal;
++        return ordinal - ((Enum<?>) o).ordinal;  // arc-wasm: javac 7+ generics
+     }
+ 
+     /**
+diff --git a/libcore/luni/src/main/java/java/util/EnumMap.java b/libcore/luni/src/main/java/java/util/EnumMap.java
+index 827fb510..dd84f715 100644
+--- a/libcore/luni/src/main/java/java/util/EnumMap.java
++++ b/libcore/luni/src/main/java/java/util/EnumMap.java
+@@ -159,7 +159,7 @@ public class EnumMap<K extends Enum<K>, V> extends AbstractMap<K, V> implements
+                 throw new NoSuchElementException();
+             }
+             prePosition = position++;
+-            return type.get(new MapEntry(enumMap.keys[prePosition],
++            return (E) type.get(new MapEntry(enumMap.keys[prePosition],  // arc-wasm: cast for javac 7+
+                     enumMap.values[prePosition]));
+         }
+ 
+diff --git a/libcore/luni/src/main/native/libcore_io_Memory.cpp b/libcore/luni/src/main/native/libcore_io_Memory.cpp
+index 77aef5bd..7a10e8c4 100644
+--- a/libcore/luni/src/main/native/libcore_io_Memory.cpp
++++ b/libcore/luni/src/main/native/libcore_io_Memory.cpp
+@@ -38,8 +38,9 @@
+ #define LONG_ALIGNMENT_MASK 0x7
+ #define INT_ALIGNMENT_MASK 0x3
+ #define SHORT_ALIGNMENT_MASK 0x1
+-#elif defined(__i386__) || defined(__x86_64__)
++#elif defined(__i386__) || defined(__x86_64__) || defined(__wasm__)
+ // x86 can load anything at any alignment.
++// arc-wasm: so can WebAssembly (unaligned accesses are only slower).
+ #define LONG_ALIGNMENT_MASK 0x0
+ #define INT_ALIGNMENT_MASK 0x0
+ #define SHORT_ALIGNMENT_MASK 0x0
+diff --git a/libcore/luni/src/main/native/libcore_io_Posix.cpp b/libcore/luni/src/main/native/libcore_io_Posix.cpp
+index cf1b7140..bcc784f3 100644
+--- a/libcore/luni/src/main/native/libcore_io_Posix.cpp
++++ b/libcore/luni/src/main/native/libcore_io_Posix.cpp
+@@ -360,6 +360,9 @@ class Passwd {
+ public:
+     Passwd(JNIEnv* env) : mEnv(env), mResult(NULL) {
+         mBufferSize = sysconf(_SC_GETPW_R_SIZE_MAX);
++        if ((ssize_t) mBufferSize < 0) {
++            mBufferSize = 1024;  // arc-wasm: musl returns -1 ("no limit").
++        }
+         mBuffer.reset(new char[mBufferSize]);
+     }
+ 
+@@ -800,8 +803,12 @@ static jobject Posix_getsockoptUcred(JNIEnv* env, jobject, jobject javaFd, jint
+ }
+ 
+ static jint Posix_gettid(JNIEnv*, jobject) {
++#if defined(__EMSCRIPTEN__)
++  return gettid();  // arc-wasm: musl has gettid(), but no syscall numbers.
++#else
+   // Neither bionic nor glibc exposes gettid(2).
+   return syscall(__NR_gettid);
++#endif
+ }
+ 
+ static jint Posix_getuid(JNIEnv*, jobject) {
+diff --git a/system/core/include/utils/Unicode.h b/system/core/include/utils/Unicode.h
+index c8c87c32..77d46594 100644
+--- a/system/core/include/utils/Unicode.h
++++ b/system/core/include/utils/Unicode.h
+@@ -22,8 +22,11 @@
+ 
+ extern "C" {
+ 
++// C++11 has char16_t and char32_t built in (arc-wasm builds with C++14).
++#if __cplusplus < 201103L
+ typedef uint32_t char32_t;
+ typedef uint16_t char16_t;
++#endif
+ 
+ // Standard string functions on char16_t strings.
+ int strcmp16(const char16_t *, const char16_t *);
+diff --git a/system/core/libutils/Unicode.cpp b/system/core/libutils/Unicode.cpp
+index a66e3bbb..fe8887d9 100644
+--- a/system/core/libutils/Unicode.cpp
++++ b/system/core/libutils/Unicode.cpp
+@@ -576,7 +576,7 @@ void utf8_to_utf16(const uint8_t* u8str, size_t u8len, char16_t* u16str) {
+ char16_t* utf8_to_utf16_n(const uint8_t* src, size_t srcLen, char16_t* dst, size_t dstLen) {
+     const uint8_t* const u8end = src + srcLen;
+     const uint8_t* u8cur = src;
+-    const uint16_t* const u16end = dst + dstLen;
++    const char16_t* const u16end = dst + dstLen;
+     char16_t* u16cur = dst;
+ 
+     while (u8cur < u8end && u16cur < u16end) {

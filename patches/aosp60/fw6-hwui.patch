@@ -1,0 +1,28 @@
+diff --git a/frameworks/base/core/jni/android_view_DisplayListCanvas.cpp b/frameworks/base/core/jni/android_view_DisplayListCanvas.cpp
+index 30bdbf41..8e4390fc 100644
+--- a/frameworks/base/core/jni/android_view_DisplayListCanvas.cpp
++++ b/frameworks/base/core/jni/android_view_DisplayListCanvas.cpp
+@@ -214,14 +214,19 @@ static void android_view_DisplayListCanvas_drawLayer(JNIEnv* env, jobject clazz,
+ // Common
+ // ----------------------------------------------------------------------------
+ 
++#if defined(ARC_WASM)
++extern "C" int arc_hwui_gl_available();  // shim/fw6-hwui/hwui_egl.cc
++#endif
++
+ static jboolean android_view_DisplayListCanvas_isAvailable(JNIEnv* env, jobject clazz) {
+     char prop[PROPERTY_VALUE_MAX];
+ #if defined(ARC_WASM)
+-    // arc-wasm: hwui's OpenGL path (RenderThread, EGL window surfaces on
+-    // WebGL) is not there yet: windows draw in software (Surface.lockCanvas)
+-    // unless ro.arcwasm.hwui is 1 (docs/topics/fw6-graphics.md).
++    // arc-wasm: hwui's OpenGL path runs on a WebGL2 context of its
++    // RenderThread (shim/fw6-hwui, docs/topics/fw6-hwui.md). Windows draw
++    // in hardware when ro.arcwasm.hwui is 1 and the browser gives a worker
++    // WebGL2 (not in Node); otherwise in software (Surface.lockCanvas).
+     property_get("ro.arcwasm.hwui", prop, "0");
+-    return atoi(prop) == 1 ? JNI_TRUE : JNI_FALSE;
++    return atoi(prop) == 1 && arc_hwui_gl_available() ? JNI_TRUE : JNI_FALSE;
+ #endif
+     if (property_get("ro.kernel.qemu", prop, NULL) == 0) {
+         // not in the emulator

@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>jitmem</title>
+<!-- tools/jitmem (docs/topics/shared-translations.md): memory of ARM
+     translations kept per thread. ?mode=each|batch|shared|none&threads=T&n=N&k=K&ops=O&calls=C
+     (&inst=0 with shared: the workers only keep the modules)
+     Serve with tools/serve.py (COOP/COEP); measure the WebContent process
+     from outside (ps -axo pid,rss,comm | grep WebKit) once the page says done. -->
+<pre id="out">running...</pre>
+<script src="gen.js"></script>
+<script>
+window.onerror = function (m) { fetch('/__log', {method: 'POST', body: 'JITMEM error: ' + m}); };
+var q = new URLSearchParams(location.search);
+var mode = q.get('mode') || 'each', T = +(q.get('threads') || 8), n = +(q.get('n') || 2000);
+var tbl = q.get('tbl') === '1';
+var rep = +(q.get('rep') || 0), gc = +(q.get('gc') || 0);
+var k = +(q.get('k') || (mode === 'each' ? 1 : 64)), ops = +(q.get('ops') || 24), calls = +(q.get('calls') || 200);
+if (mode === 'each') k = 1;
+// ?maxpages=N: the memory's maximum (iOS 16 refuses a shared one of 4 GB).
+var mem = new WebAssembly.Memory({initial: 256, maximum: +(q.get('maxpages') || 65536), shared: true});
+var modules = null, t0 = Date.now(), sharedMs = 0;
+if (mode === 'shared') {
+  modules = [];
+  for (var first = 0; first < n; first += k) modules.push(new WebAssembly.Module(jitmemModule(first, Math.min(k, n - first), ops, true, tbl)));
+  sharedMs = Date.now() - t0;
+}
+// Every module's bytes once, in shared memory, for the modes that compile
+// in the workers.
+var list = [], total = 0;
+if (mode === 'each' || mode === 'batch')
+  for (var f = 0; f < n; f += k) { var b = jitmemModule(f, Math.min(k, n - f), ops, true, tbl); list.push(b); total += b.length; }
+var bytes = new SharedArrayBuffer(Math.max(total, 8)), offsets = [0], at = 0, view = new Uint8Array(bytes);
+list.forEach(function (b) { view.set(b, at); at += b.length; offsets.push(at); });
+list = null;
+var done = 0, res = [], workers = [];
+function report() {
+  var s = 'mode ' + mode + ' threads ' + T + ' n ' + n + ' k ' + k + ' ops ' + ops + ' calls ' + calls + ' tbl ' + tbl + ' rep ' + rep + ' gc ' + gc + '\n';
+  s += 'bytes of one module: ' + jitmemModule(0, k, ops, true).length + '\n';
+  if (mode === 'shared') s += 'compiled on the page in ' + sharedMs + ' ms\n';
+  res.forEach(function (r) { s += 'worker ' + r.id + ': setup ' + r.setupMs + ' ms (compile ' + r.compileMs + '), calls ' + r.callMs + ' ms, ' + r.fns + ' fns\n'; });
+  s += 'done in ' + (Date.now() - t0) + ' ms\n';
+  document.getElementById('out').textContent = s;
+  document.title = 'jitmem done';
+  window.jitmemResult = s;
+  fetch('/__log', {method: 'POST', body: 'JITMEM ' + location.search + ' ' + s.replace(/\n/g, ' | ')});
+}
+for (var i = 0; i < T; i++) {
+  var w = new Worker('worker.js');
+  workers.push(w);
+  w.onmessage = function (e) { res.push(e.data); if (++done === T) report(); };
+  w.postMessage({id: i, mode: mode, memory: mem, n: n, k: k, ops: ops, calls: calls, cpu: 1024, tbl: tbl, rep: rep, gc: gc, modules: modules, bytes: bytes, offsets: offsets,
+                 inst: q.get('inst') === '0' ? 0 : 1});
+}
+</script>

@@ -1,0 +1,61 @@
+diff --git a/libcore/ojluni/src/main/java/java/util/concurrent/ThreadPoolExecutor.java b/libcore/ojluni/src/main/java/java/util/concurrent/ThreadPoolExecutor.java
+index 2f87c41d2..d1f8bae9e 100644
+--- a/libcore/ojluni/src/main/java/java/util/concurrent/ThreadPoolExecutor.java
++++ b/libcore/ojluni/src/main/java/java/util/concurrent/ThreadPoolExecutor.java
+@@ -1029,7 +1029,8 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
+         int c = ctl.get();
+         if (runStateLessThan(c, STOP)) {
+             if (!completedAbruptly) {
+-                int min = allowCoreThreadTimeOut ? 0 : corePoolSize;
++                // (arc-wasm: core threads that end idle are not replaced either)
++                int min = allowCoreThreadTimeOut || arcCoreIdleNanos() > 0 ? 0 : corePoolSize;
+                 if (min == 0 && ! workQueue.isEmpty())
+                     min = 1;
+                 if (workerCountOf(c) >= min)
+@@ -1056,6 +1057,17 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
+      * @return task, or null if the worker must exit, in which case
+      *         workerCount is decremented
+      */
++    // arc-wasm: arcwasm.pool.core_idle_ms (System property; 0 or unset: never).
++    private static long arcCoreIdleNanos() {
++        String v = System.getProperty("arcwasm.pool.core_idle_ms");
++        if (v == null) return 0;
++        try {
++            return TimeUnit.MILLISECONDS.toNanos(Long.parseLong(v));
++        } catch (NumberFormatException e) {
++            return 0;
++        }
++    }
++
+     private Runnable getTask() {
+         boolean timedOut = false; // Did the last poll() time out?
+ 
+@@ -1073,6 +1085,19 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
+ 
+             // Are workers subject to culling?
+             boolean timed = allowCoreThreadTimeOut || wc > corePoolSize;
++            // arc-wasm (topic ios-threads): every thread is a browser worker
++            // (~5 MB of a phone's tab), so where memory is tight
++            // (arcwasm.pool.core_idle_ms) idle core threads time out too; the
++            // last one stays while tasks are queued, and new tasks start
++            // threads again, as for allowCoreThreadTimeOut.
++            long wait = keepAliveTime;
++            if (!timed) {
++                long idle = arcCoreIdleNanos();
++                if (idle > 0) {
++                    timed = true;
++                    wait = Math.max(keepAliveTime, idle);
++                }
++            }
+ 
+             if ((wc > maximumPoolSize || (timed && timedOut))
+                 && (wc > 1 || workQueue.isEmpty())) {
+@@ -1083,7 +1108,7 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
+ 
+             try {
+                 Runnable r = timed ?
+-                    workQueue.poll(keepAliveTime, TimeUnit.NANOSECONDS) :
++                    workQueue.poll(wait, TimeUnit.NANOSECONDS) :
+                     workQueue.take();
+                 if (r != null)
+                     return r;

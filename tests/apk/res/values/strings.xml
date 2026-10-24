@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">arc-wasm test app</string>
+    <string name="hello">Hello from the APK</string>
+    <string name="greeting">Hello, %1$s! You have %2$d messages.</string>
+    <string name="untranslated">Only in English</string>
+    <string name="second_title">Second activity</string>
+    <plurals name="apples">
+        <item quantity="one">%d apple</item>
+        <item quantity="other">%d apples</item>
+    </plurals>
+    <string-array name="planets">
+        <item>Mercury</item>
+        <item>Venus</item>
+        <item>Earth</item>
+    </string-array>
+    <integer name="answer">42</integer>
+    <bool name="is_test">true</bool>
+    <color name="accent">#ff3ddc84</color>
+    <dimen name="padding">16dp</dimen>
+</resources>

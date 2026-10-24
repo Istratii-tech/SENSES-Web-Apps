@@ -1,0 +1,17 @@
+# Topic fw10-crypto-media: projects for sqlite, sound and media of the
+# framework 10 beyond fw10-core's (docs/topics/fw10-crypto-media.md).
+# android.database.sqlite's SQLite (libsqlite, with ICU).
+external/sqlite
+# Audio headers (system/audio.h, audio_utils), the HAL headers media's
+# headers include.
+system/media
+hardware/libhardware
+# Extractors: libwebm (mkvparser) of the Matroska/WebM extractor, Tremolo
+# (Vorbis headers) of the Ogg extractor, libFLAC of the FLAC extractor.
+external/libvpx
+external/tremolo
+external/flac
+# piex_types.h (headers only), which the media JNI's android_media_Streams.h includes.
+external/piex
+# Skia's headers only (SkStream.h of the media JNI's android_media_Streams.h).
+external/skia

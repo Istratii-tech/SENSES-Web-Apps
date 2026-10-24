@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">arc-wasm 10</string>
+    <string name="hello">Android %1$d on ART 10</string>
+    <string name="press">Press</string>
+    <string name="clicks">Pressed %1$d times</string>
+    <string name="channel_name">Updates</string>
+    <string name="sdk_note">values</string>
+</resources>

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- arc-wasm: the test app for Android 8.1 on ART 8.1 (topic fw8-system,
+     docs/topics/fw8-system.md): minSdkVersion 26, targetSdkVersion 27, Java 8
+     code (lambdas, default and static interface methods, streams: dex 038
+     from d8 with min-api 26), notification channels, a foreground service
+     (startForegroundService), a JobService with API 26 work items, a
+     manifest receiver for an explicit broadcast, a provider on SQLite,
+     dynamic shortcuts (API 25), an adaptive icon (API 26), a service in a
+     process of its own (android:process) and a launcher activity.
+     tools/build_test_apk.sh with MIN_SDK=26 TARGET_SDK=27. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.arcwasm.testapp8"
+    android:versionCode="27"
+    android:versionName="8.1">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="27" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:name=".App8"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/AppTheme">
+
+        <activity android:name=".MainActivity" android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service android:name=".CounterService" android:exported="false" />
+
+        <!-- In a process of its own, as on a device (a light process: topic multiproc). -->
+        <service android:name=".RemoteService" android:process=":remote"
+            android:exported="false" />
+
+        <service android:name=".SyncJobService"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="true" />
+
+        <receiver android:name=".PingReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="org.arcwasm.testapp8.PING" />
+            </intent-filter>
+        </receiver>
+
+        <provider android:name=".NotesProvider"
+            android:authorities="org.arcwasm.testapp8.notes"
+            android:exported="false" />
+    </application>
+</manifest>

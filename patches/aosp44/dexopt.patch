@@ -1,0 +1,535 @@
+diff --git a/dalvik/vm/Globals.h b/dalvik/vm/Globals.h
+index 29f7356a..efb454b8 100644
+--- a/dalvik/vm/Globals.h
++++ b/dalvik/vm/Globals.h
+@@ -739,6 +739,32 @@ struct DvmGlobals {
+ 
+ extern struct DvmGlobals gDvm;
+ 
++#if defined(__wasm__)
++/*
++ * arc-wasm: what dexopt would have done ahead of time happens in this
++ * process (docs/topics/dexopt.md); -Xdexoptstats prints where the time goes
++ * at exit. Not in gDvm: dvmShutdown() overwrites that.
++ */
++struct DvmDexoptCounters {
++    bool enabled;
++    bool noOdex;            /* -Xnoodex: ignore preoptimized .odex files */
++    u8 startUsec;           /* dvmStartup() began */
++    u8 startupUsec;         /* dvmStartup() took */
++    u4 odexFiles;           /* .odex files used */
++    u4 odexBytes;
++    u8 odexUsec;            /* checking and mapping them */
++    u4 dexFiles;            /* DEX files prepared in memory */
++    u4 dexBytes;
++    u8 extractUsec;         /* inflating classes.dex from a zip */
++    u8 prepareUsec;         /* dvmPrepareDexInMemory: swap + structure check */
++    u4 classesVerified;
++    u8 verifyUsec;          /* includes register map generation */
++    u4 classesOptimized;
++    u8 optimizeUsec;
++};
++extern struct DvmDexoptCounters gDvmDexopt;
++#endif
++
+ #if defined(WITH_JIT)
+ 
+ #define DEFAULT_CODE_CACHE_SIZE 0xffffffff
+diff --git a/dalvik/vm/Init.cpp b/dalvik/vm/Init.cpp
+index f1762c96..9fc94c43 100644
+--- a/dalvik/vm/Init.cpp
++++ b/dalvik/vm/Init.cpp
+@@ -59,6 +59,9 @@ static bool initZygote();
+ 
+ /* global state */
+ struct DvmGlobals gDvm;
++#if defined(__wasm__)
++struct DvmDexoptCounters gDvmDexopt;
++#endif
+ struct DvmJniGlobals gDvmJni;
+ 
+ /* JIT-specific global state */
+@@ -767,6 +770,31 @@ static int processXjitconfig(const char* opt) {
+ }
+ #endif
+ 
++#if defined(__wasm__)
++/*
++ * arc-wasm: -Xdexoptstats. Runs at exit, because System.exit() does not
++ * go through dvmShutdown().
++ */
++static void dumpDexoptStats()
++{
++    ALOGI("dexopt stats: VM startup %llu ms, exit after %llu ms;"
++        " %u odex files (%u KB) in %llu ms;"
++        " %u dex files (%u KB): extract %llu ms, prepare %llu ms;"
++        " verified %u classes in %llu ms; optimized %u classes in %llu ms",
++        gDvmDexopt.startupUsec / 1000,
++        (dvmGetRelativeTimeUsec() - gDvmDexopt.startUsec) / 1000,
++        gDvmDexopt.odexFiles, gDvmDexopt.odexBytes / 1024,
++        gDvmDexopt.odexUsec / 1000,
++        gDvmDexopt.dexFiles, gDvmDexopt.dexBytes / 1024,
++        gDvmDexopt.extractUsec / 1000,
++        gDvmDexopt.prepareUsec / 1000,
++        gDvmDexopt.classesVerified,
++        gDvmDexopt.verifyUsec / 1000,
++        gDvmDexopt.classesOptimized,
++        gDvmDexopt.optimizeUsec / 1000);
++}
++#endif
++
+ /*
+  * Process an argument vector full of options.  Unlike standard C programs,
+  * argv[0] does not contain the name of the program.
+@@ -1192,6 +1220,18 @@ static int processOptions(int argc, const char* const argv[],
+             }
+             ALOGV("Precise GC configured %s", gDvm.preciseGc ? "ON" : "OFF");
+ 
++#if defined(__wasm__)
++        } else if (strcmp(argv[i], "-Xregmap:type") == 0) {
++            gDvm.registerMapMode = kRegisterMapModeTypePrecise;
++        } else if (strcmp(argv[i], "-Xregmap:live") == 0) {
++            gDvm.registerMapMode = kRegisterMapModeLivePrecise;
++        } else if (strcmp(argv[i], "-Xnoodex") == 0) {
++            gDvmDexopt.noOdex = true;
++        } else if (strcmp(argv[i], "-Xdexoptstats") == 0) {
++            if (!gDvmDexopt.enabled)
++                atexit(dumpDexoptStats);
++            gDvmDexopt.enabled = true;
++#endif
+         } else if (strcmp(argv[i], "-Xcheckdexsum") == 0) {
+             gDvm.verifyDexChecksum = true;
+ 
+@@ -1286,10 +1326,32 @@ static void setCommandLineDefaults()
+ 
+     gDvm.constInit = false;
+     gDvm.commonInit = false;
++#elif defined(__wasm__)
++    /*
++     * arc-wasm: the portable interpreter. "Fast" without assembly is
++     * InterpC-allstubs: one C function per opcode, called from a loop that
++     * sits under setjmp(), and Emscripten routes every call made under
++     * setjmp through a JavaScript trampoline -- about 20x slower.
++     */
++    gDvm.executionMode = kExecutionModeInterpPortable;
+ #else
+     gDvm.executionMode = kExecutionModeInterpFast;
+ #endif
+ 
++#if defined(__wasm__)
++    /*
++     * arc-wasm: there is no dexopt (it runs in a fork()ed child), so its
++     * work is done in this process, lazily, one class at a time when the
++     * class is initialized (dvmInitClass): verification with live-precise
++     * register maps, then full optimization (quickened field access and
++     * invokes, execute-inline). The GC then scans interpreter frames with
++     * the maps instead of conservatively. See docs/topics/dexopt.md.
++     */
++    gDvm.dexOptMode = OPTIMIZE_MODE_FULL;
++    gDvm.registerMapMode = kRegisterMapModeLivePrecise;
++    gDvm.preciseGc = true;
++#endif
++
+     /*
+      * SMP support is a compile-time define, but we may want to have
+      * dexopt target a differently-configured device.
+@@ -1383,6 +1445,9 @@ std::string dvmStartup(int argc, const char* const argv[],
+         bool ignoreUnrecognized, JNIEnv* pEnv)
+ {
+     ScopedShutdown scopedShutdown;
++#if defined(__wasm__)
++    gDvmDexopt.startUsec = dvmGetRelativeTimeUsec();
++#endif
+ 
+     assert(gDvm.initializing);
+ 
+@@ -1592,6 +1657,9 @@ std::string dvmStartup(int argc, const char* const argv[],
+     }
+ 
+     scopedShutdown.disarm();
++#if defined(__wasm__)
++    gDvmDexopt.startupUsec = dvmGetRelativeTimeUsec() - gDvmDexopt.startUsec;
++#endif
+     return "";
+ }
+ 
+diff --git a/dalvik/vm/JarFile.cpp b/dalvik/vm/JarFile.cpp
+index c620c530..0889770d 100644
+--- a/dalvik/vm/JarFile.cpp
++++ b/dalvik/vm/JarFile.cpp
+@@ -79,6 +79,26 @@ bail:
+     return -1;
+ }
+ 
++#if defined(__wasm__)
++/*
++ * arc-wasm: the name openAlternateSuffix() would open (newly allocated), or
++ * a copy of "fileName" if it has no extension.
++ */
++static char* alternateSuffixName(const char* fileName, const char* suffix)
++{
++    const char* dot = strrchr(fileName, '.');
++    if (dot == NULL)
++        return strdup(fileName);
++    size_t baseLen = dot + 1 - fileName;
++    char* name = (char*) malloc(baseLen + strlen(suffix) + 1);
++    if (name != NULL) {
++        memcpy(name, fileName, baseLen);
++        strcpy(name + baseLen, suffix);
++    }
++    return name;
++}
++#endif
++
+ /*
+  * Checks the dependencies of the dex cache file corresponding
+  * to the jar file at the absolute path "fileName".
+@@ -259,7 +279,21 @@ int dvmJarFileOpen(const char* fileName, const char* odexOutputName,
+     /* First, look for a ".odex" alongside the jar file.  It will
+      * have the same name/path except for the extension.
+      */
++#if defined(__wasm__)
++    /*
++     * arc-wasm: the build preoptimizes /system jars (mk/topic-dexopt.mk);
++     * -Xnoodex ignores those files, for measurements. (No initializers:
++     * "goto bail" above jumps past these.)
++     */
++    u8 odexStart;
++    bool usingOdex;
++    odexStart = dvmGetRelativeTimeUsec();
++    usingOdex = false;
++    fd = gDvmDexopt.noOdex ? -1 :
++        openAlternateSuffix(fileName, "odex", O_RDONLY, &cachedName);
++#else
+     fd = openAlternateSuffix(fileName, "odex", O_RDONLY, &cachedName);
++#endif
+     if (fd >= 0) {
+         ALOGV("Using alternate file (odex) for %s ...", fileName);
+         if (!dvmCheckOptHeaderAndDependencies(fd, false, 0, 0, true, true)) {
+@@ -271,6 +305,9 @@ int dvmJarFileOpen(const char* fileName, const char* odexOutputName,
+             goto tryArchive;
+         } else {
+             ALOGV("%s odex has good dependencies", fileName);
++#if defined(__wasm__)
++            usingOdex = true;
++#endif
+             //TODO: make sure that the .odex actually corresponds
+             //      to the classes.dex inside the archive (if present).
+             //      For typical use there will be no classes.dex.
+@@ -289,20 +326,31 @@ tryArchive:
+          * arc-wasm: dexopt runs in a fork()ed child, and there is no fork
+          * in a browser. Extract classes.dex into memory and prepare it in
+          * place instead, as dvmRawDexFileOpenArray() does for byte arrays.
+-         * Classes get verified at load time rather than ahead of time, and
+-         * the bytecode is not optimized.
++         * Classes get verified (and optimized) when they are initialized
++         * rather than ahead of time.
+          */
+         if (entry != NULL) {
+             size_t dexLen = dexGetZipEntryUncompLen(&archive, entry);
+             u1* dexBytes = (u1*) malloc(dexLen);
+-            if (dexBytes == NULL ||
+-                !extractEntryToMemory(&archive, entry, dexBytes, dexLen) ||
++            u8 extractStart = dvmGetRelativeTimeUsec();
++            bool extracted = dexBytes != NULL &&
++                extractEntryToMemory(&archive, entry, dexBytes, dexLen);
++            gDvmDexopt.extractUsec +=
++                dvmGetRelativeTimeUsec() - extractStart;
++            if (!extracted ||
+                 !dvmPrepareDexInMemory(dexBytes, dexLen, &pDvmDex)) {
+                 ALOGE("Unable to extract+prepare DEX from '%s'", fileName);
+                 free(dexBytes);
+                 goto bail;
+             }
+             /* dexBytes now belongs to pDvmDex for the life of the VM. */
++            /*
++             * The cache file name of a boot class path entry is how an .odex
++             * of a later entry names its dependency on it (dexopt.patch):
++             * use the name of the .odex next to the jar, so it is the same
++             * whether the jar comes from there or from classes.dex.
++             */
++            cachedName = alternateSuffixName(fileName, "odex");
+             goto opened;
+         }
+ #endif
+@@ -418,6 +466,13 @@ tryArchive:
+         ALOGI("Unable to map %s in %s", kDexInJarName, fileName);
+         goto bail;
+     }
++#if defined(__wasm__)
++    if (usingOdex) {
++        gDvmDexopt.odexFiles++;
++        gDvmDexopt.odexBytes += pDvmDex->memMap.length;
++        gDvmDexopt.odexUsec += dvmGetRelativeTimeUsec() - odexStart;
++    }
++#endif
+ 
+     if (locked) {
+         /* unlock the fd */
+diff --git a/dalvik/vm/Thread.h b/dalvik/vm/Thread.h
+index 19bd49c3..325c94e8 100644
+--- a/dalvik/vm/Thread.h
++++ b/dalvik/vm/Thread.h
+@@ -311,6 +311,12 @@ struct Thread {
+ #if defined(ARCH_IA32) && defined(WITH_JIT)
+     u4 spillRegion[MAX_SPILL_JIT_IA];
+ #endif
++
++#if defined(__wasm__)
++    /* arc-wasm: interpreter re-entry, see PERIODIC_CHECKS (stubdefs.cpp) */
++    int         wasmBranchBudget;
++    bool        wasmResume;
++#endif
+ };
+ 
+ /* start point for an internal thread; mimics pthread args */
+diff --git a/dalvik/vm/analysis/DexPrepare.cpp b/dalvik/vm/analysis/DexPrepare.cpp
+index e8112d54..4ea83e5c 100644
+--- a/dalvik/vm/analysis/DexPrepare.cpp
++++ b/dalvik/vm/analysis/DexPrepare.cpp
+@@ -756,6 +756,11 @@ bail:
+ bool dvmPrepareDexInMemory(u1* addr, size_t len, DvmDex** ppDvmDex)
+ {
+     DexClassLookup* pClassLookup = NULL;
++#if defined(__wasm__)
++    u8 startUsec = dvmGetRelativeTimeUsec();
++    gDvmDexopt.dexFiles++;
++    gDvmDexopt.dexBytes += len;
++#endif
+ 
+     /*
+      * Byte-swap, realign, verify basic DEX file structure.
+@@ -774,6 +779,9 @@ bool dvmPrepareDexInMemory(u1* addr, size_t len, DvmDex** ppDvmDex)
+ 
+     (*ppDvmDex)->pDexFile->pClassLookup = pClassLookup;
+ 
++#if defined(__wasm__)
++    gDvmDexopt.prepareUsec += dvmGetRelativeTimeUsec() - startUsec;
++#endif
+     return true;
+ }
+ 
+diff --git a/dalvik/vm/analysis/Liveness.cpp b/dalvik/vm/analysis/Liveness.cpp
+index 361d3cb3..c6f26c53 100644
+--- a/dalvik/vm/analysis/Liveness.cpp
++++ b/dalvik/vm/analysis/Liveness.cpp
+@@ -213,7 +213,19 @@ bool dvmComputeLiveness(VerifierData* vdata)
+             VfyBasicBlock* pred =
+                     (VfyBasicBlock*) dvmPointerSetGetEntry(preds, predIdx);
+ 
++#if defined(__wasm__)
++            /*
++             * arc-wasm: never clear "changed" here. A block can be marked
++             * changed by one successor and then merged with another that
++             * adds nothing; resetting the flag dropped the first change, so
++             * the block was not processed again and registers live around
++             * a loop came out dead (AOSP never used these results).
++             */
++            if (dvmCheckMergeBitVectors(pred->liveRegs, workBits))
++                pred->changed = true;
++#else
+             pred->changed = dvmCheckMergeBitVectors(pred->liveRegs, workBits);
++#endif
+             if (verbose) {
+                 ALOGI("merging cur=%04x into pred last=%04x (ch=%d)",
+                     curIdx, pred->lastAddr, pred->changed);
+diff --git a/dalvik/vm/analysis/RegisterMap.cpp b/dalvik/vm/analysis/RegisterMap.cpp
+index 197fb7ab..8566b3f0 100644
+--- a/dalvik/vm/analysis/RegisterMap.cpp
++++ b/dalvik/vm/analysis/RegisterMap.cpp
+@@ -40,6 +40,10 @@
+ 
+ // fwd
+ static void outputTypeVector(const RegType* regs, int insnRegCount, u1* data);
++#if defined(__wasm__)
++static void clearDeadRegisters(const BitVector* liveRegs, int insnRegCount,
++    u1* data);
++#endif
+ static bool verifyMap(VerifierData* vdata, const RegisterMap* pMap);
+ static int compareMaps(const RegisterMap* pMap1, const RegisterMap* pMap2);
+ 
+@@ -266,6 +270,12 @@ RegisterMap* dvmGenerateRegisterMapV(VerifierData* vdata)
+             }
+             outputTypeVector(vdata->registerLines[i].regTypes,
+                 vdata->insnRegCount, mapData);
++#if defined(__wasm__)
++            if (vdata->registerLines[i].liveRegs != NULL) {
++                clearDeadRegisters(vdata->registerLines[i].liveRegs,
++                    vdata->insnRegCount, mapData);
++            }
++#endif
+             mapData += regWidth;
+         }
+     }
+@@ -391,6 +401,26 @@ static void outputTypeVector(const RegType* regs, int insnRegCount, u1* data)
+     }
+ }
+ 
++#if defined(__wasm__)
++/*
++ * arc-wasm: live-precise maps. With kRegisterMapModeLivePrecise the
++ * verifier computes which registers are live at each GC point
++ * (dvmComputeLiveness, with locals kept live over their debug-info scope),
++ * but nothing in AOSP 4.4 used the result: maps were type-precise only, so
++ * a reference left in a register that is never read again kept its object
++ * alive. Clear the bits of dead registers in a type vector written by
++ * outputTypeVector() (register N is bit N%8 of byte N/8).
++ */
++static void clearDeadRegisters(const BitVector* liveRegs, int insnRegCount,
++    u1* data)
++{
++    for (int i = 0; i < insnRegCount; i++) {
++        if (!dvmIsBitSet(liveRegs, i))
++            data[i >> 3] &= ~(1 << (i & 0x07));
++    }
++}
++#endif
++
+ /*
+  * Print the map as a series of binary strings.
+  *
+diff --git a/dalvik/vm/interp/Interp.cpp b/dalvik/vm/interp/Interp.cpp
+index 42e2ecad..cf3bce95 100644
+--- a/dalvik/vm/interp/Interp.cpp
++++ b/dalvik/vm/interp/Interp.cpp
+@@ -1958,7 +1958,15 @@ void dvmInterpret(Thread* self, const Method* method, JValue* pResult)
+         stdInterp = dvmInterpretPortable;
+ 
+     // Call the interpreter
++#if defined(__wasm__)
++    /* arc-wasm: it may return to be called again (PERIODIC_CHECKS). */
++    do {
++        self->wasmResume = false;
++        (*stdInterp)(self);
++    } while (self->wasmResume);
++#else
+     (*stdInterp)(self);
++#endif
+ 
+     *pResult = self->interpSave.retval;
+ 
+diff --git a/dalvik/vm/mterp/out/InterpC-portable.cpp b/dalvik/vm/mterp/out/InterpC-portable.cpp
+index f731cac1..db8de2f5 100644
+--- a/dalvik/vm/mterp/out/InterpC-portable.cpp
++++ b/dalvik/vm/mterp/out/InterpC-portable.cpp
+@@ -452,11 +452,39 @@ static inline bool checkForNullExportPC(Object* obj, u4* fp, const u2* pc)
+  * While we're at it, see if a debugger has attached or the profiler has
+  * started.  If so, switch to a different "goto" table.
+  */
++#if defined(__wasm__)
++/*
++ * arc-wasm: a Java call tree runs in one call of the C interpreter, and
++ * WebAssembly engines without on-stack replacement (V8) keep running that
++ * call in whatever code it started with: the baseline compile, if the
++ * optimized one of this very large function was not ready yet. So a long
++ * loop (Looper.loop(), a benchmark) could stay twice as slow for good.
++ * Every kWasmBranchBudget backward branches the interpreter returns to
++ * dvmInterpret(), which calls it again; the branch is executed again, which
++ * has no side effects. A new call picks up the optimized code.
++ */
++#define kWasmBranchBudget 65536
++#define WASM_PERIODIC_REENTRY(_pcadj)                                       \
++        if ((_pcadj) < 0 && --self->wasmBranchBudget <= 0) {                \
++            self->wasmBranchBudget = kWasmBranchBudget;                     \
++            if (self->interpBreak.ctl.subMode == 0) {                       \
++                EXPORT_PC();                                                \
++                self->interpSave.method = curMethod;                        \
++                self->interpSave.pc = pc;                                   \
++                self->interpSave.curFrame = fp;                             \
++                self->wasmResume = true;                                    \
++                GOTO_bail();                                                \
++            }                                                               \
++        }
++#else
++#define WASM_PERIODIC_REENTRY(_pcadj)
++#endif
+ #define PERIODIC_CHECKS(_pcadj) {                              \
+         if (dvmCheckSuspendQuick(self)) {                                   \
+             EXPORT_PC();  /* need for precise GC */                         \
+             dvmCheckSuspendPending(self);                                   \
+         }                                                                   \
++        WASM_PERIODIC_REENTRY(_pcadj)                                       \
+     }
+ 
+ /* File: c/opcommon.cpp */
+diff --git a/dalvik/vm/mterp/portable/stubdefs.cpp b/dalvik/vm/mterp/portable/stubdefs.cpp
+index 015057e8..f208cdee 100644
+--- a/dalvik/vm/mterp/portable/stubdefs.cpp
++++ b/dalvik/vm/mterp/portable/stubdefs.cpp
+@@ -74,9 +74,37 @@
+  * While we're at it, see if a debugger has attached or the profiler has
+  * started.  If so, switch to a different "goto" table.
+  */
++#if defined(__wasm__)
++/*
++ * arc-wasm: a Java call tree runs in one call of the C interpreter, and
++ * WebAssembly engines without on-stack replacement (V8) keep running that
++ * call in whatever code it started with: the baseline compile, if the
++ * optimized one of this very large function was not ready yet. So a long
++ * loop (Looper.loop(), a benchmark) could stay twice as slow for good.
++ * Every kWasmBranchBudget backward branches the interpreter returns to
++ * dvmInterpret(), which calls it again; the branch is executed again, which
++ * has no side effects. A new call picks up the optimized code.
++ */
++#define kWasmBranchBudget 65536
++#define WASM_PERIODIC_REENTRY(_pcadj)                                       \
++        if ((_pcadj) < 0 && --self->wasmBranchBudget <= 0) {                \
++            self->wasmBranchBudget = kWasmBranchBudget;                     \
++            if (self->interpBreak.ctl.subMode == 0) {                       \
++                EXPORT_PC();                                                \
++                self->interpSave.method = curMethod;                        \
++                self->interpSave.pc = pc;                                   \
++                self->interpSave.curFrame = fp;                             \
++                self->wasmResume = true;                                    \
++                GOTO_bail();                                                \
++            }                                                               \
++        }
++#else
++#define WASM_PERIODIC_REENTRY(_pcadj)
++#endif
+ #define PERIODIC_CHECKS(_pcadj) {                              \
+         if (dvmCheckSuspendQuick(self)) {                                   \
+             EXPORT_PC();  /* need for precise GC */                         \
+             dvmCheckSuspendPending(self);                                   \
+         }                                                                   \
++        WASM_PERIODIC_REENTRY(_pcadj)                                       \
+     }
+diff --git a/dalvik/vm/oo/Class.cpp b/dalvik/vm/oo/Class.cpp
+index 37c57606..9f97fc0b 100644
+--- a/dalvik/vm/oo/Class.cpp
++++ b/dalvik/vm/oo/Class.cpp
+@@ -4294,7 +4294,18 @@ bool dvmInitClass(ClassObject* clazz)
+         }
+ 
+         clazz->status = CLASS_VERIFYING;
++#if defined(__wasm__)
++        /* (no initializers: "goto verify_failed" jumps past these) */
++        u8 verifyStart;
++        bool verified;
++        verifyStart = dvmGetRelativeTimeUsec();
++        verified = dvmVerifyClass(clazz);
++        gDvmDexopt.classesVerified++;
++        gDvmDexopt.verifyUsec += dvmGetRelativeTimeUsec() - verifyStart;
++        if (!verified) {
++#else
+         if (!dvmVerifyClass(clazz)) {
++#endif
+ verify_failed:
+             dvmThrowVerifyError(clazz->descriptor);
+             dvmSetFieldObject((Object*) clazz,
+@@ -4326,8 +4337,15 @@ noverify:
+         ALOGV("+++ late optimize on %s (pv=%d)",
+             clazz->descriptor, IS_CLASS_FLAG_SET(clazz, CLASS_ISPREVERIFIED));
+         bool essentialOnly = (gDvm.dexOptMode != OPTIMIZE_MODE_FULL);
++#if defined(__wasm__)
++        u8 optStart = dvmGetRelativeTimeUsec();
++#endif
+         dvmOptimizeClass(clazz, essentialOnly);
+         SET_CLASS_FLAG(clazz, CLASS_ISOPTIMIZED);
++#if defined(__wasm__)
++        gDvmDexopt.classesOptimized++;
++        gDvmDexopt.optimizeUsec += dvmGetRelativeTimeUsec() - optStart;
++#endif
+     }
+ 
+     /* update instruction stream now that verification + optimization is done */

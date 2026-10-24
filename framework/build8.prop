@@ -1,0 +1,65 @@
+# begin build properties
+# arc-wasm: the properties AOSP 8.1's build/make/tools/buildinfo.sh writes for
+# android-8.1.0_r81 (values from build/make/core/version_defaults.mk and
+# build_id.mk: BUILD_ID is "OC" at that tag), loaded into the property
+# store at startup as init does (docs/topics/fw8-core.md). android.os.Build reads
+# them; Resources passes Build.VERSION.RESOURCES_SDK_INT to the
+# AssetManager, and resources only match configurations up to that SDK
+# version.
+ro.build.id=OC
+ro.build.display.id=OC
+ro.build.version.incremental=eng.arcwasm
+ro.build.version.sdk=27
+ro.build.version.preview_sdk=0
+ro.build.version.codename=REL
+ro.build.version.all_codenames=REL
+ro.build.version.release=8.1.0
+ro.build.version.security_patch=2017-12-05
+ro.build.version.base_os=
+ro.build.date=Sat Oct 17 00:00:00 UTC 2026
+ro.build.date.utc=1792195200
+ro.build.type=eng
+ro.build.user=arcwasm
+ro.build.host=arcwasm
+ro.build.tags=test-keys
+ro.build.flavor=arcwasm-eng
+ro.product.model=arc-wasm
+ro.product.brand=arcwasm
+ro.product.name=arcwasm
+ro.product.device=wasm32
+ro.product.board=browser
+# ro.product.cpu.abi and ro.product.cpu.abi2 are obsolete,
+# use ro.product.cpu.abilist instead.
+ro.product.cpu.abi=armeabi-v7a
+ro.product.cpu.abi2=armeabi
+ro.product.cpu.abilist=armeabi-v7a,armeabi
+ro.product.cpu.abilist32=armeabi-v7a,armeabi
+ro.product.cpu.abilist64=
+ro.product.manufacturer=arc-wasm
+ro.product.locale=en-US
+ro.wifi.channels=
+ro.board.platform=browser
+# ro.build.product is obsolete; use ro.product.device
+ro.build.product=wasm32
+# Do not try to parse description, fingerprint, or thumbprint
+ro.build.description=arcwasm-eng 8.1.0 OC eng.arcwasm test-keys
+ro.build.fingerprint=arcwasm/arcwasm/wasm32:8.1.0/OC/eng.arcwasm:eng/test-keys
+ro.build.characteristics=default
+# end build properties
+#
+# ADDITIONAL_BUILD_PROPERTIES
+#
+# The VM is ART (persist.sys.dalvik.vm.lib.2 on a device).
+persist.sys.dalvik.vm.lib.2=libart.so
+dalvik.vm.isa.arm.variant=cortex-a15
+dalvik.vm.isa.arm.features=default
+ro.zygote=zygote32
+# build/make/target/product/runtime_libart.mk: no native bridge property of
+# its own (arc-wasm's bridge is in process), no JIT (interpreter only).
+ro.dalvik.vm.native.bridge=0
+dalvik.vm.usejit=false
+# init sets ro.hardware from androidboot.hardware (android.os.Build.HARDWARE).
+# Gecko's GfxInfo truncates its adapter description ("Model: ..., Hardware:
+# ..., OpenGL: ...") to 99 characters, a release assertion when it is shorter
+# (without GL strings): this name keeps it longer (docs/topics/firefox8.md).
+ro.hardware=arcwasm-webassembly

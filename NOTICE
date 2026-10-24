@@ -1,0 +1,63 @@
+# NOTICE — third-party components of SENSES Web Apps and their licences
+
+This file answers one question: **what in SENSES Web Apps is not ours, under which
+licence, and where to get its source.** The release archives carry the full licence
+texts and notices of every component under `licenses/` and list the AOSP projects in
+their `NOTICE.txt`.
+
+## 1. Android Open Source Project — Apache License 2.0, with exceptions
+
+The systems SENSES Web Apps runs apps on are built from AOSP sources:
+
+| system | AOSP tag |
+|---|---|
+| Android 10 | `android-10.0.0_r47` |
+| Android 8.1 | `android-8.1.0_r81` |
+| Android 6.0.1 | `android-6.0.1_r81` |
+| Android 4.4 | `android-4.4.4_r2` |
+
+Source: `https://android.googlesource.com` at these tags; `tools/fetch_aosp*.sh` downloads
+them and applies our changes in `patches/`. Most of AOSP is under the Apache License 2.0;
+its components keep their own licences, among them: bionic (BSD), ICU (Unicode licence),
+BoringSSL (OpenSSL/ISC), Bouncy Castle (MIT), zlib, libpng, libjpeg-turbo (IJG/BSD),
+FreeType (FreeType licence), HarfBuzz (MIT), Skia (BSD), SQLite (public domain), Expat
+(MIT), the Noto fonts (SIL Open Font License 1.1), the Roboto fonts (Apache 2.0), tzdata
+(public domain).
+
+### 1.1. libcore `ojluni` — GNU GPL version 2 with the Classpath Exception
+
+The OpenJDK-derived part of the core Java library of Android 8.1 and 10
+(`libcore/ojluni`) is under the GNU General Public License version 2 with the Classpath
+Exception (its `LICENSE` and the notices in its files). It is compiled into the boot class
+path of those systems.
+
+**How to get its source:** every release has the asset
+`SENSES-Web-Apps-VERSION-gpl-sources.tar.gz` — `libcore/ojluni` of both systems exactly as
+built (the AOSP tag with our patches applied), with the licence. Our changes to it are also
+in this repository (`patches/aosp81/`, `patches/aosp10/`, files of `libcore`).
+
+## 2. ARC (App Runtime for Chrome) — BSD-style licence
+
+`upstream/` is ARC's `posix_translation`, `common` and `graphics_translation` (tag
+`arc-runtime-54.5021.668.0`), © The Chromium Authors, under the licence in
+`upstream/src/LICENSE`, with our changes; `graphics_translation`'s notice:
+`upstream/mods/graphics_translation/NOTICE` (Apache 2.0).
+
+## 3. Toolchain runtime compiled into the WebAssembly modules
+
+Emscripten's runtime (MIT / University of Illinois NCSA), musl libc (MIT), libc++,
+libc++abi and compiler-rt (Apache 2.0 with LLVM exception).
+
+## 4. Tint, SPIRV-Tools, SPIR-V and Vulkan headers
+
+Tint from Dawn (BSD 3-Clause, © The Dawn & Tint Authors), SPIRV-Tools (Apache 2.0),
+SPIR-V Headers (MIT-style, © The Khronos Group), Vulkan headers (Apache 2.0 / MIT).
+
+## 5. Not included
+
+No Android application (APK) and no software of Google: no Google Play services, no Play
+Store. microG or Google's own services can be added by the user, from the user's own files.
+
+## 6. SENSES Web Apps
+
+Everything else in this repository is SENSES Web Apps' own code: see `LICENSE`.

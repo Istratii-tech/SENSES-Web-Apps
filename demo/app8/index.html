@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Android 8.1 app</title>
+<style>
+  :root { --bg: #0e1016; --fg: #d7dbe5; --muted: #8a90a0; --ok: #6fd28a; --bad: #ff7b72; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #f6f7f9; --fg: #1d2030; --muted: #5a6072; --ok: #1a7f37; --bad: #cf222e; }
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+               font: 14px/1.4 system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px; }
+  header { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+  canvas { display: block; width: 100%; max-width: 360px; aspect-ratio: 9 / 16;
+           background: #000; border-radius: 6px; touch-action: none; outline: none; }
+  pre { margin: 8px 0 0; font: 12px/1.45 ui-monospace, monospace;
+        white-space: pre-wrap; word-break: break-word; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .log { color: var(--muted); }
+  #mem { margin: 8px 0 0; font: 12px/1.45 ui-monospace, monospace; color: var(--muted);
+         overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<main>
+  <header id="cmd"></header>
+  <!-- An Android 8.1 app on ART 8.1, launched the way a launcher does it
+       (topic fw8-system, docs/topics/fw8-system.md): the in-process
+       system_server (arcwasm.server.SystemServer, framework/java-arcwasm8)
+       starts the package's launcher Activity; ActivityThread 8.1 runs it,
+       ViewRootImpl draws its window into a libgui 8.1 Surface, the
+       in-process SurfaceFlinger 8.1 (topic fw8-graphics) composites it onto
+       this canvas, and pointer/keyboard events go to it through its
+       InputChannel. The VM is fw8-graphics-web's artvm8.
+       ?pkg=PACKAGE or ?pkg=PACKAGE/.Activity (default: the API 26 test app),
+       ?selftest=1: three taps on its button. The display does not rotate:
+       ?size=WxH sets it (default 360x640, a phone held upright), ?landscape=1
+       is 640x360 (for landscape-only apps, e.g. games). The memory budget
+       (topic mem-budget, docs/topics/mem-budget.md): ?mem=MB is the device's
+       RAM to the app, ?memcap=MB the wasm memory's ceiling (default: by
+       device); the line under the canvas is the system server's last memory
+       report. Over the budget the page reloads and the app comes back where
+       it was, with its saved state. -->
+  <canvas id="canvas" width="360" height="640" tabindex="0"></canvas>
+  <div id="mem"></div>
+  <pre id="out"></pre>
+</main>
+<script src="report.js"></script>
+<script>
+  // ?pkg=PACKAGE (default: the API 26 test APK, org.arcwasm.testapp8) or
+  // ?pkg=PACKAGE/.Activity; ?selftest=1 taps the button three times with
+  // synthetic DOM events and checks that MainActivity counted them.
+  // ?arg=... adds artvm options before the class (e.g. ?arg=-Xmx512m), ?opt=...
+  // SystemServer's (?opt=--trace, ?opt=--dump, ?opt=--debug-app=PACKAGE).
+  // Scripted input, counted from "SystemServer: services" (seconds):
+  // ?tap=X,Y@S taps display point X,Y; ?type=TEXT@S types TEXT ("\n": Enter)
+  // with key events, as a keyboard would (e.g. into an address bar), one key
+  // per ?keyms=MS (default 300: a busy app's text field keeps up).
+  var params = new URLSearchParams(location.search);
+  var selfTest = params.get('selftest') === '1';
+  var args = params.getAll('arg').concat(['arcwasm.server.SystemServer'].concat(params.getAll('opt')).concat([
+                                          params.get('pkg') || 'org.arcwasm.testapp8']));
+  document.getElementById('cmd').textContent = 'artvm8 ' + args.join(' ') +
+      '  (ART and framework 8.1)';
+  var canvas = document.getElementById('canvas');
+  // The display's size is the canvas's when artvm starts.
+  var size = (params.get('size') || (params.get('landscape') === '1' ? '640x360' : ''))
+      .split('x').map(Number);
+  if (size.length === 2 && size[0] > 0 && size[1] > 0) {
+    canvas.width = size[0];
+    canvas.height = size[1];
+    canvas.style.maxWidth = Math.max(size[0], 360) + 'px';
+    canvas.style.aspectRatio = size[0] + ' / ' + size[1];
+  }
+  var outEl = document.getElementById('out');
+  var started = performance.now();
+  var done = false;
+  var serverUp = false;
+  var memEl = document.getElementById('mem');
+  function emit(text) {
+    if (/SystemServer: services/.test(text) && !serverUp) {
+      serverUp = true;
+      scheduleInput();
+    }
+    var mem = /^MemBudget: (in use .*)/.exec(text);
+    if (mem) memEl.textContent = mem[1];
+    var line = document.createElement('span');
+    if (/^AppSelfTest: .*passed/.test(text)) line.className = 'ok';
+    else if (/^AppSelfTest: .*failed|Exception|Error|Abort/.test(text)) line.className = 'bad';
+    else if (/^[VDIWEF]\//.test(text)) line.className = 'log';
+    line.textContent = text + '\n';
+    outEl.appendChild(line);
+    while (outEl.childNodes.length > 40) outEl.removeChild(outEl.firstChild);
+    arcReport(text);
+    var ready = /MainActivity: ready button=(\d+),(\d+)/.exec(text);
+    if (ready) {
+      emit('AppSelfTest: MainActivity on screen after ' +
+           Math.round(performance.now() - started) + ' ms');
+      if (selfTest) setTimeout(function () { tap3(+ready[1], +ready[2]); }, 200);
+    }
+    var clicks = /MainActivity: clicks=(\d+)/.exec(text);
+    if (selfTest && clicks && +clicks[1] === 3 && !done) {
+      done = true;
+      emit('AppSelfTest: 3 taps -> 3 clicks, passed (' +
+           Math.round(performance.now() - started) + ' ms)');
+    }
+  }
+  function scheduleInput() {
+    params.getAll('tap').forEach(function (t) {
+      var m = /^(\d+),(\d+)@([\d.]+)$/.exec(t);
+      if (m) setTimeout(function () { emit('AppInput: tap ' + m[1] + ',' + m[2]); tap(+m[1], +m[2], 1); },
+                        1000 * m[3]);
+    });
+    params.getAll('type').forEach(function (t) {
+      var at = t.lastIndexOf('@');
+      var text = t.slice(0, at), when = 1000 * +t.slice(at + 1);
+      setTimeout(function () { emit('AppInput: type ' + JSON.stringify(text)); typeText(text); }, when);
+    });
+  }
+  // KeyboardEvent.code (and shift) of a character, as on a US keyboard.
+  function keyOf(c) {
+    if (c === '\n') return ['Enter', false];
+    if (/[a-z]/.test(c)) return ['Key' + c.toUpperCase(), false];
+    if (/[A-Z]/.test(c)) return ['Key' + c, true];
+    if (/[0-9]/.test(c)) return ['Digit' + c, false];
+    var table = {' ': ['Space', false], '.': ['Period', false], '/': ['Slash', false],
+                 ':': ['Semicolon', true], '-': ['Minus', false], '_': ['Minus', true],
+                 '=': ['Equal', false], '?': ['Slash', true], '&': ['Digit7', true]};
+    return table[c] || null;
+  }
+  function typeText(text) {
+    var i = 0;
+    (function next() {
+      if (i >= text.length) return;
+      var k = keyOf(text[i++]);
+      if (k) {
+        ['keydown', 'keyup'].forEach(function (type) {
+          canvas.dispatchEvent(new KeyboardEvent(type, { code: k[0], key: k[0], shiftKey: k[1],
+                                                         bubbles: true, cancelable: true }));
+        });
+      }
+      setTimeout(next, +params.get('keyms') || 300);
+    })();
+  }
+  // Taps at display coordinates (bx, by), mapped to client coordinates the
+  // way the page shows the canvas.
+  function tap3(bx, by) {
+    tap(bx, by, 3);
+    setTimeout(function () {
+      if (!done) { done = true; emit('AppSelfTest: no 3 clicks within 20 s, failed'); }
+    }, 20000);
+  }
+  function tap(bx, by, count) {
+    var rect = canvas.getBoundingClientRect();
+    function pointer(type) {
+      var init = { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse',
+                   isPrimary: true,
+                   clientX: rect.left + bx * rect.width / canvas.width,
+                   clientY: rect.top + by * rect.height / canvas.height,
+                   pressure: type === 'pointerup' ? 0 : 0.5,
+                   buttons: type === 'pointerup' ? 0 : 1 };
+      var e = typeof PointerEvent === 'function' ? new PointerEvent(type, init)
+                                                 : new MouseEvent(type, init);
+      if (e.pointerId === undefined) {
+        Object.defineProperty(e, 'pointerId', { value: 1 });
+        Object.defineProperty(e, 'pointerType', { value: 'mouse' });
+        Object.defineProperty(e, 'pressure', { value: init.pressure });
+      }
+      canvas.dispatchEvent(e);
+    }
+    var k = 0;
+    (function next() {
+      if (k >= 2 * count) return;
+      pointer(k % 2 ? 'pointerup' : 'pointerdown');
+      k++;
+      setTimeout(next, 80);
+    })();
+  }
+  var Module = {
+    arguments: args,
+    // The VM's files are fw8-graphics-web's (one build of artvm8 for pages).
+    locateFile: function (path) { return '../fw8-graphics-web/' + path; },
+    canvas: canvas,
+    print: emit,
+    printErr: emit,
+    // ?env=KEY=VALUE: the VM's environment, e.g. ARC_JIT=0 (without JIT:
+    // docs/topics/guest-jit.md).
+    preRun: [function () {
+      params.getAll('env').forEach(function (e) {
+        var i = e.indexOf('=');
+        if (i > 0) ENV[e.slice(0, i)] = e.slice(i + 1);
+      });
+    }],
+    onExit: function (code) { emit('EXIT ' + code); document.title = 'EXIT ' + code; },
+    // Over the memory budget, after the task's state is saved: a new VM.
+    arcMemRestart: function () {
+      emit('MemBudget: reloading the page (the app comes back with its saved state)');
+      setTimeout(function () { location.reload(); }, 100);
+    },
+    onAbort: function (what) { emit('ABORT ' + what); },
+  };
+  // ?wipe=1: the app data (OPFS, the VM's /data) is deleted before the VM starts.
+  (function start() {
+    function load() {
+      var script = document.createElement('script');
+      script.src = '../fw8-graphics-web/artvm8.js';
+      document.body.appendChild(script);
+    }
+    if (params.get('wipe') !== '1' || !navigator.storage || !navigator.storage.getDirectory) {
+      load();
+      return;
+    }
+    navigator.storage.getDirectory()
+        .then(function (root) { return root.removeEntry('arc-wasm', { recursive: true }); })
+        .then(function () { emit('AppData: wiped'); },
+              function (e) { emit('AppData: wipe: ' + e); })
+        .then(load);
+  })();
+</script>
+<script>
+  // Frames per second on the canvas, every 2 s (also reaches tools/serve.py's
+  // log, which is how runs in Safari are checked).
+  var lastFrames = 0;
+  setInterval(function () {
+    // (Not before the runtime is up -- with ASSERTIONS that aborts --: from
+    // the system server's first words on.)
+    if (!serverUp || !Module._arcwasm_display_frames) return;
+    var n = Module._arcwasm_display_frames();
+    emit('AppStats: frames=' + n + ' fps=' + ((n - lastFrames) / 2).toFixed(1) +
+         ' visible=' + (document.visibilityState === 'visible') +
+         (typeof wasmMemory === 'object' ? ' wasm=' + (wasmMemory.buffer.byteLength >>> 20) + 'MB'
+                                         : ''));
+    lastFrames = n;
+  }, 2000);
+</script>
+</body>
+</html>

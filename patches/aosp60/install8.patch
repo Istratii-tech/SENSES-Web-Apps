@@ -1,0 +1,235 @@
+diff --git a/art/runtime/base/time_utils.cc b/art/runtime/base/time_utils.cc
+index fc190956..1e690e14 100644
+--- a/art/runtime/base/time_utils.cc
++++ b/art/runtime/base/time_utils.cc
+@@ -144,7 +144,18 @@ uint64_t MicroTime() {
+ }
+ 
+ uint64_t NanoTime() {
+-#if defined(__linux__) || defined(__EMSCRIPTEN__)  // arc-wasm: POSIX clocks
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (topic install8): the browser's monotonic clock
++  // (performance.timeOrigin + now(), coarsened) can step back a little in
++  // Safari: durations came out "18446744073.709s". Monotonic per thread.
++  timespec now;
++  clock_gettime(CLOCK_MONOTONIC, &now);
++  static thread_local uint64_t last = 0;
++  uint64_t t = static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000000000) + now.tv_nsec;
++  if (t < last) t = last;
++  last = t;
++  return t;
++#elif defined(__linux__)
+   timespec now;
+   clock_gettime(CLOCK_MONOTONIC, &now);
+   return static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000000000) + now.tv_nsec;
+diff --git a/art/runtime/class_linker.cc b/art/runtime/class_linker.cc
+index d0e8e682..36d4acb8 100644
+--- a/art/runtime/class_linker.cc
++++ b/art/runtime/class_linker.cc
+@@ -81,8 +81,184 @@
+ #include "verifier/method_verifier.h"
+ #include "well_known_classes.h"
+ 
++#if defined(ARC_WASM)
++#include <errno.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include <algorithm>
++#include <cstdio>
++#include <cstring>
++
++#include "mem_map.h"
++#endif
++
+ namespace art {
+ 
++#if defined(ARC_WASM)
++// arc-wasm (topic install8, docs/topics/install8.md): no dex2oat, so an app's
++// dex files are extracted from its APK and checked by the DexFileVerifier at
++// every start (TikTok's 61: 3.5-5 s). The first start writes them to
++// /data/dalvik-cache/arcwasm (the browser's storage) once verified, with a
++// stamp of the APK they came from; later starts read them from there and skip
++// the verifier. Only for installed apps' APKs (SENSES Web Apps' /mnt/apps,
++// /data/app): the /system image is in memory already.
++namespace {
++
++constexpr char kArcDexCacheDir[] = "/data/dalvik-cache/arcwasm";
++constexpr char kArcDexStampMagic[] = "arcwasm-dex-cache 1";
++
++bool ArcDexCacheable(const char* location) {
++  return strncmp(location, "/mnt/apps/", 10) == 0 || strncmp(location, "/data/app/", 10) == 0;
++}
++
++// "/mnt/apps/PKG/base.apk" -> "/data/dalvik-cache/arcwasm/mnt@apps@PKG@base.apk"
++std::string ArcDexCacheBase(const std::string& location) {
++  std::string name = location.substr(1);
++  std::replace(name.begin(), name.end(), '/', '@');
++  return std::string(kArcDexCacheDir) + "/" + name;
++}
++
++std::string ArcDexCacheFile(const std::string& base, size_t index) {
++  return index == 0 ? base + "@classes.dex" : StringPrintf("%s@classes%zu.dex", base.c_str(),
++                                                            index + 1);
++}
++
++bool ArcReadFully(int fd, void* buf, size_t size) {
++  uint8_t* p = static_cast<uint8_t*>(buf);
++  while (size > 0) {
++    ssize_t n = TEMP_FAILURE_RETRY(read(fd, p, size));
++    if (n <= 0) return false;
++    p += n;
++    size -= n;
++  }
++  return true;
++}
++
++bool ArcWriteFile(const std::string& path, const void* data, size_t size) {
++  const std::string tmp = path + ".tmp";
++  int fd = TEMP_FAILURE_RETRY(open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600));
++  if (fd < 0) return false;
++  const uint8_t* p = static_cast<const uint8_t*>(data);
++  size_t left = size;
++  bool ok = true;
++  while (left > 0) {
++    ssize_t n = TEMP_FAILURE_RETRY(write(fd, p, left));
++    if (n <= 0) {
++      ok = false;
++      break;
++    }
++    p += n;
++    left -= n;
++  }
++  ok = close(fd) == 0 && ok;
++  if (ok && rename(tmp.c_str(), path.c_str()) != 0) ok = false;
++  if (!ok) unlink(tmp.c_str());
++  return ok;
++}
++
++// The dex files of |location| from the cache, when its stamp matches the
++// APK (size, time); none otherwise.
++bool ArcOpenCachedDexFiles(const char* location,
++                           std::vector<std::unique_ptr<const DexFile>>* dex_files) {
++  struct stat apk;
++  if (stat(location, &apk) != 0) return false;
++  const std::string base = ArcDexCacheBase(location);
++  int fd = TEMP_FAILURE_RETRY(open((base + ".stamp").c_str(), O_RDONLY));
++  if (fd < 0) return false;
++  char text[64 * 1024];
++  ssize_t n = TEMP_FAILURE_RETRY(read(fd, text, sizeof(text) - 1));
++  close(fd);
++  if (n <= 0) return false;
++  text[n] = '\0';
++  // "MAGIC\nAPK_SIZE APK_MTIME COUNT\n" then "CRC SIZE\n" for each dex file.
++  const size_t magic_len = strlen(kArcDexStampMagic);
++  if (strncmp(text, kArcDexStampMagic, magic_len) != 0 || text[magic_len] != '\n') return false;
++  const char* p = text + magic_len + 1;
++  long long size = 0, mtime = 0;
++  int count = 0, used = 0;
++  if (sscanf(p, "%lld %lld %d\n%n", &size, &mtime, &count, &used) != 3 || count <= 0 ||
++      size != static_cast<long long>(apk.st_size) ||
++      mtime != static_cast<long long>(apk.st_mtime)) {
++    return false;
++  }
++  p += used;
++  const uint64_t start = NanoTime();
++  std::vector<std::unique_ptr<const DexFile>> files;
++  size_t bytes = 0;
++  for (int i = 0; i < count; ++i) {
++    unsigned int crc = 0;
++    unsigned long long dex_size = 0;
++    if (sscanf(p, "%x %llu\n%n", &crc, &dex_size, &used) != 2 || dex_size == 0) return false;
++    p += used;
++    const std::string path = ArcDexCacheFile(base, i);
++    const std::string dex_location = DexFile::GetMultiDexLocation(i, location);
++    int dex_fd = TEMP_FAILURE_RETRY(open(path.c_str(), O_RDONLY));
++    if (dex_fd < 0) return false;
++    struct stat st;
++    std::string error_msg;
++    std::unique_ptr<MemMap> map;
++    if (fstat(dex_fd, &st) == 0 && static_cast<unsigned long long>(st.st_size) == dex_size) {
++      map.reset(MemMap::MapAnonymous(("classes.dex extracted in memory from " + dex_location +
++                                      " (cache)").c_str(),
++                                     nullptr, dex_size, PROT_READ | PROT_WRITE,
++                                     /* low_4gb */ false, /* reuse */ false, &error_msg));
++      if (map != nullptr && !ArcReadFully(dex_fd, map->Begin(), dex_size)) map.reset();
++    }
++    close(dex_fd);
++    if (map == nullptr) return false;
++    // Not verified (OpenMemory); the memory stays for the process's life,
++    // as the dex file does.
++    std::unique_ptr<const DexFile> dex_file = DexFile::Open(map->Begin(), dex_size, dex_location,
++                                                            crc, nullptr, &error_msg);
++    if (dex_file == nullptr) {
++      LOG(WARNING) << "arc-wasm: dex cache " << path << ": " << error_msg;
++      return false;
++    }
++    map.release();
++    bytes += dex_size;
++    files.push_back(std::move(dex_file));
++  }
++  LOG(INFO) << "arc-wasm: dex cache: " << files.size() << " dex files of " << location << " ("
++            << bytes / 1024 << " KB) read in " << (NanoTime() - start) / 1000000 << " ms";
++  *dex_files = std::move(files);
++  return true;
++}
++
++// Writes the (verified) dex files of |location| to the cache, the stamp last.
++void ArcWriteDexCache(const char* location,
++                      const std::vector<std::unique_ptr<const DexFile>>& dex_files) {
++  struct stat apk;
++  if (dex_files.empty() || stat(location, &apk) != 0) return;
++  mkdir("/data/dalvik-cache", 0711);
++  mkdir(kArcDexCacheDir, 0711);
++  const std::string base = ArcDexCacheBase(location);
++  unlink((base + ".stamp").c_str());
++  const uint64_t start = NanoTime();
++  std::string stamp = StringPrintf("%s\n%lld %lld %zu\n", kArcDexStampMagic,
++                                   static_cast<long long>(apk.st_size),
++                                   static_cast<long long>(apk.st_mtime), dex_files.size());
++  size_t bytes = 0;
++  for (size_t i = 0; i < dex_files.size(); ++i) {
++    const DexFile& dex = *dex_files[i];
++    if (!ArcWriteFile(ArcDexCacheFile(base, i), dex.Begin(), dex.Size())) {
++      LOG(WARNING) << "arc-wasm: cannot write the dex cache of " << location << ": "
++                   << strerror(errno);
++      return;
++    }
++    stamp += StringPrintf("%x %zu\n", dex.GetLocationChecksum(), dex.Size());
++    bytes += dex.Size();
++  }
++  if (!ArcWriteFile(base + ".stamp", stamp.data(), stamp.size())) return;
++  LOG(INFO) << "arc-wasm: dex cache: " << dex_files.size() << " dex files of " << location
++            << " (" << bytes / 1024 << " KB) written in " << (NanoTime() - start) / 1000000
++            << " ms";
++}
++
++}  // namespace
++#endif  // ARC_WASM
++
+ static constexpr bool kSanityCheckObjects = kIsDebugBuild;
+ 
+ // For b/21333911.
+@@ -989,10 +1165,21 @@ std::vector<std::unique_ptr<const DexFile>> ClassLinker::OpenDexFilesFromOat(
+   if (dex_files.empty()) {
+     if (oat_file_assistant.HasOriginalDexFiles()) {
+       if (Runtime::Current()->IsDexFileFallbackEnabled()) {
++#if defined(ARC_WASM)
++        const bool cacheable = ArcDexCacheable(dex_location);
++        if (cacheable && ArcOpenCachedDexFiles(dex_location, &dex_files)) {
++          // Verified when they were written.
++        } else
++#endif
+         if (!DexFile::Open(dex_location, dex_location, &error_msg, &dex_files)) {
+           LOG(WARNING) << error_msg;
+           error_msgs->push_back("Failed to open dex files from " + std::string(dex_location));
+         }
++#if defined(ARC_WASM)
++        else if (cacheable) {
++          ArcWriteDexCache(dex_location, dex_files);
++        }
++#endif
+       } else {
+         error_msgs->push_back("Fallback mode disabled, skipping dex files.");
+       }

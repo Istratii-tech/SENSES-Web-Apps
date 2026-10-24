@@ -1,0 +1,291 @@
+diff --git a/frameworks/base/libs/androidfw/include/androidfw/LoadedArsc.h b/frameworks/base/libs/androidfw/include/androidfw/LoadedArsc.h
+index 950f5413f..70fa4b584 100644
+--- a/frameworks/base/libs/androidfw/include/androidfw/LoadedArsc.h
++++ b/frameworks/base/libs/androidfw/include/androidfw/LoadedArsc.h
+@@ -265,7 +265,8 @@ class LoadedPackage {
+   ByteBucketArray<TypeSpecPtr> type_specs_;
+   ByteBucketArray<uint32_t> resource_ids_;
+   std::vector<DynamicPackageEntry> dynamic_package_map_;
+-  std::vector<const std::pair<OverlayableInfo, std::unordered_set<uint32_t>>> overlayable_infos_;
++  // arc-wasm: without const (libc++ has no std::allocator of const types).
++  std::vector<std::pair<OverlayableInfo, std::unordered_set<uint32_t>>> overlayable_infos_;
+   std::unordered_map<std::string, std::string> overlayable_map_;
+ };
+ 
+diff --git a/frameworks/native/libs/binder/IPCThreadState.cpp b/frameworks/native/libs/binder/IPCThreadState.cpp
+index 9a561cba6..f3b8988e2 100644
+--- a/frameworks/native/libs/binder/IPCThreadState.cpp
++++ b/frameworks/native/libs/binder/IPCThreadState.cpp
+@@ -971,7 +971,7 @@ status_t IPCThreadState::talkWithDriver(bool doReceive)
+         IF_LOG_COMMANDS() {
+             alog << "About to read/write, write size = " << mOut.dataSize() << endl;
+         }
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || defined(ARC_WASM)  // arc-wasm: the in-process driver
+         if (ioctl(mProcess->mDriverFD, BINDER_WRITE_READ, &bwr) >= 0)
+             err = NO_ERROR;
+         else
+@@ -1297,7 +1297,7 @@ void IPCThreadState::threadDestructor(void *st)
+         IPCThreadState* const self = static_cast<IPCThreadState*>(st);
+         if (self) {
+                 self->flushCommands();
+-#if defined(__ANDROID__)
++#if defined(__ANDROID__) || defined(ARC_WASM)
+         if (self->mProcess->mDriverFD > 0) {
+             ioctl(self->mProcess->mDriverFD, BINDER_THREAD_EXIT, 0);
+         }
+diff --git a/system/core/base/properties.cpp b/system/core/base/properties.cpp
+index d5a5918ce..444beedfa 100644
+--- a/system/core/base/properties.cpp
++++ b/system/core/base/properties.cpp
+@@ -69,12 +69,32 @@ template uint16_t GetUintProperty(const std::string&, uint16_t, uint16_t);
+ template uint32_t GetUintProperty(const std::string&, uint32_t, uint32_t);
+ template uint64_t GetUintProperty(const std::string&, uint64_t, uint64_t);
+ 
++#if defined(ARC_WASM)
++// arc-wasm: the framework's in-process property store (bionic's
++// __system_property_* of topic fw10-core's libprops10, loaded from
++// /system/build.prop as init does) when it is linked in; the host's map
++// below otherwise (ART alone).
++extern "C" {
++struct prop_info;
++const prop_info* __system_property_find(const char* name) __attribute__((weak));
++void __system_property_read_callback(const prop_info* pi,
++                                     void (*callback)(void* cookie, const char* name,
++                                                      const char* value, unsigned serial),
++                                     void* cookie) __attribute__((weak));
++int __system_property_set(const char* key, const char* value) __attribute__((weak));
++}
++#endif
++
+ #if !defined(__BIONIC__)
+ static std::map<std::string, std::string>& g_properties = *new std::map<std::string, std::string>;
+-static int __system_property_set(const char* key, const char* value) {
++static int host_property_set(const char* key, const char* value) {
++#if defined(ARC_WASM)
++  if (__system_property_set) return __system_property_set(key, value);
++#endif
+   g_properties[key] = value;
+   return 0;
+ }
++#define __system_property_set host_property_set
+ #endif
+ 
+ std::string GetProperty(const std::string& key, const std::string& default_value) {
+@@ -90,6 +110,18 @@ std::string GetProperty(const std::string& key, const std::string& default_value
+                                   },
+                                   &property_value);
+ #else
++#if defined(ARC_WASM)
++  if (__system_property_find) {
++    const prop_info* pi = __system_property_find(key.c_str());
++    if (pi == nullptr) return default_value;
++    __system_property_read_callback(pi,
++                                    [](void* cookie, const char*, const char* value, unsigned) {
++                                      *reinterpret_cast<std::string*>(cookie) = value;
++                                    },
++                                    &property_value);
++    return property_value.empty() ? default_value : property_value;
++  }
++#endif
+   auto it = g_properties.find(key);
+   if (it == g_properties.end()) return default_value;
+   property_value = it->second;
+diff --git a/system/core/libutils/Looper.cpp b/system/core/libutils/Looper.cpp
+index 2d696eb1f..403b091ac 100644
+--- a/system/core/libutils/Looper.cpp
++++ b/system/core/libutils/Looper.cpp
+@@ -14,7 +14,13 @@
+ #define DEBUG_CALLBACKS 0
+ 
+ #include <utils/Looper.h>
++#if defined(ARC_WASM)
++// arc-wasm: no eventfd in the kernel (posix_translation): a pipe, as Looper
++// was before 6.0.
++#include <fcntl.h>
++#else
+ #include <sys/eventfd.h>
++#endif
+ 
+ namespace android {
+ 
+@@ -65,7 +71,16 @@ Looper::Looper(bool allowNonCallbacks)
+       mNextRequestSeq(0),
+       mResponseIndex(0),
+       mNextMessageUptime(LLONG_MAX) {
++#if defined(ARC_WASM)
++    int wakeFds[2];
++    LOG_ALWAYS_FATAL_IF(pipe(wakeFds) != 0, "Could not create wake pipe: %s", strerror(errno));
++    mWakeEventFd.reset(wakeFds[0]);
++    mWakeWritePipeFd.reset(wakeFds[1]);
++    fcntl(wakeFds[0], F_SETFL, O_NONBLOCK);
++    fcntl(wakeFds[1], F_SETFL, O_NONBLOCK);
++#else
+     mWakeEventFd.reset(eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC));
++#endif
+     LOG_ALWAYS_FATAL_IF(mWakeEventFd.get() < 0, "Could not make wake event fd: %s", strerror(errno));
+ 
+     AutoMutex _l(mLock);
+@@ -395,9 +410,15 @@ void Looper::wake() {
+     ALOGD("%p ~ wake", this);
+ #endif
+ 
++#if defined(ARC_WASM)
++    // One byte per wake; a full pipe (EAGAIN) is already awake.
++    ssize_t nWrite = TEMP_FAILURE_RETRY(write(mWakeWritePipeFd.get(), "W", 1));
++    if (nWrite != 1) {
++#else
+     uint64_t inc = 1;
+     ssize_t nWrite = TEMP_FAILURE_RETRY(write(mWakeEventFd.get(), &inc, sizeof(uint64_t)));
+     if (nWrite != sizeof(uint64_t)) {
++#endif
+         if (errno != EAGAIN) {
+             LOG_ALWAYS_FATAL("Could not write wake signal to fd %d (returned %zd): %s",
+                              mWakeEventFd.get(), nWrite, strerror(errno));
+@@ -410,8 +431,17 @@ void Looper::awoken() {
+     ALOGD("%p ~ awoken", this);
+ #endif
+ 
++#if defined(ARC_WASM)
++    // Drain the pipe (an eventfd read resets the counter at once).
++    char buffer[16];
++    ssize_t nRead;
++    do {
++        nRead = TEMP_FAILURE_RETRY(read(mWakeEventFd.get(), buffer, sizeof(buffer)));
++    } while (nRead == sizeof(buffer));
++#else
+     uint64_t counter;
+     TEMP_FAILURE_RETRY(read(mWakeEventFd.get(), &counter, sizeof(uint64_t)));
++#endif
+ }
+ 
+ void Looper::pushResponse(int events, const Request& request) {
+diff --git a/system/core/libutils/include/utils/AndroidThreads.h b/system/core/libutils/include/utils/AndroidThreads.h
+index a8d785175..ced02981b 100644
+--- a/system/core/libutils/include/utils/AndroidThreads.h
++++ b/system/core/libutils/include/utils/AndroidThreads.h
+@@ -73,7 +73,8 @@ extern void androidSetCreateThreadFunc(android_create_thread_fn func);
+ // ------------------------------------------------------------------
+ // Extra functions working with raw pids.
+ 
+-#if defined(__ANDROID__)
++// arc-wasm: also without __ANDROID__ (shim/fw6/thread_priority.cc has them).
++#if defined(__ANDROID__) || defined(ARC_WASM)
+ // Change the priority AND scheduling group of a particular thread.  The priority
+ // should be one of the ANDROID_PRIORITY constants.  Returns INVALID_OPERATION
+ // if the priority set failed, else another value if just the group set failed;
+diff --git a/system/core/libutils/include/utils/Looper.h b/system/core/libutils/include/utils/Looper.h
+index c439c5ce0..e4c9f03c2 100644
+--- a/system/core/libutils/include/utils/Looper.h
++++ b/system/core/libutils/include/utils/Looper.h
+@@ -450,6 +450,9 @@ private:
+     const bool mAllowNonCallbacks; // immutable
+ 
+     android::base::unique_fd mWakeEventFd;  // immutable
++#if defined(ARC_WASM)
++    android::base::unique_fd mWakeWritePipeFd;  // immutable; arc-wasm: the write end of the wake pipe
++#endif
+     Mutex mLock;
+ 
+     Vector<MessageEnvelope> mMessageEnvelopes; // guarded by mLock
+diff --git a/system/core/libutils/include/utils/Trace.h b/system/core/libutils/include/utils/Trace.h
+index 4b9c91ec5..faad160ea 100644
+--- a/system/core/libutils/include/utils/Trace.h
++++ b/system/core/libutils/include/utils/Trace.h
+@@ -56,6 +56,20 @@ private:
+ #define ATRACE_NAME(...)
+ #define ATRACE_CALL()
+ 
++#if defined(ARC_WASM)
++// arc-wasm: code that names android::ScopedTrace itself (the C++ hidl-gen
++// writes, with PASTE) compiles too; it traces nothing, as ATRACE_NAME here.
++#include <stdint.h>
++#define _PASTE(x, y) x ## y
++#define PASTE(x, y) _PASTE(x,y)
++namespace android {
++class ScopedTrace {
++public:
++    inline ScopedTrace(uint64_t /*tag*/, const char* /*name*/) {}
++};
++}  // namespace android
++#endif
++
+ #endif // __ANDROID__
+ 
+ #endif // ANDROID_TRACE_H
+diff --git a/system/libhidl/transport/HidlBinderSupport.cpp b/system/libhidl/transport/HidlBinderSupport.cpp
+index 352ed78ad..885aa81ff 100644
+--- a/system/libhidl/transport/HidlBinderSupport.cpp
++++ b/system/libhidl/transport/HidlBinderSupport.cpp
+@@ -258,7 +258,10 @@ sp<IBinder> getOrCreateCachedBinder(::android::hidl::base::V1_0::IBase* ifacePtr
+         LOG_ALWAYS_FATAL_IF(sBnObj == nullptr, "%s Bn constructor function returned null for %s",
+                             __func__, descriptor.c_str());
+ 
+-        details::gBnMap->setLocked(ifacePtr, static_cast<BHwBinder*>(sBnObj.get()));
++        // arc-wasm: a prvalue key (clang after CWG 2352 no longer binds the
++        // lvalue to setLocked's const IBase*&&), as for 8.1.
++        details::gBnMap->setLocked(static_cast<const ::android::hidl::base::V1_0::IBase*>(ifacePtr),
++                                   static_cast<BHwBinder*>(sBnObj.get()));
+     }
+ 
+     return sBnObj;
+diff --git a/system/libhidl/transport/ServiceManagement.cpp b/system/libhidl/transport/ServiceManagement.cpp
+index e7bec4171..7150d6958 100644
+--- a/system/libhidl/transport/ServiceManagement.cpp
++++ b/system/libhidl/transport/ServiceManagement.cpp
+@@ -38,7 +38,9 @@
+ #include <android-base/file.h>
+ #include <android-base/logging.h>
+ #include <android-base/parseint.h>
++#if !defined(ARC_WASM)
+ #include <android-base/properties.h>
++#endif
+ #include <android-base/stringprintf.h>
+ #include <android-base/strings.h>
+ #include <hwbinder/IPCThreadState.h>
+@@ -55,7 +57,9 @@
+ #define RE_PATH         RE_COMPONENT "(?:[.]" RE_COMPONENT ")*"
+ static const std::regex gLibraryFileNamePattern("(" RE_PATH "@[0-9]+[.][0-9]+)-impl(.*?).so");
+ 
++#if !defined(ARC_WASM)
+ using android::base::WaitForProperty;
++#endif
+ 
+ using ::android::hidl::base::V1_0::IBase;
+ using IServiceManager1_0 = android::hidl::manager::V1_0::IServiceManager;
+@@ -75,11 +79,19 @@ static constexpr bool kIsRecovery = false;
+ #endif
+ 
+ static void waitForHwServiceManager() {
++#if defined(ARC_WASM)
++    // arc-wasm: no hwservicemanager (and no /dev/hwbinder, so this is never
++    // reached: defaultServiceManager() is null); libbase's properties are
++    // bionic's only. As for 8.1.
++    (void)kHwServicemanagerReadyProperty;
++    LOG(WARNING) << "no hwservicemanager in arc-wasm";
++#else
+     using std::literals::chrono_literals::operator""s;
+ 
+     while (!WaitForProperty(kHwServicemanagerReadyProperty, "true", 1s)) {
+         LOG(WARNING) << "Waited for hwservicemanager.ready for a second, waiting another...";
+     }
++#endif
+ }
+ 
+ static std::string binaryName() {
+diff --git a/system/tools/hidl/EnumType.cpp b/system/tools/hidl/EnumType.cpp
+index 326826457..e8ba0ed0e 100644
+--- a/system/tools/hidl/EnumType.cpp
++++ b/system/tools/hidl/EnumType.cpp
+@@ -289,7 +289,10 @@ void EnumType::emitIteratorDeclaration(Formatter& out) const {
+         elementCount += type->mValues.size();
+     }
+ 
+-    out << "template<> constexpr std::array<" << getCppStackType() << ", " << elementCount
++    // arc-wasm: inline (C++17): an explicit specialization of a variable
++    // template has external linkage, and current clang emits it in every
++    // file that includes the header (duplicate symbols when linking).
++    out << "template<> inline constexpr std::array<" << getCppStackType() << ", " << elementCount
+         << "> hidl_enum_values<" << getCppStackType() << "> = ";
+     out.block([&] {
+         auto enumerators = typeChain();

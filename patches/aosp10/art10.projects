@@ -1,0 +1,11 @@
+# Topic art10: projects ART 10 and libcore 10 build from beyond the base set.
+# dlmalloc: ART's DlMallocSpace includes its malloc.c; lz4: image_space.cc (no
+# image is used, but it is compiled).
+external/dlmalloc
+external/lz4
+# boringssl: libcore's NativeBN (BigInteger, which java.time needs) on its
+# BIGNUM; expat: libcore's ExpatParser (SAX).
+external/boringssl
+external/expat
+# timezone: tzdata and tzlookup.xml for /system/usr/share/zoneinfo (java.util.TimeZone).
+system/timezone

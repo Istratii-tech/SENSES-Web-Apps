@@ -1,0 +1,17 @@
+# Topic fw6-core: the Android 6.0.1 framework's boot class path libraries
+# (conscrypt, okhttp, core-junit, bouncycastle, ext, telephony-common,
+# voip-common, ims-common, apache-xml, org.apache.http.legacy.boot);
+# boringssl: its headers for conscrypt's NativeConstants.java.
+external/conscrypt
+external/bouncycastle
+external/okhttp
+external/junit
+external/nist-sip
+external/tagsoup
+external/libphonenumber
+external/apache-xml
+external/apache-http
+frameworks/opt/telephony
+frameworks/opt/net/voip
+frameworks/opt/net/ims
+external/boringssl

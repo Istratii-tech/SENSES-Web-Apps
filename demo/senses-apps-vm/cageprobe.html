@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ArrayBuffer room probe</title>
+<style>
+  body { font: 15px -apple-system, sans-serif; margin: 16px; background: #111; color: #eee; }
+  #now { font-size: 28px; font-weight: 700; margin: 12px 0; font-variant-numeric: tabular-nums; }
+  pre { font-size: 12px; color: #aaa; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<!-- How many bytes of ArrayBuffers a tab can still make next to the VM's
+     shared wasm memory (topic opfs-oom-ios, docs/topics/opfs-oom-ios.md).
+     In JavaScriptCore both live in one address range of the web process
+     (the "primitive Gigacage", a few GB on iPhones), and a shared memory
+     reserves its maximum there when it is made: what is left is all the
+     ArrayBuffers of the page and of every worker.
+       cageprobe.html?max=MB   a shared WebAssembly.Memory of MB at most
+                               (0: none), then ArrayBuffers of 16 MB, then
+                               of 1 MB, untouched, until RangeError; then a
+                               worker tries one more, and fills it again
+                               itself once the page lets its own go.
+     Each line goes to tools/serve.py's log ("cageprobe: ..."). -->
+<div>Сколько ArrayBuffer'ов помещается рядом с памятью wasm</div>
+<div id="now">—</div>
+<pre id="out"></pre>
+<script>
+  var params = new URLSearchParams(location.search);
+  var max = +(params.get('max') || 0);
+  function log(s) {
+    document.getElementById('out').textContent += s + '\n';
+    try {
+      var x = new XMLHttpRequest();
+      x.open('POST', '/__log', false);
+      x.send('cageprobe: ' + s);
+    } catch (e) {}
+  }
+  function show(s) { document.getElementById('now').textContent = s; }
+  // ArrayBuffers of |step| MB until one is refused: [list, MB].
+  // (JavaScriptCore zeroes each one: the memory is taken for real, hence the
+  // limit and the progress lines -- if the tab is closed, the last one says
+  // how far it got.)
+  function fill(step, list, limitMb) {
+    var mb = 0;
+    try {
+      while (mb < limitMb) {
+        list.push(new ArrayBuffer(step * 1048576));
+        mb += step;
+        if (mb % 128 === 0) log('  ' + mb + ' MB in ' + step + ' MB ArrayBuffers');
+      }
+    } catch (e) {
+      if (!(e instanceof RangeError)) throw e;
+    }
+    return mb;
+  }
+  var workerSrc =
+      'function fill(step, list, limit) { var mb = 0; try { while (mb < limit) { list.push(new ArrayBuffer(step * 1048576)); mb += step; } } catch (e) {} return mb; }\n' +
+      'var keep = [];\n' +
+      'onmessage = function (e) {\n' +
+      '  if (e.data === "one") { try { keep.push(new ArrayBuffer(1048576)); postMessage("one: ok"); } catch (x) { postMessage("one: " + x); } }\n' +
+      '  if (e.data === "fill") { var a = fill(16, keep, 2048); var b = fill(1, keep, 2048 - a); postMessage("fill: " + a + " MB in 16 MB, " + b + " MB more in 1 MB"); }\n' +
+      '};\n';
+  function ask(w, what) {
+    return new Promise(function (res) {
+      w.onmessage = function (e) { res(e.data); };
+      w.postMessage(what);
+    });
+  }
+  async function run() {
+    log('start max=' + max + ' · crossOriginIsolated=' + self.crossOriginIsolated + ' · ' + navigator.userAgent);
+    var memory = null;
+    if (max) {
+      try {
+        memory = new WebAssembly.Memory({initial: 256, maximum: max * 16, shared: true});
+        log('shared memory: 16 MB, maximum ' + max + ' MB: made');
+      } catch (e) {
+        log('shared memory, maximum ' + max + ' MB: ' + e);
+      }
+    }
+    var keep = [];
+    var a = fill(16, keep, 2048);
+    var b = fill(1, keep, 2048 - a);
+    show(a + b + ' МБ');
+    log('page: ' + a + ' MB in 16 MB ArrayBuffers, then ' + b + ' MB in 1 MB ones');
+    var w = new Worker(URL.createObjectURL(new Blob([workerSrc], {type: 'text/javascript'})));
+    log('worker, the page full: ' + await ask(w, 'one'));
+    keep = null;
+    // Let the page's buffers go before the worker fills.
+    for (var i = 0; i < 20; i++) {
+      new ArrayBuffer(1);
+      await new Promise(function (r) { setTimeout(r, 100); });
+    }
+    log('worker, after the page let go: ' + await ask(w, 'fill'));
+    log('done' + (memory ? ' (memory ' + memory.buffer.byteLength / 1048576 + ' MB)' : ''));
+    show('Готово: ' + (a + b) + ' МБ');
+  }
+  if (params.has('max')) run();
+</script>
+</body>
+</html>

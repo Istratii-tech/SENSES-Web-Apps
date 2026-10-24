@@ -1,0 +1,34 @@
+diff --git a/dalvik/vm/Native.cpp b/dalvik/vm/Native.cpp
+index 7ace9138..a2655c82 100644
+--- a/dalvik/vm/Native.cpp
++++ b/dalvik/vm/Native.cpp
+@@ -464,7 +464,12 @@ bool dvmLoadNativeCode(const char* pathName, Object* classLoader,
+             if (gDvm.verboseJni) {
+                 ALOGI("[Calling JNI_OnLoad for \"%s\"]", pathName);
+             }
++#if defined(__wasm__)
++            // arc-wasm: JNI_OnLoad may be ARM code (shim/ndk).
++            version = arc_wasm_call_jni_onload(handle, vonLoad, gDvmJni.jniVm);
++#else
+             version = (*func)(gDvmJni.jniVm, NULL);
++#endif
+             dvmChangeStatus(self, oldStatus);
+             self->classLoaderOverride = prevOverride;
+ 
+diff --git a/dalvik/vm/native/java_lang_Runtime.cpp b/dalvik/vm/native/java_lang_Runtime.cpp
+index 2d1c4fec..56c7acd4 100644
+--- a/dalvik/vm/native/java_lang_Runtime.cpp
++++ b/dalvik/vm/native/java_lang_Runtime.cpp
+@@ -21,6 +21,12 @@
+ #include "native/InternalNativePriv.h"
+ 
+ #include <dlfcn.h>
++#if defined(__wasm__)
++// arc-wasm: android_update_LD_LIBRARY_PATH comes from the NDK bridge; see
++// shim/dalvik/static_jni_libs.h.
++#include "static_jni_libs.h"
++#define dlsym arc_wasm_dlsym
++#endif
+ #include <limits.h>
+ #include <unistd.h>
+ 

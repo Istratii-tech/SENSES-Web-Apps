@@ -1,0 +1,18 @@
+{
+  "name": "SENSES Web Apps",
+  "short_name": "SENSES Apps",
+  "description": "Android apps in the browser: install an APK from Files and run it full screen, offline.",
+  "lang": "ru",
+  "start_url": "./",
+  "scope": "./",
+  "id": "./senses-web-apps",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -1,0 +1,35 @@
+diff --git a/art/runtime/interpreter/interpreter.cc b/art/runtime/interpreter/interpreter.cc
+index c5292bf73..1d5604629 100644
+--- a/art/runtime/interpreter/interpreter.cc
++++ b/art/runtime/interpreter/interpreter.cc
+@@ -295,6 +295,17 @@ static inline JValue Execute(
+       }
+     }
+ 
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm (dex-jit): compiled code; the call counts towards compiling
++    // the method (shim/art10/dex_jit_art10.cc).
++    if (ArtWasmCanCallFlat(self, method)) {
++      ArtJitFn jit_fn = ArtJitLookup(self, method);
++      if (jit_fn != nullptr) {
++        return ArtJitRun(self, &shadow_frame, jit_fn);
++      }
++    }
++#endif
++
+     if (!stay_in_interpreter && !self->IsForceInterpreter()) {
+       jit::Jit* jit = Runtime::Current()->GetJit();
+       if (jit != nullptr) {
+diff --git a/art/runtime/interpreter/interpreter_common.h b/art/runtime/interpreter/interpreter_common.h
+index d15dd90f7..640491bff 100644
+--- a/art/runtime/interpreter/interpreter_common.h
++++ b/art/runtime/interpreter/interpreter_common.h
+@@ -63,6 +63,8 @@
+ #if defined(__EMSCRIPTEN__)
+ #include "debugger.h"
+ #include "interpreter_frames_wasm10.h"
++// arc-wasm (dex-jit): compiled methods (shim/art10/dex_jit_art10.h).
++#include "dex_jit_art10.h"
+ #endif
+ 
+ namespace art {

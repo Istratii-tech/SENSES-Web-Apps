@@ -1,0 +1,22 @@
+diff --git a/frameworks/base/libs/hwui/hwui/Bitmap.cpp b/frameworks/base/libs/hwui/hwui/Bitmap.cpp
+index b1faf664a..ba428214a 100644
+--- a/frameworks/base/libs/hwui/hwui/Bitmap.cpp
++++ b/frameworks/base/libs/hwui/hwui/Bitmap.cpp
+@@ -85,7 +85,16 @@ static sk_sp<Bitmap> allocateHeapBitmap(size_t size, const SkImageInfo& info, si
+ }
+ 
+ sk_sp<Bitmap> Bitmap::allocateHardwareBitmap(SkBitmap& bitmap) {
+-    return uirenderer::renderthread::RenderProxy::allocateHardwareBitmap(bitmap);
++    // arc-wasm: a copy in memory, as 10's hardware bitmaps (gralloc memory
++    // there): the render thread's needed EGL (abort where there is none),
++    // and a texture could not be drawn on a software canvas, which image
++    // loaders (Glide, Coil: Config.HARDWARE on API 26+) give it all the same.
++    sk_sp<Bitmap> copy = allocateHeapBitmap(bitmap.info());
++    if (!copy) return nullptr;
++    SkBitmap dst;
++    copy->getSkBitmap(&dst);
++    if (!bitmap.readPixels(dst.info(), dst.getPixels(), dst.rowBytes(), 0, 0)) return nullptr;
++    return copy;
+ }
+ 
+ sk_sp<Bitmap> Bitmap::allocateHeapBitmap(SkBitmap* bitmap) {

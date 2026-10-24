@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Android windows on WebAssembly</title>
+<style>
+  :root { --bg: #0e1016; --fg: #d7dbe5; --muted: #8a90a0; --ok: #6fd28a; --bad: #ff7b72; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #f4f5f8; --fg: #1d2030; --muted: #5a6072; --ok: #1a7f37; --bad: #cf222e; }
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+               font: 14px/1.4 system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px; }
+  header { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+  canvas { display: block; width: 100%; max-width: 640px; aspect-ratio: 4 / 3;
+           background: #000; border-radius: 6px; outline: none; }
+  canvas:focus-visible { box-shadow: 0 0 0 2px var(--muted); }
+  pre { margin: 8px 0 0; font: 12px/1.45 ui-monospace, monospace;
+        white-space: pre-wrap; word-break: break-word; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .log { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header id="cmd"></header>
+  <!-- The display: the in-process SurfaceFlinger (shim/window) composites
+       the windows into it through gralloc/WebGL; shim/input/browser_input.js
+       turns its pointer and keyboard events into Android input, which the
+       window service routes to the window under the pointer / in focus. -->
+  <canvas id="canvas" width="640" height="480"></canvas>
+  <pre id="out"></pre>
+</main>
+<script src="report.js"></script>
+<script>
+  // arcwasm.WindowDemo: a full-screen window and a click-counter window on
+  // top. ?selftest=1 clicks the counter's button three times, taps the main
+  // window and types "ok" with synthetic DOM events once the program is
+  // ready, and lets it check them (for Safari).
+  // Other programs: ?arg=-cp&arg=/system/framework/arc-tests.jar&arg=arcwasm.WindowTest
+  var params = new URLSearchParams(location.search);
+  var selfTest = params.get('selftest') === '1';
+  var args = params.getAll('arg');
+  if (!args.length) {
+    args = ['-cp', '/system/framework/arc-tests.jar', 'arcwasm.WindowDemo'];
+    if (selfTest) args.push('selftest');
+  }
+  document.getElementById('cmd').textContent = 'dalvikvm ' + args.join(' ');
+  var canvas = document.getElementById('canvas');
+  var outEl = document.getElementById('out');
+  var started = performance.now();
+  var exited = false;
+  function emit(text) {
+    var line = document.createElement('span');
+    if (/^\[ OK \]|passed, 0 failed|-> OK$/.test(text)) line.className = 'ok';
+    else if (/^\[FAIL\]|Exception|Error|Abort|-> FAIL$/.test(text)) line.className = 'bad';
+    else if (/^[VDIWEF]\//.test(text)) line.className = 'log';
+    line.textContent = text + '\n';
+    outEl.appendChild(line);
+    while (outEl.childNodes.length > 40) outEl.removeChild(outEl.firstChild);
+    arcReport(text);
+    var m = /^WindowDemo: ready button=(\d+),(\d+) counter=\[(\d+),(\d+)\]\[(\d+),(\d+)\] display (\d+)x(\d+)/.exec(text);
+    if (selfTest && m) {
+      var n = m.slice(1).map(Number);
+      setTimeout(function () { runSelfTest(n[0], n[1], n[7]); }, 100);
+    }
+  }
+  // Synthetic DOM events on the canvas, in display coordinates mapped to
+  // client coordinates the way the page shows the canvas.
+  function runSelfTest(bx, by, height) {
+    var rect = canvas.getBoundingClientRect();
+    function pointer(type, x, y) {
+      var init = { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse',
+                   isPrimary: true,
+                   clientX: rect.left + x * rect.width / canvas.width,
+                   clientY: rect.top + y * rect.height / canvas.height,
+                   pressure: type === 'pointerup' ? 0 : 0.5,
+                   buttons: type === 'pointerup' ? 0 : 1 };
+      var e = typeof PointerEvent === 'function' ? new PointerEvent(type, init)
+                                                 : new MouseEvent(type, init);
+      if (e.pointerId === undefined) {  // no PointerEvent: the fields by hand
+        Object.defineProperty(e, 'pointerId', { value: 1 });
+        Object.defineProperty(e, 'pointerType', { value: 'mouse' });
+        Object.defineProperty(e, 'pressure', { value: init.pressure });
+      }
+      canvas.dispatchEvent(e);
+    }
+    function key(type, code, keyName) {
+      canvas.dispatchEvent(new KeyboardEvent(type, { bubbles: true, cancelable: true,
+                                                     code: code, key: keyName }));
+    }
+    var steps = [];
+    for (var i = 0; i < 3; i++) {
+      steps.push(function () { pointer('pointerdown', bx, by); });
+      steps.push(function () { pointer('pointerup', bx, by); });
+    }
+    // Outside the counter, on the main window's empty bottom-left corner.
+    steps.push(function () { pointer('pointerdown', 12, height - 12); });
+    steps.push(function () { pointer('pointerup', 12, height - 12); });
+    steps.push(function () { key('keydown', 'KeyO', 'o'); });
+    steps.push(function () { key('keyup', 'KeyO', 'o'); });
+    steps.push(function () { key('keydown', 'KeyK', 'k'); });
+    steps.push(function () { key('keyup', 'KeyK', 'k'); });
+    var k = 0;
+    (function next() {
+      if (exited) return;  // the program has checked and exited
+      if (k < steps.length) { steps[k++](); setTimeout(next, 60); }
+      else emit('page: dispatched ' + steps.length + ' DOM events (' +
+                Module.arcwasmInput.queued + ' records queued)');
+    })();
+  }
+  var Module = {
+    arguments: args,
+    canvas: canvas,
+    print: emit,
+    printErr: emit,
+    onExit: function (code) {
+      exited = true;
+      emit('EXIT ' + code + ' after ' + Math.round(performance.now() - started) + ' ms');
+      document.title = 'EXIT ' + code;
+    },
+    onAbort: function (what) { emit('ABORT ' + what); },
+  };
+</script>
+<script src="dalvikvm.js"></script>
+</body>
+</html>

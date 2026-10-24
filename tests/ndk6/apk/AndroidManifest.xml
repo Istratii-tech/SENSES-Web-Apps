@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The test APK of arcwasm.Ndk6Test (tests/java/arcwasm/Ndk6Test.java):
+     org.arcwasm.ndk6test.Native6 and lib/armeabi-v7a/libndk6test.so
+     (tests/ndk6, added by mk/topic-ndk-imports.mk), an ARM library that uses
+     what Android 5-6 gave NDK code: FORTIFY, epoll/timerfd, locales, zlib,
+     libandroid, jnigraphics, EGL + OpenGL ES 3.0, OpenSL ES. No activities. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.arcwasm.ndk6test"
+    android:versionCode="1"
+    android:versionName="1.0">
+    <uses-sdk android:minSdkVersion="9" android:targetSdkVersion="23" />
+    <application android:label="@string/app_name" android:hasCode="true" />
+</manifest>

@@ -1,0 +1,46 @@
+diff --git a/art/runtime/gc/accounting/atomic_stack.h b/art/runtime/gc/accounting/atomic_stack.h
+index 9431f80a1..14506c454 100644
+--- a/art/runtime/gc/accounting/atomic_stack.h
++++ b/art/runtime/gc/accounting/atomic_stack.h
+@@ -74,10 +74,21 @@ class AtomicStack {
+   void Reset() {
+     DCHECK(mem_map_.IsValid());
+     DCHECK(begin_ != nullptr);
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm: madvise zeroes every page of the map here (shim/wasm_mm), and an
++    // iPhone counts each page of the wasm memory it touched for good: the whole
++    // allocation and live stacks (8 MB each for a 256 MB heap) became the tab's
++    // memory at the first GC. Zero only what was pushed (nothing past the back
++    // index is read; topic wasm-heap-trim).
++    const size_t used = std::min<size_t>(back_index_.load(std::memory_order_relaxed), capacity_);
++    memset(begin_, 0, used * sizeof(*begin_));
++#endif
+     front_index_.store(0, std::memory_order_relaxed);
+     back_index_.store(0, std::memory_order_relaxed);
+     debug_is_sorted_ = true;
++#if !defined(__EMSCRIPTEN__)
+     mem_map_.MadviseDontNeedAndZero();
++#endif
+   }
+ 
+   // Beware: Mixing atomic pushes and atomic pops will cause ABA problem.
+diff --git a/art/runtime/gc/accounting/space_bitmap.cc b/art/runtime/gc/accounting/space_bitmap.cc
+index 402905732..6d3642834 100644
+--- a/art/runtime/gc/accounting/space_bitmap.cc
++++ b/art/runtime/gc/accounting/space_bitmap.cc
+@@ -117,7 +117,15 @@ std::string SpaceBitmap<kAlignment>::Dump() const {
+ template<size_t kAlignment>
+ void SpaceBitmap<kAlignment>::Clear() {
+   if (bitmap_begin_ != nullptr) {
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm: madvise zeroes every page of the map (shim/wasm_mm), and an
++    // iPhone counts each touched page of the wasm memory for good. The map
++    // covers the space's capacity (-Xmx), bits only its limit (SetHeapLimit:
++    // the growth limit after clampGrowthLimit; 1.5 of 4 MB at 96 of 256 MB).
++    memset(bitmap_begin_, 0, bitmap_size_);
++#else
+     mem_map_.MadviseDontNeedAndZero();
++#endif
+   }
+ }
+ 

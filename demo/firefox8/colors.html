@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Colours</title>
+<!-- Pure colours for Firefox on arc-wasm (topic firefox8-gl): eight bands,
+     top to bottom, each 1/8 of the viewport -- CSS red, green, blue, white,
+     then a PNG image (red), a 2D canvas (blue), CSS #ff8000 and black. With
+     --prop=debug.ndk.window_probe=N the NDK bridge logs one pixel per band of
+     the window's frames (the content's window: the bands sit in it as long as
+     the page fills it). -->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  div, img, canvas { display: block; width: 100%; height: 12.5vh; }
+</style>
+<div style="background:#ff0000"></div>
+<div style="background:#00ff00"></div>
+<div style="background:#0000ff"></div>
+<div style="background:#ffffff"></div>
+<img alt="" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC">
+<canvas id="c" width="8" height="8"></canvas>
+<div style="background:#ff8000"></div>
+<div style="background:#000000"></div>
+<script>
+  var g = document.getElementById('c').getContext('2d');
+  g.fillStyle = '#0000ff';
+  g.fillRect(0, 0, 8, 8);
+</script>

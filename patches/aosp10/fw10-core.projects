@@ -1,0 +1,41 @@
+# Topic fw10-core: projects the framework 10 base builds from beyond the base
+# set and art10's (docs/topics/fw10-core.md).
+# HIDL: the runtime in process (libhidl, libhwbinder), hidl-gen and the
+# interfaces the framework links as Java (hardware/interfaces).
+system/libhidl
+system/libhwbinder
+system/tools/hidl
+hardware/interfaces
+# aprotoc, protoc-gen-javastream, stats-log-api-gen's libprotobuf, javanano.
+external/protobuf
+# BOOTCLASSPATH jars (runtime and conscrypt APEXes in /system; ext).
+external/conscrypt
+external/bouncycastle
+external/okhttp
+external/apache-xml
+external/apache-http
+external/nist-sip
+external/tagsoup
+external/libphonenumber
+external/rappor
+# javax.annotation (jsr305) rappor compiles against.
+external/jsr305
+external/libtextclassifier
+frameworks/opt/telephony
+frameworks/opt/net/voip
+frameworks/opt/net/ims
+# ecc-protos-lite (ecc/conversion_toolset_v1/proto), a static library of
+# telephony-common.
+packages/services/Telephony
+# .aidl files module framework compiles from other projects (its
+# aidl.include_dirs and the :*_aidl filegroups), and the sysprop and apex
+# Java it links (PlatformProperties, ApexProperties, apex_aidl_interface).
+frameworks/av
+system/update_engine
+system/bt
+system/security
+system/vold
+system/gsid
+system/apex
+system/libsysprop
+system/tools/sysprop

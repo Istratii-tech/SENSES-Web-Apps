@@ -1,0 +1,240 @@
+diff --git a/art/runtime/gc/heap.cc b/art/runtime/gc/heap.cc
+index 612918149..30aa978ed 100644
+--- a/art/runtime/gc/heap.cc
++++ b/art/runtime/gc/heap.cc
+@@ -91,6 +91,27 @@ namespace art {
+ 
+ namespace gc {
+ 
++#if defined(ARC_WASM)
++// arc-wasm (topic gc-pause, docs/topics/gc-pause.md): who runs the current
++// collection (or GC critical section) and why, for the waiters' log line.
++// CollectGarbageInternal sets neither thread_running_gc_ nor last_gc_cause_.
++// Written by the thread that starts one, read by those that wait for it:
++// both under gc_complete_lock_.
++static std::string arc_gc_holder;
++static int arc_gc_cause = kGcCauseNone;
++static int arc_gc_collector = kCollectorTypeNone;
++static uint64_t arc_gc_count = 0;
++
++static void ArcNoteGcHolder(Thread* self, GcCause cause, CollectorType collector) {
++  std::string name;
++  self->GetThreadName(name);
++  arc_gc_holder = android::base::StringPrintf("\"%s\" tid %d", name.c_str(), self->GetTid());
++  arc_gc_cause = cause;
++  arc_gc_collector = collector;
++  ++arc_gc_count;
++}
++#endif
++
+ static constexpr size_t kCollectorTransitionStressIterations = 0;
+ static constexpr size_t kCollectorTransitionStressWait = 10 * 1000;  // Microseconds
+ // Minimum amount of remaining bytes before a concurrent GC is triggered.
+@@ -1329,6 +1350,9 @@ void Heap::StartGC(Thread* self, GcCause cause, CollectorType collector_type) {
+   collector_type_running_ = collector_type;
+   last_gc_cause_ = cause;
+   thread_running_gc_ = self;
++#if defined(ARC_WASM)
++  ArcNoteGcHolder(self, cause, collector_type);
++#endif
+ }
+ 
+ void Heap::TrimSpaces(Thread* self) {
+@@ -2509,6 +2533,11 @@ collector::GcType Heap::CollectGarbageInternal(collector::GcType gc_type,
+   }
+   ScopedThreadStateChange tsc(self, kWaitingPerformingGc);
+   Locks::mutator_lock_->AssertNotHeld(self);
++#if defined(ARC_WASM)
++  // arc-wasm (topic gc-pause): where a slow collection spends its time.
++  const uint64_t arc_t0 = NanoTime();
++  uint64_t arc_t_started = 0, arc_t_run = 0, arc_t_enqueued = 0;
++#endif
+   if (self->IsHandlingStackOverflow()) {
+     // If we are throwing a stack overflow error we probably don't have enough remaining stack
+     // space to run the GC.
+@@ -2531,7 +2560,13 @@ collector::GcType Heap::CollectGarbageInternal(collector::GcType gc_type,
+       return collector::kGcTypeNone;
+     }
+     collector_type_running_ = collector_type_;
++#if defined(ARC_WASM)
++    ArcNoteGcHolder(self, gc_cause, collector_type_);
++#endif
+   }
++#if defined(ARC_WASM)
++  arc_t_started = NanoTime();
++#endif
+   if (gc_cause == kGcCauseForAlloc && runtime->HasStatsEnabled()) {
+     ++runtime->GetStats()->gc_for_alloc_count;
+     ++self->GetStats()->gc_for_alloc_count;
+@@ -2605,14 +2640,30 @@ collector::GcType Heap::CollectGarbageInternal(collector::GcType gc_type,
+       << "Could not find garbage collector with collector_type="
+       << static_cast<size_t>(collector_type_) << " and gc_type=" << gc_type;
+   collector->Run(gc_cause, clear_soft_references || runtime->IsZygote());
++#if defined(ARC_WASM)
++  arc_t_run = NanoTime();
++#endif
+   total_objects_freed_ever_ += GetCurrentGcIteration()->GetFreedObjects();
+   total_bytes_freed_ever_ += GetCurrentGcIteration()->GetFreedBytes();
+   RequestTrim(self);
+   // Enqueue cleared references.
+   reference_processor_->EnqueueClearedReferences(self);
++#if defined(ARC_WASM)
++  arc_t_enqueued = NanoTime();
++#endif
+   // Grow the heap so that we know when to perform the next GC.
+   GrowForUtilization(collector, bytes_allocated_before_gc);
+   LogGC(gc_cause, collector);
++#if defined(ARC_WASM)
++  const uint64_t arc_t_end = NanoTime();
++  if (arc_t_end - arc_t_started > MsToNs(1000)) {
++    LOG(WARNING) << "arc-wasm: slow " << gc_cause << " GC: waited "
++                 << PrettyDuration(arc_t_started - arc_t0) << ", ran "
++                 << PrettyDuration(arc_t_run - arc_t_started) << ", trim request and cleared "
++                 << "references " << PrettyDuration(arc_t_enqueued - arc_t_run) << ", the rest "
++                 << PrettyDuration(arc_t_end - arc_t_enqueued);
++  }
++#endif
+   FinishGC(self, gc_type);
+   // Inform DDMS that a GC completed.
+   Dbg::GcDidFinish();
+@@ -3343,6 +3394,18 @@ collector::GcType Heap::WaitForGcToCompleteLocked(GcCause cause, Thread* self) {
+   collector::GcType last_gc_type = collector::kGcTypeNone;
+   GcCause last_gc_cause = kGcCauseNone;
+   uint64_t wait_start = NanoTime();
++#if defined(ARC_WASM)
++  // The first holder this wait found, and how many collections it outlasted.
++  std::string arc_holder = "?";
++  int arc_holder_cause = kGcCauseNone;
++  int arc_holder_collector = kCollectorTypeNone;
++  const uint64_t arc_count_start = arc_gc_count;
++  if (collector_type_running_ != kCollectorTypeNone) {
++    arc_holder = arc_gc_holder;
++    arc_holder_cause = arc_gc_cause;
++    arc_holder_collector = arc_gc_collector;
++  }
++#endif
+   while (collector_type_running_ != kCollectorTypeNone) {
+     if (self != task_processor_->GetRunningThread()) {
+       // The current thread is about to wait for a currently running
+@@ -3363,6 +3426,15 @@ collector::GcType Heap::WaitForGcToCompleteLocked(GcCause cause, Thread* self) {
+   if (wait_time > long_pause_log_threshold_) {
+     LOG(INFO) << "WaitForGcToComplete blocked " << cause << " on " << last_gc_cause << " for "
+               << PrettyDuration(wait_time);
++#if defined(ARC_WASM)
++    if (wait_time > MsToNs(1000)) {
++      LOG(WARNING) << "arc-wasm: that wait: first on " << arc_holder << " ("
++                   << static_cast<GcCause>(arc_holder_cause) << ", "
++                   << static_cast<CollectorType>(arc_holder_collector) << "), "
++                   << (arc_gc_count - arc_count_start) << " more GC(s) or critical section(s) "
++                   << "started meanwhile";
++    }
++#endif
+   }
+   if (self != task_processor_->GetRunningThread()) {
+     // The current thread is about to run a collection. If the thread
+diff --git a/art/runtime/thread.cc b/art/runtime/thread.cc
+index cdbb90888..598ce08bb 100644
+--- a/art/runtime/thread.cc
++++ b/art/runtime/thread.cc
+@@ -23,6 +23,11 @@
+ #include <pthread.h>
+ #include <signal.h>
+ #include <sys/resource.h>
++#if defined(ARC_WASM)
++// <emscripten/threading.h> brings C11 atomics that clash with ART's.
++extern "C" int emscripten_futex_wait(volatile void* addr, uint32_t val, double max_wait_ms);
++extern "C" int emscripten_futex_wake(volatile void* addr, int count);
++#endif
+ #include <sys/time.h>
+ 
+ #include <algorithm>
+@@ -1307,6 +1312,12 @@ bool Thread::PassActiveSuspendBarriers(Thread* self) {
+         if (done && (cur_val - 1) == 0) {  // Weak CAS may fail spuriously.
+           futex(pending_threads->Address(), FUTEX_WAKE, -1, nullptr, nullptr, 0);
+         }
++#elif defined(ARC_WASM)
++        // arc-wasm (topic gc-pause): SuspendAllInternal waits on it with
++        // emscripten_futex_wait.
++        if (done && (cur_val - 1) == 0) {
++          emscripten_futex_wake(pending_threads->Address(), INT32_MAX);
++        }
+ #endif
+       } while (!done);
+       ++barrier_count;
+diff --git a/art/runtime/thread_list.cc b/art/runtime/thread_list.cc
+index f1a7b65c7..b4b2df4cc 100644
+--- a/art/runtime/thread_list.cc
++++ b/art/runtime/thread_list.cc
+@@ -54,6 +54,11 @@
+ #define SYS_futex __NR_futex
+ #endif
+ #endif  // ART_USE_FUTEXES
++#if defined(ARC_WASM)
++// <emscripten/threading.h> brings C11 atomics that clash with ART's.
++extern "C" int emscripten_futex_wait(volatile void* addr, uint32_t val, double max_wait_ms);
++extern "C" int emscripten_futex_wake(volatile void* addr, int count);
++#endif
+ 
+ namespace art {
+ 
+@@ -685,6 +690,29 @@ void ThreadList::SuspendAll(const char* cause, bool long_suspend) {
+ // Debugger thread might be set to kRunnable for a short period of time after the
+ // SuspendAllInternal. This is safe because it will be set back to suspended state before
+ // the SuspendAll returns.
++#if defined(ARC_WASM)
++// arc-wasm (topic gc-pause): the threads a SuspendAll still waits for.
++static void ArcLogThreadsNotSuspended(Thread* self, Thread* ignore1, Thread* ignore2,
++                                      uint64_t waited_ns) {
++  std::ostringstream os;
++  int count = 0;
++  {
++    MutexLock mu(self, *Locks::thread_list_lock_);
++    for (Thread* thread : Runtime::Current()->GetThreadList()->GetList()) {
++      if (thread == ignore1 || thread == ignore2 || thread->IsSuspended()) {
++        continue;
++      }
++      std::string name;
++      thread->GetThreadName(name);
++      os << (count++ == 0 ? "" : ", ") << '"' << name << "\" tid " << thread->GetTid() << ' '
++         << thread->GetState();
++    }
++  }
++  LOG(WARNING) << "arc-wasm: SuspendAll waiting " << PrettyDuration(waited_ns) << " for "
++               << count << " thread(s): " << os.str();
++}
++#endif
++
+ void ThreadList::SuspendAllInternal(Thread* self,
+                                     Thread* ignore1,
+                                     Thread* ignore2,
+@@ -749,6 +777,30 @@ void ThreadList::SuspendAllInternal(Thread* self,
+   InitTimeSpec(false, CLOCK_MONOTONIC, NsToMs(thread_suspend_timeout_ns_), 0, &wait_timeout);
+ #endif
+   const uint64_t start_time = NanoTime();
++#if defined(ARC_WASM)
++  // arc-wasm (topic gc-pause, docs/topics/gc-pause.md): no futex(2) here
++  // (ART_USE_FUTEXES is 0), and the code below then spins without a timeout
++  // or a word: a collection waiting for a thread that does not suspend burned
++  // a core and said nothing while every allocating thread waited for it.
++  // Waits on the counter with Emscripten's futex instead (woken by
++  // Thread::PassActiveSuspendBarriers), and names the threads not suspended
++  // yet after each second.
++  uint64_t next_report = start_time + MsToNs(1000);
++  while (true) {
++    const int32_t cur_val = pending_threads.LoadRelaxed();
++    if (cur_val <= 0) {
++      CHECK_EQ(cur_val, 0);
++      break;
++    }
++    emscripten_futex_wait(pending_threads.Address(), cur_val, 100);
++    const uint64_t now = NanoTime();
++    if (now >= next_report && pending_threads.LoadRelaxed() > 0) {
++      next_report = now + MsToNs(1000);
++      ArcLogThreadsNotSuspended(self, ignore1, ignore2, now - start_time);
++    }
++  }
++  return;
++#endif
+   while (true) {
+     int32_t cur_val = pending_threads.LoadRelaxed();
+     if (LIKELY(cur_val > 0)) {

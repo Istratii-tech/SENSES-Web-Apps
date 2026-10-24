@@ -1,0 +1,81 @@
+# begin build properties
+# arc-wasm: the properties AOSP 10's build/make/tools/buildinfo.sh writes for
+# android-10.0.0_r47 (build_id.mk: BUILD_ID QQ3A.200805.001; version_defaults.mk:
+# PLATFORM_SDK_VERSION 29, PLATFORM_SECURITY_PATCH 2020-08-05), loaded into the
+# property store at startup as init does (docs/topics/fw10-core.md).
+# android.os.Build reads them; Resources passes Build.VERSION.RESOURCES_SDK_INT
+# to the AssetManager, and resources only match configurations up to that SDK
+# version. The ABIs are those of topic art10's build.prop: arm64-v8a first
+# (topic ndk-arm64), then 32-bit ARM.
+ro.build.id=QQ3A.200805.001
+ro.build.display.id=QQ3A.200805.001
+ro.build.version.incremental=eng.arcwasm
+ro.build.version.sdk=29
+ro.build.version.preview_sdk=0
+ro.build.version.preview_sdk_fingerprint=REL
+ro.build.version.codename=REL
+ro.build.version.all_codenames=REL
+ro.build.version.release=10
+ro.build.version.security_patch=2020-08-05
+ro.build.version.base_os=
+ro.build.version.min_supported_target_sdk=23
+ro.build.date=Mon Oct 19 00:00:00 UTC 2026
+ro.build.date.utc=1792368000
+ro.build.type=eng
+ro.build.user=arcwasm
+ro.build.host=arcwasm
+ro.build.tags=test-keys
+ro.build.flavor=arcwasm10-eng
+ro.build.system_root_image=false
+ro.product.model=arc-wasm
+ro.product.brand=arcwasm
+ro.product.name=arcwasm10
+ro.product.device=wasm32
+ro.product.board=browser
+ro.product.system.model=arc-wasm
+ro.product.system.brand=arcwasm
+ro.product.system.name=arcwasm10
+ro.product.system.device=wasm32
+ro.product.system.manufacturer=arc-wasm
+# ro.product.cpu.abi and ro.product.cpu.abi2 are obsolete,
+# use ro.product.cpu.abilist instead.
+ro.product.cpu.abi=arm64-v8a
+# Build.SUPPORTED_ABIS in the order the package manager picks an app's
+# libraries (ro.arcwasm.ndk.abis: ARMv7 first, arm64-v8a for apps with only
+# 64-bit code) and the VM runs them (a 32-bit process): libraries that pick
+# SUPPORTED_ABIS[0] themselves (SoLoader before 0.10) take the ones in the
+# app's library directory (topic a10-default).
+ro.product.cpu.abilist=armeabi-v7a,armeabi,arm64-v8a
+ro.product.cpu.abilist32=armeabi-v7a,armeabi
+ro.product.cpu.abilist64=arm64-v8a
+ro.product.manufacturer=arc-wasm
+ro.product.locale=en-US
+ro.wifi.channels=
+ro.board.platform=browser
+# ro.build.product is obsolete; use ro.product.device
+ro.build.product=wasm32
+# Do not try to parse description, fingerprint, or thumbprint
+ro.build.description=arcwasm10-eng 10 QQ3A.200805.001 eng.arcwasm test-keys
+ro.build.fingerprint=arcwasm/arcwasm10/wasm32:10/QQ3A.200805.001/eng.arcwasm:eng/test-keys
+ro.build.characteristics=default
+# end build properties
+#
+# ADDITIONAL_BUILD_PROPERTIES
+#
+# The VM is ART (persist.sys.dalvik.vm.lib.2 on a device).
+persist.sys.dalvik.vm.lib.2=libart.so
+dalvik.vm.isa.arm64.variant=generic
+dalvik.vm.isa.arm64.features=default
+dalvik.vm.isa.arm.variant=cortex-a15
+dalvik.vm.isa.arm.features=default
+ro.zygote=zygote64_32
+# No native bridge property of its own (arc-wasm's bridge is in process), no
+# JIT (interpreter only). Heap sizes as topic art10's build.prop.
+ro.dalvik.vm.native.bridge=0
+dalvik.vm.usejit=false
+dalvik.vm.heapsize=512m
+dalvik.vm.heapgrowthlimit=256m
+# Hidden API checks are off in the VM (-Xhidden-api-policy:disabled); the
+# framework's own switch (Settings.Global.hidden_api_policy) has nothing to do.
+# init sets ro.hardware from androidboot.hardware (android.os.Build.HARDWARE).
+ro.hardware=arcwasm-webassembly

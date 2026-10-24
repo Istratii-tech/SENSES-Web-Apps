@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<title>WebView A</title>
+</head>
+<body style="margin:0;background:#d2e3fc;font:16px sans-serif">
+<!-- WebViewTest (tests/java8/arcwasm/WebViewTest.java): page A. -->
+<h1 style="margin:8px">Page A</h1>
+<p style="margin:8px"><a id="link" href="b.html">to page B</a></p>
+<script>
+  window.addEventListener('load', function () {
+    // (in the load handler: the host scripts a page at a URL as soon as it
+    // sees its document, which may be after the first inline scripts)
+    console.log('page A says hello');
+    // A @JavascriptInterface object, if the app added one.
+    if (window.Bridge) Bridge.report('A loaded ' + location.pathname);
+  });
+</script>
+</body>
+</html>

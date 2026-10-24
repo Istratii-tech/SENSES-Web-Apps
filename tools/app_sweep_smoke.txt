@@ -1,0 +1,14 @@
+# make app-sweep-smoke (tools/app_sweep.py --smoke, topic apps-sweep): a few
+# small apps, each on a stack, and what each run must reach. Files are
+# relative to SWEEP_APKS (ARC_WORKSPACE by default; never in
+# git); a missing one is skipped. Each line also guards a fix of the sweep.
+# STACK EXPECTED FILE
+a81 shown apps-sweep-apks/fdroid/acr.browser.lightning_101.apk
+a81 shown apps-sweep-apks/fdroid/org.fossify.notes_13.apk
+a81 shown apps-sweep-apks/fdroid/net.sourceforge.opencamera_96.apk     # SoundPool
+a81 shown apps-sweep-apks/fdroid/com.aurora.store_76.apk               # package installer
+a81 shown apps-sweep-apks/fdroid/org.fossify.musicplayer_17.apk        # AudioEffect
+a81 shown apps-sweep-apks/fdroid/com.artifex.mupdf.viewer.app_270.apk  # OPEN_DOCUMENT left at once
+a10 shown apps-sweep-apks/fdroid/org.isoron.uhabits_20301.apk
+a60 shown apps-sweep-apks/fdroid/acr.browser.lightning_101.apk
+a44 shown apps8-apks/Angry_Birds_v2.1.0.apk

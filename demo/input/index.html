@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Android input on WebAssembly</title>
+<style>
+  :root { --bg: #0e1016; --fg: #d7dbe5; --muted: #8a90a0; --ok: #6fd28a; --bad: #ff7b72; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #f4f5f8; --fg: #1d2030; --muted: #5a6072; --ok: #1a7f37; --bad: #cf222e; }
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+               font: 14px/1.4 system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px; }
+  header { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+  canvas { display: block; width: 100%; max-width: 640px; aspect-ratio: 4 / 3;
+           background: #000; border-radius: 6px; outline: none; }
+  canvas:focus-visible { box-shadow: 0 0 0 2px var(--muted); }
+  pre { margin: 8px 0 0; font: 12px/1.45 ui-monospace, monospace;
+        white-space: pre-wrap; word-break: break-word; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .log { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header id="cmd"></header>
+  <!-- The display (FramebufferSurface's compositor thread takes it over as an
+       OffscreenCanvas) and the input devices (shim/input/browser_input.js
+       listens to its pointer and keyboard events). -->
+  <canvas id="canvas" width="640" height="480"></canvas>
+  <pre id="out"></pre>
+</main>
+<script src="report.js"></script>
+<script>
+  // arcwasm.InputDemo; ?selftest=1 dispatches a scripted sequence of DOM
+  // events once the program is ready and lets it check them (for Safari).
+  // Other programs: ?arg=-cp&arg=/system/framework/arc-tests.jar&arg=arcwasm.InputTest
+  var params = new URLSearchParams(location.search);
+  var selfTest = params.get('selftest') === '1';
+  var args = params.getAll('arg');
+  if (!args.length) {
+    args = ['-cp', '/system/framework/arc-tests.jar', 'arcwasm.InputDemo'];
+    if (selfTest) args.push('selftest');
+  }
+  document.getElementById('cmd').textContent = 'dalvikvm ' + args.join(' ');
+  var canvas = document.getElementById('canvas');
+  var outEl = document.getElementById('out');
+  var started = performance.now();
+  function emit(text) {
+    var line = document.createElement('span');
+    if (/^\[ OK \]|passed, 0 failed|-> OK$/.test(text)) line.className = 'ok';
+    else if (/^\[FAIL\]|Exception|Error|Abort|-> FAIL$/.test(text)) line.className = 'bad';
+    else if (/^[VDIWEF]\//.test(text)) line.className = 'log';
+    line.textContent = text + '\n';
+    outEl.appendChild(line);
+    while (outEl.childNodes.length > 40) outEl.removeChild(outEl.firstChild);
+    arcReport(text);
+    if (selfTest && /^InputDemo: ready /.test(text)) setTimeout(runSelfTest, 100);
+  }
+
+  // The scripted sequence InputDemo.finishSelfTest expects, as synthetic DOM
+  // events on the canvas, in display coordinates (mapped to client
+  // coordinates the way the page shows the canvas).
+  function runSelfTest() {
+    var rect = canvas.getBoundingClientRect();
+    function client(x, y) {
+      return { clientX: rect.left + x * rect.width / canvas.width,
+               clientY: rect.top + y * rect.height / canvas.height };
+    }
+    function pointer(type, id, x, y) {
+      var c = client(x, y);
+      var init = { bubbles: true, cancelable: true, pointerId: id, pointerType: 'touch',
+                   isPrimary: id === 1, clientX: c.clientX, clientY: c.clientY,
+                   pressure: type === 'pointerup' ? 0 : 0.5,
+                   buttons: type === 'pointerup' ? 0 : 1 };
+      var e = typeof PointerEvent === 'function' ? new PointerEvent(type, init)
+                                                 : new MouseEvent(type, init);
+      if (e.pointerId === undefined) {  // no PointerEvent: the fields by hand
+        Object.defineProperty(e, 'pointerId', { value: id });
+        Object.defineProperty(e, 'pointerType', { value: 'touch' });
+        Object.defineProperty(e, 'pressure', { value: init.pressure });
+      }
+      canvas.dispatchEvent(e);
+    }
+    function key(type, code, keyName, shift) {
+      canvas.dispatchEvent(new KeyboardEvent(type, { bubbles: true, cancelable: true,
+                                                     code: code, key: keyName, shiftKey: shift }));
+    }
+    var steps = [
+      function () { pointer('pointerdown', 1, 160, 120); },
+      function () { pointer('pointerdown', 2, 480, 360); },
+      function () { pointer('pointermove', 1, 200, 140); },
+      function () { pointer('pointerup', 2, 480, 360); },
+      function () { pointer('pointerup', 1, 200, 140); },
+      function () { key('keydown', 'ShiftLeft', 'Shift', true); },
+      function () { key('keydown', 'KeyH', 'H', true); },
+      function () { key('keyup', 'KeyH', 'H', true); },
+      function () { key('keyup', 'ShiftLeft', 'Shift', false); },
+      function () { key('keydown', 'KeyI', 'i', false); },
+      function () { key('keyup', 'KeyI', 'i', false); },
+      function () { key('keydown', 'ShiftRight', 'Shift', true); },
+      function () { key('keydown', 'Digit1', '!', true); },
+      function () { key('keyup', 'Digit1', '!', true); },
+      function () { key('keyup', 'ShiftRight', 'Shift', false); },
+      function () { key('keydown', 'Enter', 'Enter', false); },
+      function () { key('keyup', 'Enter', 'Enter', false); },
+    ];
+    var i = 0;
+    (function next() {
+      if (i < steps.length) { steps[i++](); setTimeout(next, 30); }
+      else emit('page: dispatched ' + steps.length + ' DOM events (' +
+                Module.arcwasmInput.queued + ' records queued)');
+    })();
+  }
+
+  var Module = {
+    arguments: args,
+    canvas: canvas,
+    print: emit,
+    printErr: emit,
+    onExit: function (code) {
+      emit('EXIT ' + code + ' after ' + Math.round(performance.now() - started) + ' ms');
+      document.title = 'EXIT ' + code;
+    },
+    onAbort: function (what) { emit('ABORT ' + what); },
+  };
+</script>
+<script src="dalvikvm.js"></script>
+</body>
+</html>

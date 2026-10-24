@@ -1,0 +1,29 @@
+# Topic fw8-core: the base of the Android 8.1 framework.
+# HIDL: libhidl, libhwbinder (in-process stubs), hidl-gen (host tool, Java of
+# the HIDL interfaces framework.jar links statically) and the interfaces;
+# protobuf: aprotoc (host, javanano and javastream for core/proto);
+# the boot class path libraries (conscrypt, okhttp, bouncycastle, ext,
+# apache-xml, org.apache.http.legacy.boot, telephony-common, voip-common,
+# ims-common); boringssl: its headers for conscrypt's NativeConstants.java.
+# frameworks/av, system/netd, system/update_engine: .aidl files of framework.jar.
+system/libhidl
+system/libhwbinder
+system/tools/hidl
+hardware/interfaces
+external/protobuf
+external/conscrypt
+external/bouncycastle
+external/okhttp
+external/nist-sip
+external/tagsoup
+external/libphonenumber
+external/apache-xml
+external/apache-http
+external/boringssl
+frameworks/opt/telephony
+frameworks/opt/net/voip
+frameworks/opt/net/ims
+frameworks/av
+system/netd
+system/update_engine
+external/safe-iop

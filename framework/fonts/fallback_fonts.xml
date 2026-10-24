@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    arc-wasm: no fallback fonts are shipped yet (AOSP's list,
+    frameworks/base/data/fonts/fallback_fonts.xml, names ~25 MB of fonts for
+    other scripts and emoji). Glyphs outside Roboto/DroidSansMono render as
+    missing-glyph boxes.
+-->
+<familyset>
+</familyset>

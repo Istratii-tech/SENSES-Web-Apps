@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>arc-wasm probe</title>
+<style>
+  body { font: 14px -apple-system, system-ui, sans-serif; margin: 12px; background: #fff; color: #111; }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+  .ok { color: #070; } .bad { color: #b00; }
+  button { font-size: 16px; padding: 8px 14px; margin: 4px 0; }
+</style>
+</head>
+<body>
+<h3>arc-wasm: проверка браузера</h3>
+<p>Результаты уходят на Mac. Последний шаг (память) может перезагрузить вкладку — это тоже результат.</p>
+<button id="run">Запустить ещё раз</button>
+<pre id="out"></pre>
+<script>
+// What the arc-wasm builds rely on, checked one by one; every line also goes
+// to tools/serve.py (POST /__log) so the Mac sees the results of devices it
+// cannot automate. Run by demo/ios-probe; no build step.
+const out = document.getElementById('out');
+let pending = Promise.resolve();
+function log(ok, name, detail) {
+  const mark = ok === null ? '..' : ok ? 'OK' : 'NO';
+  const line = `probe ${mark} ${name}${detail !== undefined ? ': ' + detail : ''}`;
+  const span = document.createElement('span');
+  span.className = ok === null ? '' : ok ? 'ok' : 'bad';
+  span.textContent = line + '\n';
+  out.appendChild(span);
+  // Sequential and awaited before risky steps, so a killed tab still reports.
+  pending = pending.then(() => fetch('/__log', { method: 'POST', body: line, keepalive: true })).catch(() => {});
+  return pending;
+}
+const flush = () => pending;
+
+async function step(name, fn) {
+  try {
+    const r = await fn();
+    if (Array.isArray(r)) await log(r[0], name, r[1]); else await log(!!r, name, r === true ? undefined : r);
+  } catch (e) {
+    await log(false, name, (e && e.name ? e.name + ': ' : '') + (e && e.message || e));
+  }
+}
+
+function workerRun(src, timeout = 15000) {
+  const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+  const w = new Worker(url);
+  return new Promise((resolve) => {
+    const t = setTimeout(() => { w.terminate(); resolve([false, 'timeout']); }, timeout);
+    w.onmessage = (e) => { clearTimeout(t); w.terminate(); resolve(e.data); };
+    w.onerror = (e) => { clearTimeout(t); w.terminate(); resolve([false, 'worker error ' + e.message]); };
+  });
+}
+
+async function compile(path) {
+  const t0 = performance.now();
+  const resp = await fetch(path);
+  if (!resp.ok) return [false, 'HTTP ' + resp.status];
+  const bytes = await resp.arrayBuffer();
+  const t1 = performance.now();
+  await WebAssembly.compile(bytes);
+  return [true, `${(bytes.byteLength / 1048576).toFixed(1)} MB, fetch ${Math.round(t1 - t0)} ms, compile ${Math.round(performance.now() - t1)} ms`];
+}
+
+async function run() {
+  out.textContent = '';
+  await log(null, 'ua', navigator.userAgent);
+  await log(null, 'screen', `${screen.width}x${screen.height} dpr ${devicePixelRatio}, inner ${innerWidth}x${innerHeight}, standalone ${!!navigator.standalone || matchMedia('(display-mode: standalone)').matches}`);
+  await step('secure context', () => isSecureContext);
+  await step('crossOriginIsolated', () => self.crossOriginIsolated === true);
+  await step('SharedArrayBuffer', () => typeof SharedArrayBuffer === 'function');
+  await step('Atomics.wait in worker', () => workerRun(`
+    const a = new Int32Array(new SharedArrayBuffer(4));
+    postMessage([Atomics.wait(a, 0, 0, 10) === 'timed-out', 'Atomics.waitAsync ' + (typeof Atomics.waitAsync)]);`));
+  await step('BigInt64Array', () => typeof BigInt64Array === 'function');
+  await step('wasm SIMD', () => WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,123,3,2,1,0,10,10,1,8,0,65,0,253,15,253,98,11])));
+  await step('wasm exceptions', () => WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0,1,4,1,96,0,0,3,2,1,0,10,8,1,6,0,6,64,25,11,11])));
+  await step('wasm.Tag (EH JS API)', () => typeof WebAssembly.Tag === 'function');
+  await step('WebGL2 (page)', () => {
+    const gl = document.createElement('canvas').getContext('webgl2');
+    return gl ? [true, gl.getParameter(gl.VERSION) + ', max texture ' + gl.getParameter(gl.MAX_TEXTURE_SIZE)] : false;
+  });
+  await step('OffscreenCanvas', () => typeof OffscreenCanvas === 'function');
+  await step('OffscreenCanvas webgl2 in worker', () => workerRun(`
+    try { const c = new OffscreenCanvas(4, 4); postMessage([!!c.getContext('webgl2'), '']); }
+    catch (e) { postMessage([false, String(e)]); }`));
+  await step('transferControlToOffscreen + webgl2 in worker', () => {
+    const c = document.createElement('canvas');
+    if (!c.transferControlToOffscreen) return [false, 'no transferControlToOffscreen'];
+    const off = c.transferControlToOffscreen();
+    const url = URL.createObjectURL(new Blob([`onmessage = (e) => {
+      try { postMessage([!!e.data.getContext('webgl2'), '']); } catch (x) { postMessage([false, String(x)]); } };`]));
+    const w = new Worker(url);
+    return new Promise((res) => {
+      setTimeout(() => res([false, 'timeout']), 10000);
+      w.onmessage = (e) => { w.terminate(); res(e.data); };
+      w.postMessage(off, [off]);
+    });
+  });
+  await step('AudioWorklet', () => typeof AudioWorkletNode === 'function');
+  await step('VideoDecoder (WebCodecs)', () => typeof VideoDecoder === 'function');
+  await step('AudioDecoder (WebCodecs)', () => typeof AudioDecoder === 'function');
+  await step('OPFS getDirectory', async () => { await navigator.storage.getDirectory(); return true; });
+  await step('OPFS sync access handle in worker', () => workerRun(`
+    (async () => {
+      try {
+        const root = await navigator.storage.getDirectory();
+        const f = await root.getFileHandle('probe.bin', { create: true });
+        const h = await f.createSyncAccessHandle();
+        const w = h.write(new Uint8Array([1, 2, 3]), { at: 0 });
+        const size = h.getSize();
+        const syncSize = typeof size === 'number';
+        const r = new Uint8Array(3); h.read(r, { at: 0 });
+        const t = h.truncate(0); const fl = h.flush(); const c = h.close();
+        await root.removeEntry('probe.bin');
+        postMessage([syncSize && r[2] === 3, 'write ' + typeof w + ', getSize ' + typeof size +
+          ', truncate ' + (t instanceof Promise ? 'promise' : typeof t) + ', close ' + (c instanceof Promise ? 'promise' : typeof c)]);
+      } catch (e) { postMessage([false, e.name + ': ' + e.message]); }
+    })();`));
+  await step('storage.estimate', async () => {
+    const e = await navigator.storage.estimate();
+    return [true, `quota ${(e.quota / 1048576).toFixed(0)} MB, usage ${(e.usage / 1048576).toFixed(1)} MB`];
+  });
+  await step('storage.persist', async () => [true, String(navigator.storage.persist ? await navigator.storage.persist() : 'n/a')]);
+  await step('ServiceWorker', () => 'serviceWorker' in navigator);
+  await step('compile dalvikvm.wasm (4.4)', () => compile('/graphics-web/dalvikvm.wasm'));
+  await step('compile artvm.wasm (6.0.1)', () => compile('/fw6-graphics-web/artvm.wasm'));
+  await flush();
+  // Memory last: the builds ask for shared memory of 512 MB fixed (Dalvik)
+  // and 256 MB growing to 4 GB (ART). Growing may get the tab killed.
+  await step('shared memory 512 MB fixed (Dalvik)', () => { new WebAssembly.Memory({ initial: 8192, maximum: 8192, shared: true }); return true; });
+  // The 8.1 builds on iOS ask for a smaller maximum (topic mem-budget,
+  // shim/membudget/mem_budget_pre.js: 1536 MB) and say how much the page has.
+  await step('shared memory 256 MB, max 1536 MB (mem-budget on iOS)', () => { new WebAssembly.Memory({ initial: 4096, maximum: 24576, shared: true }); return true; });
+  await log(null, 'deviceMemory', String(navigator.deviceMemory));
+  if (performance.memory) await log(null, 'performance.memory', 'jsHeapSizeLimit ' + (performance.memory.jsHeapSizeLimit / 1048576).toFixed(0) + ' MB');
+  let mem;
+  await step('shared memory 256 MB, max 4 GB (ART)', () => { mem = new WebAssembly.Memory({ initial: 4096, maximum: 65536, shared: true }); return true; });
+  if (mem) {
+    for (const mb of [512, 768, 1024, 1280, 1536, 2048, 3072]) {
+      await log(null, 'grow to', mb + ' MB...');
+      try {
+        mem.grow(mb * 16 - mem.buffer.byteLength / 65536);
+        // Touch every page so the OS really commits it.
+        const u = new Uint8Array(mem.buffer);
+        for (let i = 0; i < u.length; i += 4096) u[i] = 1;
+        await log(true, 'grow+touch', mb + ' MB');
+      } catch (e) {
+        await log(false, 'grow+touch', mb + ' MB: ' + e);
+        break;
+      }
+    }
+    mem = null;
+  }
+  await log(null, 'done');
+}
+document.getElementById('run').onclick = run;
+run();
+</script>
+</body>
+</html>
