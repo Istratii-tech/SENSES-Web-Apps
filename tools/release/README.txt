@@ -104,4 +104,5 @@ new certificate (as --reset-cert): phones then need step 2 again.
 
 Options: --port N, --no-browser, --lang en|ru, --verbose (python3 server/senses.py --help).
 
-Licences: NOTICE.txt and licenses/.
+Licences: SENSES Web Apps itself is under the GNU AGPL v3 (LICENSE.txt); the components
+it includes — NOTICE.txt and licenses/. Source: https://github.com/Istratii-tech/SENSES-Web-Apps
