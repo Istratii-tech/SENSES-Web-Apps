@@ -45,6 +45,46 @@ How to use SENSES Web Apps
    file. Tip: Share → Add to Home Screen.
 6. Details: `README.txt` in the release archive.
 
+## О сертификате / About the certificate
+
+Сертификат для телефона простыми словами
+
+* **Создаётся у вас.** Сертификат делает программа из выпуска на вашем компьютере при первом запуске.
+  Ни в выпуске, ни в этом репозитории нет ни сертификатов, ни ключей.
+* **Закрытый ключ остаётся на вашем компьютере** — в папке настроек пользователя (macOS:
+  `~/Library/Application Support/SENSES Web Apps/`, Windows: `%APPDATA%\SENSES Web Apps\`,
+  Linux: `~/.config/senses-web-apps/`), доступ только у вашей учётной записи. Ни у авторов SENSES Web
+  Apps, ни у кого-либо ещё доступа к нему нет; никуда он не отправляется.
+* **На телефон уходит только открытая часть** — профиль, со страницы установки в вашей домашней сети.
+* **Действует только в домашней сети**: для адресов 10.x, 172.16–31.x, 192.168.x и имён `.local`. Выдать
+  себя им за сайт в интернете нельзя, даже если ключ украдут: это ограничение записано в самом сертификате,
+  и телефон его проверяет.
+* **Срок — 3 года.** За два месяца до конца окно сервера предупредит.
+* **Сбросить** (потерян, утёк, кончается срок): остановите SENSES и запустите с `--reset-cert`
+  (macOS: `sh "Start SENSES.command" --reset-cert`; Windows: `"Start SENSES.bat" --reset-cert`), затем
+  поставьте на телефоны новый профиль со страницы установки. Приложения и их данные останутся.
+* **Удалить с iPhone**: Настройки → Основные → VPN и управление устройством → SENSES Web Apps →
+  Удалить профиль.
+
+The phone's certificate in plain words
+
+* **It is made on your computer.** The program from the release makes it on your computer at its first
+  start. Neither the release nor this repository contains any certificate or key.
+* **The private key stays on your computer**, in your user's settings folder (macOS:
+  `~/Library/Application Support/SENSES Web Apps/`, Windows: `%APPDATA%\SENSES Web Apps\`,
+  Linux: `~/.config/senses-web-apps/`), readable only by your account. Neither the authors of SENSES Web
+  Apps nor anyone else has access to it; it is never sent anywhere.
+* **Only the public part goes to the phone**: the profile, from the setup page on your home network.
+* **It works only on your home network**: for the addresses 10.x, 172.16–31.x, 192.168.x and `.local`
+  names. Even if the key were stolen, it could not be used to pass as any internet site: the limit is
+  written into the certificate itself, and the phone checks it.
+* **It lasts 3 years.** The server's window warns two months ahead.
+* **To reset it** (lost, leaked, about to end): stop SENSES and start it with `--reset-cert` (macOS:
+  `sh "Start SENSES.command" --reset-cert`; Windows: `"Start SENSES.bat" --reset-cert`), then install the
+  new profile on the phones from the setup page. The apps and their data stay.
+* **To remove it from an iPhone**: Settings → General → VPN & Device Management → SENSES Web Apps →
+  Remove Profile.
+
 ## What is *not* here
 
 * **No Android apps.** Neither the release nor this repository ships any APK. You install your own files.

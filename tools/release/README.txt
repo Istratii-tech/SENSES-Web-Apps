@@ -42,23 +42,34 @@ The page walks you through it:
   c. Settings > General > About > Certificate Trust Settings > turn on
      "SENSES Web Apps CA (your computer)" > Continue.
   d. Back in Safari the page shows "Open SENSES Web Apps".
-The certificate was made on your computer at the first start; it never leaves
-it except as this profile, and no one else has its key. It is valid only for
-home network addresses (10.x, 172.16-31.x, 192.168.x) and .local names, never
-for internet sites, and lasts 3 years (the window warns two months ahead).
-To remove it from the iPhone: Settings > General > VPN & Device Management >
-SENSES Web Apps > Remove Profile.
-
-A new certificate (lost, leaked, or about to end): stop SENSES and start it
-with --reset-cert, e.g. on macOS in Terminal:
-  sh "Start SENSES.command" --reset-cert
-(Windows: "Start SENSES.bat" --reset-cert in a command prompt in the folder.)
-Then remove the old profile on each phone as above and install the new one
-from the page. The apps and their data stay.
+(What this certificate is: "About the certificate" below.)
 
 Android: the page offers the certificate file instead; install it in
 Settings > Security > Encryption & credentials > Install a certificate > CA
 certificate.
+
+About the certificate
+=====================
+* It is made on YOUR computer, by this program, at its first start. There is
+  no certificate and no key in the release or in the project's repository.
+* The private key stays on this computer only, in your settings folder (see
+  "Settings and logs" below), readable only by your account. Neither the
+  authors of SENSES Web Apps nor anyone else has access to it; it is never
+  sent anywhere.
+* Only the public part goes to the phone: the profile, from the setup page on
+  your home network.
+* It works only for home network addresses (10.x, 172.16-31.x, 192.168.x) and
+  .local names. Even if the key were stolen, it could not be used to pass as
+  any internet site: the limit is written into the certificate itself.
+* It lasts 3 years; the window warns two months ahead.
+* A new certificate (lost, leaked, or about to end): stop SENSES and start it
+  with --reset-cert, e.g. on macOS in Terminal:
+    sh "Start SENSES.command" --reset-cert
+  (Windows: "Start SENSES.bat" --reset-cert in a command prompt in the
+  folder.) Then remove the old profile on each phone and install the new one
+  from the setup page. The apps and their data stay.
+* To remove it from an iPhone: Settings > General > VPN & Device Management >
+  SENSES Web Apps > Remove Profile.
 
 3. Apps
 -------
