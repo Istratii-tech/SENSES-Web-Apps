@@ -25,7 +25,7 @@
   .muted, small { color: var(--muted); }
   .ok { color: var(--ok); } .bad { color: var(--bad); }
   code { font: 15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #fff; word-break: break-all; }
-  #qr { display: block; width: 240px; height: 240px; margin: 12px auto; border-radius: 10px; background: #fff; }
+  #qr, .qr { display: block; width: 240px; height: 240px; margin: 12px auto; border-radius: 10px; background: #fff; }
   .status { display: flex; gap: 10px; align-items: center; }
   .dot { width: 10px; height: 10px; border-radius: 5px; background: var(--muted); flex: none; }
   .dot.ok { background: var(--ok); } .dot.wait { animation: pulse 1.2s ease-in-out infinite; }
@@ -43,6 +43,10 @@
     <p data-t="phone_scan"></p>
     <img id="qr" alt="QR">
     <p><span data-t="or_type"></span> <code id="phone_url"></code></p>
+    <h2 data-t="profile_title"></h2>
+    <p data-t="profile_scan"></p>
+    <img id="qr_profile" class="qr" alt="QR">
+    <p><span data-t="or_type"></span> <code id="profile_url"></code></p>
     <p class="muted" id="name_line" hidden><span data-t="name_line"></span> <code id="name"></code></p>
     <div class="card"><div class="status"><span class="dot wait" id="clients_dot"></span><span id="clients"></span></div></div>
     <h2 data-t="here_title"></h2>
@@ -109,6 +113,9 @@ var T = {
   phone_scan: ['Connect the phone to the same Wi-Fi as this computer, open the Camera and point it at the code:',
                'Подключите телефон к той же сети Wi-Fi, что и компьютер, откройте «Камеру» и наведите на код:'],
   or_type: ['or type in Safari:', 'или наберите в Safari:'],
+  profile_title: ['The iPhone profile', 'Профиль для iPhone'],
+  profile_scan: ['If the page on the phone does not offer the profile, scan this code: it downloads the profile itself.',
+                 'Если страница на телефоне не предлагает профиль, отсканируйте этот код: он сразу скачивает профиль.'],
   name_line: ['Its name on the home network:', 'Имя в домашней сети:'],
   no_clients: ['No phone has opened it yet.', 'Телефон ещё не открывал этот адрес.'],
   clients: ['Opened from: {list}', 'Открывали с адресов: {list}'],
@@ -158,7 +165,7 @@ var T = {
                 'Safari может сам открыть этот адрес по https и показать «Подключение не защищено». Это ожидаемо, пока профиль не установлен: нажмите <b>«Подробнее»</b> → <b>«Посетить веб-сайт»</b>. После установки профиля и включения доверия к нему предупреждение исчезает.'],
   https_note: ['Safari warned that the connection is not private: that is expected until the profile below is installed — it is this computer\'s own certificate. Install the profile, then come back here.',
                'Safari предупредил, что подключение не защищено: так и должно быть, пока не установлен профиль ниже, — это собственный сертификат вашего компьютера. Установите профиль и вернитесь сюда.'],
-  open_anyway: ['The profile is installed and trusted: open SENSES Web Apps', 'Профиль уже установлен и включён: открыть SENSES Web Apps'],
+  open_anyway: ['The profile is already installed and trusted: open SENSES Web Apps', 'Профиль уже установлен и доверие включено: открыть SENSES Web Apps'],
   scope: ['The certificate was made on that computer and works only for home network addresses (10.x, 172.16–31.x, 192.168.x) and .local names, never for sites on the internet. Remove it any time: Settings → General → VPN &amp; Device Management → SENSES Web Apps → Remove Profile.',
           'Сертификат создан на том компьютере и действует только для адресов домашней сети (10.x, 172.16–31.x, 192.168.x) и имён .local, для сайтов в интернете — никогда. Удалить можно в любой момент: Настройки → Основные → VPN и управление устройством → SENSES Web Apps → Удалить профиль.'],
   by_address: ['This phone does not find the computer by name ({name}), so SENSES opens by address. If the router gives the computer another address, the apps will be at the old one: on the router, reserve this address for the computer.',
@@ -191,19 +198,14 @@ function report(state, host) {
                      body: JSON.stringify({state: state, host: host})}).catch(function () {});
   } catch (e) {}
 }
-function probeTrust() {
-  if (!navigator.serviceWorker) return Promise.resolve(false);
-  return Promise.race([
-    navigator.serviceWorker.register('probe-sw.js', {scope: 'probe/'}).then(function () { return true; },
-                                                                             function () { return false; }),
-    new Promise(function (resolve) { setTimeout(function () { resolve(false); }, 6000); })]);
-}
 function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) {} }
 
 function computer() {
   $('computer').hidden = false;
   $('qr').src = 'qr.svg';
   $('phone_url').textContent = info.phone_url;
+  $('qr_profile').src = 'qr-profile.svg';
+  $('profile_url').textContent = info.profile_url;
   if (info.name) { $('name_line').hidden = false; $('name').textContent = 'https://' + info.name + ':' + info.port + '/'; }
   $('open_here').href = 'http://localhost:' + info.port + '/';
   var tips = ['t_wifi', info.os === 'mac' ? 't_mac' : info.os === 'windows' ? 't_windows' : 't_linux', 't_vpn'];
@@ -264,26 +266,21 @@ function phone() {
       $('steps').hidden = false;
       $(ios ? 'ios' : android ? 'android' : 'other').hidden = false;
       $('not_safari').hidden = !(ios && /CriOS|FxiOS|EdgiOS|OPiOS|YaBrowser/.test(ua));
-      if (location.protocol === 'https:') {
-        $('https_note').hidden = false;
-        $('open_anyway').hidden = false;
-        $('open_anyway').href = base + '/';
-      }
+      $('https_note').hidden = location.protocol !== 'https:';
+      $('open_anyway').hidden = false;
+      $('open_anyway').href = base + '/';
+      $('open_anyway').onclick = $('open').onclick;
     }
-    if (location.protocol === 'https:') {
-      // Here past the warning: a request may go through on the exception
-      // Safari made for this address, so only a service worker tells -- it
-      // is registered only when the certificate is trusted.
-      probeTrust().then(function (ok) {
-        if (ok) return ready();
-        steps();
-        // Back from Settings with the profile trusted: look again.
-        document.addEventListener('visibilitychange', function () { if (!document.hidden) location.reload(); });
-      });
-      return;
-    }
+    // Whether the phone trusts the certificate itself: a request over https
+    // to NAME-check.local, a name no one ever opens. "Visit Website" on
+    // Safari's warning makes an exception for the address it was shown for,
+    // and under it requests and even service workers go through -- a check
+    // against this page's or the library's address would pass untrusted. For
+    // the check name there is never an exception. No such name (a server
+    // without mDNS) or no answer: not confirmed, and no automatic opening.
+    var checkBase = info.check ? 'https://' + info.check + ':' + port : null;
     (function check() {
-      ping(base, 5000).then(function (ok) {
+      (checkBase ? ping(checkBase, 5000) : Promise.resolve(false)).then(function (ok) {
         if (ok) return ready();
         steps();
         setTimeout(check, document.hidden ? 6000 : 2500);
