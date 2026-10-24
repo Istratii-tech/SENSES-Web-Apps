@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- arc-wasm, topic gms (docs/topics/gms.md): GmsTest's app. Real Google
+     client libraries (play-services-base/basement, ads-identifier,
+     firebase-messaging and -analytics, auth, location, maps, safetynet, Play
+     Billing, Play Core's app-update/review/integrity/asset-delivery), fetched
+     from Maven at build time (tools/fetch_maven.py, never committed); their
+     manifests are merged into this one by tools/build_gms_test_apk.py, as
+     Gradle's manifest merger does. Checks (org.arcwasm.gmstest.Checks) are
+     called by tests/java8/arcwasm/GmsTest.java through the app's class
+     loader. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.arcwasm.gmstest"
+    android:versionCode="1"
+    android:versionName="1.0">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="27" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:name=".GmsApp"
+        android:label="@string/app_name">
+
+        <!-- The Maps SDK's key (a made-up one: the path that reads it must not crash). -->
+        <meta-data android:name="com.google.android.geo.API_KEY"
+            android:value="AIzaSyArcWasmTestKeyNotARealKey0000000" />
+
+        <receiver android:name=".PingReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="org.arcwasm.gmstest.PING" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

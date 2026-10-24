@@ -1,0 +1,9 @@
+VERS_1 {
+  global:
+    dep_*;
+    ver_value;
+  local:
+    *;
+};
+VERS_2 {
+} VERS_1;

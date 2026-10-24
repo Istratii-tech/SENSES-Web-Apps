@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VM memory probe</title>
+</head>
+<body style="font: 14px -apple-system, sans-serif">
+<!-- What one piece of the VM costs the tab (docs/topics/ios-mem.md): the
+     page builds that piece STEP times, waiting HOLD seconds between steps, so
+     footprint(1) on the phone (or the Mac) can read the WebContent process.
+       memprobe.html?what=WHAT&n=N[&hold=S][&vm=a81/artvm8]
+     WHAT: worker  — empty workers
+           js      — workers that load the VM's JS (as pthreads do, not run)
+           inst    — workers that instantiate the VM's wasm module (shared, as
+                     pthreads get it) on a shared memory, imports stubbed
+           pthread — js + inst (what an Emscripten pthread costs before it runs)
+           compile — only compile the module on the page (no workers)
+           pjs     — workers that run the VM's JS as an Emscripten pthread
+                     worker does (named em-pthread-N), not yet loaded
+           pload   — pjs + the load message (module, memory) a pthread worker
+                     gets before its first thread: the real worker, idle
+           fill    — one worker instantiates the module, then each step fills
+                     &k=K (5000) more slots of its lazy table (arc_table_fill:
+                     tools/wasm_lazy_table.py), as threads do when they call
+           tiny    — one worker makes N x 1024 translation-like functions (as
+                     shim/ndk/cpu/jit.cc: memory import, one function each
+                     ~400 bytes); &batch=K puts K functions in each module
+     Lines go to tools/serve.py's log ("memprobe: ..."). -->
+<pre id="out"></pre>
+<script src="report.js"></script>
+<script>
+  var params = new URLSearchParams(location.search);
+  var what = params.get('what') || 'worker';
+  var n = +params.get('n') || 8;
+  var hold = (+params.get('hold') || 8) * 1000;
+  var vm = params.get('vm') || 'a81/artvm8';
+  function log(s) {
+    document.getElementById('out').textContent += s + '\n';
+    arcReport('memprobe: ' + s);
+  }
+  var WORKER = `
+    onmessage = async (e) => {
+      const m = e.data;
+      if (m.js) {
+        const text = await (await fetch(m.js)).text();
+        // Parsed (and its top level compiled), not run: pthreads run it.
+        self.keep = new Function(text);
+      }
+      if (m.module && !self.inst) {
+        const imports = {};
+        for (const imp of WebAssembly.Module.imports(m.module)) {
+          imports[imp.module] = imports[imp.module] || {};
+          let v;
+          if (imp.kind === 'function') v = () => 0;
+          else if (imp.kind === 'memory') v = m.memory;
+          else if (imp.kind === 'table') v = new WebAssembly.Table({ initial: m.tableMin, element: 'anyfunc' });
+          else if (imp.kind === 'global') v = new WebAssembly.Global({ value: 'i32', mutable: true }, 0);
+          imports[imp.module][imp.name] = v;
+        }
+        try {
+          self.inst = await WebAssembly.instantiate(m.module, imports);
+        } catch (err) { postMessage('instantiate: ' + err); return; }
+      }
+      if (m.fill) {
+        // (the first step instantiates; slots from 1 up, K a step)
+        self.next = self.next || 1;
+        const ex = self.inst.exports;  // (instantiate(Module) gives the Instance)
+        const fill = ex.arc_table_fill;
+        try {
+          for (let k = 0; k < m.fill && self.next < ex.__indirect_function_table.length; k++) fill(self.next++);
+        } catch (err) { postMessage('fill: ' + err); return; }
+        postMessage('ok, slots to ' + self.next);
+        return;
+      }
+      if (m.tiny) {
+        // A function (i32) -> i32 of ~400 bytes: loads, adds, stores.
+        const u = (v) => { const b = []; do { let x = v & 0x7f; v >>>= 7; if (v) x |= 0x80; b.push(x); } while (v); return b; };
+        const body = [0x00];  // no locals
+        for (let k = 0; k < 40; k++)
+          body.push(0x20, 0, 0x20, 0, 0x28, 2, ...u(k * 4), 0x41, k + 1, 0x6a, 0x36, 2, ...u(k * 4 + 160));
+        body.push(0x20, 0, 0x0b);
+        const sec = (id, c) => [id, ...u(c.length), ...c];
+        const K = m.batch;
+        const funcs = []; for (let k = 0; k < K; k++) funcs.push(0);
+        const code = [...u(K)]; for (let k = 0; k < K; k++) code.push(...u(body.length), ...body);
+        const exps = [...u(K)]; for (let k = 0; k < K; k++) { const nm = [...('f' + k)].map(c => c.charCodeAt(0)); exps.push(nm.length, ...nm, 0, ...u(k)); }
+        const bytes = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0,
+          ...sec(1, [1, 0x60, 1, 0x7f, 1, 0x7f]),
+          ...sec(2, [1, 1, 0x65, 1, 0x6d, 2, 0x03, 1, 0x80, 0x80, 0x04]),
+          ...sec(3, [...u(K), ...funcs]),
+          ...sec(7, exps),
+          ...sec(10, code), ...sec(0, [1, 0x78, 0])]);
+        self.tab = self.tab || new WebAssembly.Table({ initial: 0, element: 'anyfunc' });
+        self.keepTiny = self.keepTiny || [];
+        for (let k = 0; k < 1024; k += K) {
+          // A different module each time, as translations are (a custom section's byte).
+          bytes[bytes.length - 1] = k & 0x7f;
+          const mod = new WebAssembly.Module(bytes);
+          const inst = new WebAssembly.Instance(mod, { e: { m: m.memory } });
+          for (let j = 0; j < K; j++) { self.tab.grow(1); self.tab.set(self.tab.length - 1, inst.exports['f' + j]); }
+        }
+      }
+      postMessage('ok');
+    };`;
+  var url = URL.createObjectURL(new Blob([WORKER], { type: 'text/javascript' }));
+  var workers = [];
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  (async function () {
+    var t0 = performance.now();
+    log(what + ' x' + n + ' (' + vm + ')');
+    var module = null, memory = null, tableMin = 0;
+    if (what === 'tiny') memory = new WebAssembly.Memory({ initial: 4096, maximum: 24576, shared: true });
+    if (what === 'inst' || what === 'pthread' || what === 'compile' || what === 'fill' || what === 'pload') {
+      module = await WebAssembly.compileStreaming(fetch(vm + (params.get('wasm') || '') + '.wasm'));
+      for (var imp of WebAssembly.Module.imports(module)) if (imp.kind === 'table') tableMin = 1 << 17;
+      memory = new WebAssembly.Memory({ initial: 4096, maximum: 24576, shared: true });
+      log('compiled in ' + Math.round(performance.now() - t0) + ' ms');
+    }
+    await sleep(hold);
+    log('step 0 at ' + Math.round((performance.now() - t0) / 1000) + ' s');
+    if (what === 'compile') return;
+    for (var i = 1; i <= n; i++) {
+      if (what === 'pjs' || what === 'pload') {
+        // As PThread.allocateUnusedWorker / loadWasmModuleToWorker.
+        var pw = new Worker(vm + '.js', { name: 'em-pthread-' + i });
+        workers.push(pw);
+        pw.onerror = function (e) { log('worker error: ' + e.message + ' ' + e.filename + ':' + e.lineno); };
+        if (what === 'pload') {
+          await new Promise(function (res) {
+            pw.onmessage = function (e) { if (e.data && e.data.cmd === 3) res(); };
+            pw.postMessage({ cmd: 1, handlers: [], wasmMemory: memory, wasmModule: module, workerID: i });
+          });
+        }
+        log('step ' + i + ': ' + what + ' at ' + Math.round((performance.now() - t0) / 1000) + ' s');
+        await sleep(hold);
+        continue;
+      }
+      var w = (what === 'tiny' || what === 'fill') && workers[0] || new Worker(url);
+      if (workers.indexOf(w) < 0) workers.push(w);
+      var msg = {};
+      if (what === 'tiny') { msg.tiny = true; msg.memory = memory; msg.batch = +params.get('batch') || 1; }
+      if (what === 'js' || what === 'pthread') msg.js = new URL(vm + '.js', location.href).href;
+      if (what === 'inst' || what === 'pthread') { msg.module = module; msg.memory = memory; msg.tableMin = tableMin; }
+      if (what === 'fill') {
+        if (i === 1) {
+          // step 1: the instance alone (the fill in later steps)
+          msg.module = module; msg.memory = memory; msg.tableMin = tableMin;
+        } else msg.fill = +params.get('k') || 5000;
+      }
+      var r = await new Promise(function (res) { w.onmessage = function (e) { res(e.data); }; w.postMessage(msg); });
+      log('step ' + i + ': ' + r + ' at ' + Math.round((performance.now() - t0) / 1000) + ' s');
+      await sleep(hold);
+    }
+    log('done');
+  })().catch(function (e) { log('error: ' + e); });
+</script>
+</body>
+</html>

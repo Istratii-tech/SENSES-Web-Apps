@@ -1,0 +1,32 @@
+; gl_Position = vec4(pos, 0, 1) through a gl_PerVertex block (glslang's way).
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Vertex %main "main" %pos %out
+               OpMemberDecorate %PV 0 BuiltIn Position
+               OpDecorate %PV Block
+               OpDecorate %pos Location 0
+       %void = OpTypeVoid
+         %fn = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v2float = OpTypeVector %float 2
+    %v4float = OpTypeVector %float 4
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+    %float_0 = OpConstant %float 0
+    %float_1 = OpConstant %float 1
+         %PV = OpTypeStruct %v4float
+     %ptr_PV = OpTypePointer Output %PV
+        %out = OpVariable %ptr_PV Output
+  %ptr_in_v2 = OpTypePointer Input %v2float
+        %pos = OpVariable %ptr_in_v2 Input
+ %ptr_out_v4 = OpTypePointer Output %v4float
+       %main = OpFunction %void None %fn
+          %e = OpLabel
+          %p = OpLoad %v2float %pos
+          %x = OpCompositeExtract %float %p 0
+          %y = OpCompositeExtract %float %p 1
+          %v = OpCompositeConstruct %v4float %x %y %float_0 %float_1
+         %op = OpAccessChain %ptr_out_v4 %out %int_0
+               OpStore %op %v
+               OpReturn
+               OpFunctionEnd

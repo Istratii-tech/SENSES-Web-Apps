@@ -1,0 +1,97 @@
+diff --git a/external/icu/icu4j/main/classes/core/src/com/ibm/icu/impl/ICUBinary.java b/external/icu/icu4j/main/classes/core/src/com/ibm/icu/impl/ICUBinary.java
+index 47ca79e4..74070be5 100644
+--- a/external/icu/icu4j/main/classes/core/src/com/ibm/icu/impl/ICUBinary.java
++++ b/external/icu/icu4j/main/classes/core/src/com/ibm/icu/impl/ICUBinary.java
+@@ -494,6 +494,14 @@ public final class ICUBinary {
+ 
+     @SuppressWarnings("resource")  // Closing a file closes its channel.
+     private static ByteBuffer mapFile(File path) {
++        // arc-wasm (topic icu-once): the .dat file ICU4C already has mapped
++        // (libcore.icu.ICU.getMappedIcuData): one copy of it in memory, not two.
++        if (path.getName().endsWith(".dat")) {
++            ByteBuffer mapped = libcore.icu.ICU.getMappedIcuData(path.getPath());
++            if (mapped != null) {
++                return mapped.asReadOnlyBuffer();
++            }
++        }
+         FileInputStream file;
+         try {
+             file = new FileInputStream(path);
+diff --git a/libcore/luni/src/main/java/libcore/icu/ICU.java b/libcore/luni/src/main/java/libcore/icu/ICU.java
+index 42def542..97309e04 100644
+--- a/libcore/luni/src/main/java/libcore/icu/ICU.java
++++ b/libcore/luni/src/main/java/libcore/icu/ICU.java
+@@ -381,6 +381,13 @@ public final class ICU {
+   private static native String[] getAvailableNumberFormatLocalesNative();
+ 
+   public static native String[] getAvailableCurrencyCodes();
++
++  /**
++   * arc-wasm (topic icu-once): a read-write direct buffer of the ICU data file {@code path}
++   * as libcore mapped it for ICU4C, or null when libcore did not map that file. ICU4J's
++   * ICUBinary reads it instead of mapping the file a second time.
++   */
++  public static native java.nio.ByteBuffer getMappedIcuData(String path);
+   public static native String getCurrencyCode(String countryCode);
+ 
+   public static String getCurrencyDisplayName(Locale locale, String currencyCode) {
+diff --git a/libcore/luni/src/main/native/libcore_icu_ICU.cpp b/libcore/luni/src/main/native/libcore_icu_ICU.cpp
+index d0929781..042b42f2 100644
+--- a/libcore/luni/src/main/native/libcore_icu_ICU.cpp
++++ b/libcore/luni/src/main/native/libcore_icu_ICU.cpp
+@@ -781,7 +781,11 @@ static jstring ICU_getDefaultLocale(JNIEnv* env, jclass) {
+   return env->NewStringUTF(icu::Locale::getDefault().getName());
+ }
+ 
++// arc-wasm (topic icu-once): defined after mapIcuData, below.
++static jobject ICU_getMappedIcuData(JNIEnv* env, jclass, jstring javaPath);
++
+ static JNINativeMethod gMethods[] = {
++    NATIVE_METHOD(ICU, getMappedIcuData, "(Ljava/lang/String;)Ljava/nio/ByteBuffer;"),
+     NATIVE_METHOD(ICU, addLikelySubtags, "(Ljava/lang/String;)Ljava/lang/String;"),
+     NATIVE_METHOD(ICU, getAvailableBreakIteratorLocalesNative, "()[Ljava/lang/String;"),
+     NATIVE_METHOD(ICU, getAvailableCalendarLocalesNative, "()[Ljava/lang/String;"),
+@@ -826,6 +830,15 @@ static JNINativeMethod gMethods[] = {
+         return FALSE; \
+     }
+ 
++// arc-wasm (topic icu-once): the files mapIcuData mapped (the TZ override and the system
++// data), for ICU4J (ICU_getMappedIcuData). They stay mapped for the life of the process.
++struct IcuDataMapping {
++    std::string path;
++    void* data;
++    size_t length;
++};
++static std::vector<IcuDataMapping> gIcuDataMappings;
++
+ static bool mapIcuData(const std::string& path) {
+     // Open the file and get its length.
+     ScopedFd fd(open(path.c_str(), O_RDONLY));
+@@ -854,9 +867,27 @@ static bool mapIcuData(const std::string& path) {
+     udata_setCommonData(data, &status);
+     MAYBE_FAIL_WITH_ICU_ERROR("udata_setCommonData");
+ 
++    gIcuDataMappings.push_back({path, data, static_cast<size_t>(sb.st_size)});
+     return TRUE;
+ }
+ 
++// arc-wasm (topic icu-once): ICU4J's ICUBinary maps the same .dat file again (its own
++// MappedByteBuffer). On a device both share the file's pages; here a mapping is a copy in
++// wasm memory (icudt55l.dat: 22 MB), so ICU4J reads ICU4C's mapping instead: a direct
++// ByteBuffer of the mapped data file |path|, or null (a file mapIcuData did not map).
++static jobject ICU_getMappedIcuData(JNIEnv* env, jclass, jstring javaPath) {
++    ScopedUtfChars path(env, javaPath);
++    if (path.c_str() == NULL) {
++        return NULL;
++    }
++    for (const IcuDataMapping& map : gIcuDataMappings) {
++        if (map.path == path.c_str()) {
++            return env->NewDirectByteBuffer(map.data, static_cast<jlong>(map.length));
++        }
++    }
++    return NULL;
++}
++
+ void register_libcore_icu_ICU(JNIEnv* env) {
+     // Check the timezone override file exists. If it does, map it first so we use it in preference
+     // to the one that shipped with the device.

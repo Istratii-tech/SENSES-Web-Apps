@@ -1,0 +1,8 @@
+third_party/googletest/
+build/
+third_party/aosp44/
+third_party/aosp60/
+third_party/aosp81/
+third_party/tzdata/
+third_party/aosp10/
+third_party/vulkan-headers/

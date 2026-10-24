@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Generates concrete do-nothing subclasses of the abstract android.webkit
+classes a WebView provider hands out (WebSettings, CookieManager, ...), for
+the stub WebView provider (framework/java-arcwasm*/arcwasm/webview).
+
+Every abstract method of CLASS (in 4.4: every method whose body only throws
+MustOverrideException) gets a body:
+  void setFoo(x)            stores x under "Foo"
+  T getFoo() / isFoo() /    returns what setFoo stored, else a default
+    foo()                   (DEFAULTS below, else false / 0 / null)
+  anything else             does nothing / returns the default
+
+Works on the 4.4 and the 6.0.1 sources (the abstract methods differ).
+
+Usage: gen_webview_stub.py WEBKIT_SRC_DIR OUT_DIR PACKAGE CLASS:STUBNAME...
+"""
+
+import os
+import re
+import sys
+
+# Defaults a real WebView reports (AwSettings / ContentSettings of Chromium).
+DEFAULTS = {
+    'TextZoom': '100',
+    'DefaultFontSize': '16',
+    'DefaultFixedFontSize': '13',
+    'MinimumFontSize': '8',
+    'MinimumLogicalFontSize': '8',
+    'CacheMode': '-1',
+    'DefaultTextEncodingName': '"UTF-8"',
+    'StandardFontFamily': '"sans-serif"',
+    'FixedFontFamily': '"monospace"',
+    'SansSerifFontFamily': '"sans-serif"',
+    'SerifFontFamily': '"serif"',
+    'CursiveFontFamily': '"cursive"',
+    'FantasyFontFamily': '"fantasy"',
+    'LayoutAlgorithm': 'LayoutAlgorithm.NARROW_COLUMNS',
+    'PluginState': 'PluginState.OFF',
+    'DefaultZoom': 'ZoomDensity.MEDIUM',
+    'UserAgentString': 'arcwasm.webview.StubWebViewFactory.USER_AGENT',
+    'AllowFileAccess': 'true',
+    'AllowContentAccess': 'true',
+    'LoadsImagesAutomatically': 'true',
+    'SupportZoom': 'true',
+    'MediaPlaybackRequiresUserGesture': 'true',
+    'JavaScriptCanOpenWindowsAutomatically': 'false',
+    'AcceptCookie': 'true',
+}
+
+BOXES = {'boolean': 'Boolean', 'int': 'Integer', 'long': 'Long',
+         'float': 'Float', 'double': 'Double', 'short': 'Short',
+         'byte': 'Byte', 'char': 'Character'}
+ZEROS = {'boolean': 'false', 'int': '0', 'long': '0L', 'float': '0f',
+         'double': '0d', 'short': '(short) 0', 'byte': '(byte) 0',
+         'char': "'\\0'"}
+
+METHOD = re.compile(
+    r'((?:public|protected)(?:\s+\w+)*?\s+abstract(?:\s+\w+)*?)\s+'
+    r'([\w.<>\[\], ]+?)\s+(\w+)\s*\(([^)]*)\)\s*(?:throws[^;]*)?;')
+# Android 4.4's way of the same: a body that only throws MustOverrideException.
+MUST_OVERRIDE = re.compile(
+    r'((?:public|protected)(?:\s+(?!static\b)\w+)*?)\s+'
+    r'([\w.<>\[\], ]+?)\s+(\w+)\s*\(([^)]*)\)\s*(?:throws[^{;]*)?'
+    r'\{\s*throw\s+new\s+MustOverrideException\(\s*\)\s*;\s*\}')
+
+
+def strip_comments(text):
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+    text = re.sub(r'//[^\n]*', '', text)
+    # Type annotations on parameters and results (8.1: @MenuItemFlags int,
+    # a private annotation the subclass cannot name); not @interface.
+    return re.sub(r'@(?!interface\b)\w+(?:\.\w+)*(?:\([^()]*\))?\s*', '', text)
+
+
+def key_of(name, getter):
+    for p in (('get', 'is') if getter else ('set',)):
+        if name.startswith(p) and len(name) > len(p) and name[len(p)].isupper():
+            return name[len(p):]
+    return name[0].upper() + name[1:]
+
+
+def default_of(ret, key):
+    if key in DEFAULTS:
+        return DEFAULTS[key]
+    return ZEROS.get(ret, 'null')
+
+
+def generate(src_dir, out_dir, package, cls, stub):
+    text = strip_comments(open(os.path.join(src_dir, cls + '.java')).read())
+    body = []
+    for mods, ret, name, params in METHOD.findall(text) + MUST_OVERRIDE.findall(text):
+        if 'class' in mods.split():
+            continue
+        # The lazy modifiers of MUST_OVERRIDE leave "synchronized" and such
+        # at the front of the return type.
+        words = ret.split()
+        while len(words) > 1 and words[0] in ('synchronized', 'final', 'native'):
+            mods += ' ' + words.pop(0)
+        ret = ' '.join(words)
+        params = [p.strip() for p in params.split(',') if p.strip()]
+        args = [re.sub(r'^final\s+', '', p).rsplit(None, 1) for p in params]
+        vis = 'public' if 'public' in mods.split() else 'protected'
+        sync = ' synchronized' if 'synchronized' in mods.split() or cls == 'WebSettings' else ''
+        decl = '    @Override %s%s %s %s(%s)' % (
+            vis, sync, ret, name, ', '.join('%s %s' % (t, n) for t, n in args))
+        if ret == 'void':
+            if len(args) == 1 and name.startswith('set'):
+                stmt = 'values.put("%s", %s);' % (key_of(name, False), args[0][1])
+            else:
+                stmt = ''
+        else:
+            key = key_of(name, True)
+            dflt = default_of(ret, key)
+            if not args:
+                box = BOXES.get(ret, ret)
+                stmt = ('Object o = values.get("%s"); return o != null ? (%s) o : %s;'
+                        % (key, box, dflt))
+            else:
+                stmt = 'return %s;' % dflt
+        body.append('%s { %s }' % (decl, stmt) if stmt else decl + ' {}')
+    out = [
+        '// Generated by tools/gen_webview_stub.py from android/webkit/%s.java:' % cls,
+        '// do not edit.',
+        'package %s;' % package,
+        '',
+        'import android.content.ContentResolver;',
+        'import android.net.WebAddress;',
+        'import android.webkit.*;',
+        '',
+        '@SuppressWarnings({"deprecation", "unchecked"})',
+        'public class %s extends %s {' % (stub, cls),
+        '    protected final java.util.HashMap<String, Object> values =',
+        '        new java.util.HashMap<String, Object>();',
+        '',
+    ] + body + ['}', '']
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, stub + '.java'), 'w') as f:
+        f.write('\n'.join(out))
+    return len(body)
+
+
+def main():
+    if len(sys.argv) < 5:
+        sys.exit(__doc__)
+    src_dir, out_dir, package = sys.argv[1:4]
+    for spec in sys.argv[4:]:
+        cls, stub = spec.split(':')
+        generate(src_dir, out_dir, package, cls, stub)
+
+
+if __name__ == '__main__':
+    main()

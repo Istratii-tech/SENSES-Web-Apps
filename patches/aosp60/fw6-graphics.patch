@@ -1,0 +1,214 @@
+diff --git a/external/skia/include/core/SkUserConfig.h b/external/skia/include/core/SkUserConfig.h
+index 3f0d2a5e..533bc1ad 100644
+--- a/external/skia/include/core/SkUserConfig.h
++++ b/external/skia/include/core/SkUserConfig.h
+@@ -210,13 +210,18 @@
+ #define SK_PRINT_CODEC_MESSAGES
+ #define SK_SCALAR_TO_FLOAT_EXCLUDED
+ #define SK_SFNTLY_SUBSETTER "sample/chromium/font_subsetter.h"
++// arc-wasm: software only (-DSK_SUPPORT_GPU=0), no PDF (needs sfntly).
++#ifndef SK_SUPPORT_GPU
+ #define SK_SUPPORT_GPU 1
++#endif
+ #define SK_SUPPORT_LEGACY_CLIPTOLAYERFLAG
+ #define SK_SUPPORT_LEGACY_GETDEVICE
+ #define SK_SUPPORT_LEGACY_PUBLIC_IMAGEINFO_FIELDS
+ #define SK_SUPPORT_LEGACY_SCALAR_DIV
+ #define SK_SUPPORT_OPENCL 0
++#ifndef ARC_WASM
+ #define SK_SUPPORT_PDF
++#endif
+ #define SK_USE_FREETYPE_EMBOLDEN
+ 
+ #endif // SkUserConfig_Android_DEFINED
+diff --git a/frameworks/base/core/jni/android/graphics/Shader.cpp b/frameworks/base/core/jni/android/graphics/Shader.cpp
+index ad3a5e2c..ec0f46f9 100644
+--- a/frameworks/base/core/jni/android/graphics/Shader.cpp
++++ b/frameworks/base/core/jni/android/graphics/Shader.cpp
+@@ -45,7 +45,9 @@ static jint Color_HSVToColor(JNIEnv* env, jobject, jint alpha, jfloatArray hsvAr
+ 
+ ///////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-static void Shader_destructor(JNIEnv* env, jobject o, jlong shaderHandle, jlong shaderWithLMHandle)
++// arc-wasm: one jlong, as registered ("(J)V"); AOSP's extra parameter
++// breaks the call in WebAssembly (exact function types).
++static void Shader_destructor(JNIEnv* env, jobject o, jlong shaderHandle)
+ {
+     SkShader* shader = reinterpret_cast<SkShader*>(shaderHandle);
+     SkSafeUnref(shader);
+diff --git a/frameworks/base/core/jni/android_view_DisplayListCanvas.cpp b/frameworks/base/core/jni/android_view_DisplayListCanvas.cpp
+index bb8ef83c..30bdbf41 100644
+--- a/frameworks/base/core/jni/android_view_DisplayListCanvas.cpp
++++ b/frameworks/base/core/jni/android_view_DisplayListCanvas.cpp
+@@ -216,6 +216,13 @@ static void android_view_DisplayListCanvas_drawLayer(JNIEnv* env, jobject clazz,
+ 
+ static jboolean android_view_DisplayListCanvas_isAvailable(JNIEnv* env, jobject clazz) {
+     char prop[PROPERTY_VALUE_MAX];
++#if defined(ARC_WASM)
++    // arc-wasm: hwui's OpenGL path (RenderThread, EGL window surfaces on
++    // WebGL) is not there yet: windows draw in software (Surface.lockCanvas)
++    // unless ro.arcwasm.hwui is 1 (docs/topics/fw6-graphics.md).
++    property_get("ro.arcwasm.hwui", prop, "0");
++    return atoi(prop) == 1 ? JNI_TRUE : JNI_FALSE;
++#endif
+     if (property_get("ro.kernel.qemu", prop, NULL) == 0) {
+         // not in the emulator
+         return JNI_TRUE;
+diff --git a/frameworks/base/libs/hwui/RenderNode.h b/frameworks/base/libs/hwui/RenderNode.h
+index 025a4a41..c1c394c7 100644
+--- a/frameworks/base/libs/hwui/RenderNode.h
++++ b/frameworks/base/libs/hwui/RenderNode.h
+@@ -126,7 +126,7 @@ public:
+ 
+     void setName(const char* name) {
+         if (name) {
+-            char* lastPeriod = strrchr(name, '.');
++            const char* lastPeriod = strrchr(name, '.');
+             if (lastPeriod) {
+                 mName.setTo(lastPeriod + 1);
+             } else {
+diff --git a/frameworks/base/libs/hwui/renderthread/TimeLord.cpp b/frameworks/base/libs/hwui/renderthread/TimeLord.cpp
+index f846d6a4..60fa8f74 100644
+--- a/frameworks/base/libs/hwui/renderthread/TimeLord.cpp
++++ b/frameworks/base/libs/hwui/renderthread/TimeLord.cpp
+@@ -15,6 +15,8 @@
+  */
+ #include "TimeLord.h"
+ 
++#include <time.h>  // arc-wasm: CLOCK_MONOTONIC (bionic gets it through utils/Timers.h)
++
+ namespace android {
+ namespace uirenderer {
+ namespace renderthread {
+diff --git a/frameworks/native/include/input/Input.h b/frameworks/native/include/input/Input.h
+index 82fc6599..15840f25 100644
+--- a/frameworks/native/include/input/Input.h
++++ b/frameworks/native/include/input/Input.h
+@@ -153,7 +153,7 @@ struct AInputDevice {
+ 
+ namespace android {
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)  // arc-wasm: Parcel (JNI)
+ class Parcel;
+ #endif
+ 
+@@ -248,7 +248,7 @@ struct PointerCoords {
+         return getAxisValue(AMOTION_EVENT_AXIS_Y);
+     }
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)  // arc-wasm: Parcel (JNI)
+     status_t readFromParcel(Parcel* parcel);
+     status_t writeToParcel(Parcel* parcel) const;
+ #endif
+@@ -586,7 +586,7 @@ public:
+     // Matrix is in row-major form and compatible with SkMatrix.
+     void transform(const float matrix[9]);
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)  // arc-wasm: Parcel (JNI)
+     status_t readFromParcel(Parcel* parcel);
+     status_t writeToParcel(Parcel* parcel) const;
+ #endif
+diff --git a/frameworks/native/include/input/KeyCharacterMap.h b/frameworks/native/include/input/KeyCharacterMap.h
+index 3f0914b6..d28ee948 100644
+--- a/frameworks/native/include/input/KeyCharacterMap.h
++++ b/frameworks/native/include/input/KeyCharacterMap.h
+@@ -19,7 +19,7 @@
+ 
+ #include <stdint.h>
+ 
+-#if HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)  // arc-wasm: Parcel (JNI)
+ #include <binder/IBinder.h>
+ #endif
+ 
+@@ -129,7 +129,7 @@ public:
+     void tryRemapKey(int32_t scanCode, int32_t metaState,
+             int32_t* outKeyCode, int32_t* outMetaState) const;
+ 
+-#if HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)  // arc-wasm: Parcel (JNI)
+     /* Reads a key map from a parcel. */
+     static sp<KeyCharacterMap> readFromParcel(Parcel* parcel);
+ 
+diff --git a/frameworks/native/libs/gui/SurfaceComposerClient.cpp b/frameworks/native/libs/gui/SurfaceComposerClient.cpp
+index 6ad47d8b..3a235a86 100644
+--- a/frameworks/native/libs/gui/SurfaceComposerClient.cpp
++++ b/frameworks/native/libs/gui/SurfaceComposerClient.cpp
+@@ -51,7 +51,21 @@ ComposerService::ComposerService()
+     connectLocked();
+ }
+ 
++#if defined(ARC_WASM)
++// arc-wasm: SurfaceFlinger runs in the app's process
++// (shim/fw6-graphics/surface_flinger6.cc) and is found without servicemanager.
++sp<ISurfaceComposer> arc_wasm_local_surface_composer() __attribute__((weak));
++#endif
++
+ void ComposerService::connectLocked() {
++#if defined(ARC_WASM)
++    if (arc_wasm_local_surface_composer) {
++        mComposerService = arc_wasm_local_surface_composer();
++        if (mComposerService != NULL) {
++            return;
++        }
++    }
++#endif
+     const String16 name("SurfaceFlinger");
+     while (getService(name, &mComposerService) != NO_ERROR) {
+         usleep(250000);
+diff --git a/frameworks/native/libs/input/Input.cpp b/frameworks/native/libs/input/Input.cpp
+index b64cb2ca..b8439496 100644
+--- a/frameworks/native/libs/input/Input.cpp
++++ b/frameworks/native/libs/input/Input.cpp
+@@ -23,7 +23,7 @@
+ #include <input/Input.h>
+ #include <input/InputEventLabels.h>
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)  // arc-wasm: Parcel (JNI)
+ #include <binder/Parcel.h>
+ #endif
+ 
+@@ -144,7 +144,7 @@ void PointerCoords::applyOffset(float xOffset, float yOffset) {
+     setAxisValue(AMOTION_EVENT_AXIS_Y, getY() + yOffset);
+ }
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)  // arc-wasm: Parcel (JNI)
+ status_t PointerCoords::readFromParcel(Parcel* parcel) {
+     bits = parcel->readInt64();
+ 
+@@ -420,7 +420,7 @@ void MotionEvent::transform(const float matrix[9]) {
+     }
+ }
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)  // arc-wasm: Parcel (JNI)
+ status_t MotionEvent::readFromParcel(Parcel* parcel) {
+     size_t pointerCount = parcel->readInt32();
+     size_t sampleCount = parcel->readInt32();
+diff --git a/frameworks/native/libs/input/KeyCharacterMap.cpp b/frameworks/native/libs/input/KeyCharacterMap.cpp
+index df3f0dd1..583e7da5 100644
+--- a/frameworks/native/libs/input/KeyCharacterMap.cpp
++++ b/frameworks/native/libs/input/KeyCharacterMap.cpp
+@@ -19,7 +19,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
+-#if HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)  // arc-wasm: Parcel (JNI)
+ #include <binder/Parcel.h>
+ #endif
+ 
+@@ -599,7 +599,7 @@ void KeyCharacterMap::addLockedMetaKey(Vector<KeyEvent>& outEvents,
+     }
+ }
+ 
+-#if HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)  // arc-wasm: Parcel (JNI)
+ sp<KeyCharacterMap> KeyCharacterMap::readFromParcel(Parcel* parcel) {
+     sp<KeyCharacterMap> map = new KeyCharacterMap();
+     map->mType = parcel->readInt32();

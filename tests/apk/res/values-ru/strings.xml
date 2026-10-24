@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">тестовое приложение arc-wasm</string>
+    <string name="hello">Привет из APK</string>
+    <string name="greeting">Привет, %1$s! У вас %2$d сообщений.</string>
+    <plurals name="apples">
+        <item quantity="one">%d яблоко</item>
+        <item quantity="few">%d яблока</item>
+        <item quantity="many">%d яблок</item>
+        <item quantity="other">%d яблока</item>
+    </plurals>
+    <string-array name="planets">
+        <item>Меркурий</item>
+        <item>Венера</item>
+        <item>Земля</item>
+    </string-array>
+</resources>

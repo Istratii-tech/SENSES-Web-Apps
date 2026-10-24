@@ -1,0 +1,15 @@
+# Topic fw6-graphics: Skia (branch m), its codecs and font libraries, and the
+# HAL headers (gralloc) for libui/libgui. frameworks/native and
+# frameworks/base (hwui, core/jni) are base projects.
+external/skia
+external/freetype
+external/harfbuzz_ng
+external/libpng
+external/jpeg
+external/giflib
+external/webp
+external/expat
+hardware/libhardware
+frameworks/minikin
+external/roboto-fonts
+frameworks/opt/emoji

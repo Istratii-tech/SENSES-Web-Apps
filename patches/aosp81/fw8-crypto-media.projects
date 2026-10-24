@@ -1,0 +1,17 @@
+# Topic fw8-crypto-media: sound and media of the 8.1 framework, NDK media.
+# system/media: <system/audio.h> and audio_utils of 8.1 (AudioTrack/
+# AudioSystem JNI, stagefright); external/libvpx: libwebm's mkvparser
+# (MatroskaExtractor, WebM).
+system/media
+external/libvpx
+# tremolo, flac: the Ogg (Vorbis headers) and FLAC extractors of 8.1's
+# MediaExtractor.
+external/tremolo
+external/flac
+# libhardware: the HAL headers (gralloc usage bits) media's headers include.
+hardware/libhardware
+# piex: its types in libmedia_jni's android_media_Utils.h.
+external/piex
+# skia: SkStream.h in android_media_Utils.h (headers only here; the library
+# is topic fw8-graphics').
+external/skia

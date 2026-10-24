@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ArcWasm Test 6</string>
+    <string name="main_title">Android 6 app</string>
+    <string name="result_title">Result</string>
+    <string name="hello">Hello from API %1$d</string>
+    <string name="press">Tap me</string>
+    <string name="clicks">Clicks: %1$d</string>
+    <string name="permission">CAMERA: %1$s</string>
+    <string name="sdk_note">default</string>
+</resources>

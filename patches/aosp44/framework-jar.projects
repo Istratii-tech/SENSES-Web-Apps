@@ -1,0 +1,17 @@
+# Extra AOSP 4.4.4 projects for topic "framework-jar": the Java libraries
+# frameworks/base/Android.mk compiles framework.jar against
+# (LOCAL_JAVA_LIBRARIES := bouncycastle conscrypt core core-junit ext okhttp;
+# conscrypt is libcore/crypto) and the sources of ext.jar.
+external/bouncycastle
+external/okhttp
+external/junit
+external/apache-http
+external/nist-sip
+external/tagsoup
+external/libphonenumber
+# libhardware: hw_get_module and the HAL headers (memtrack.h) for
+# libmemtrack, which android.os.Debug's JNI uses.
+hardware/libhardware
+# EmojiFactory.h for android_emoji_EmojiFactory.cpp (android.text.Layout's
+# static initializer calls it; without libemoji.so it returns null).
+frameworks/opt/emoji

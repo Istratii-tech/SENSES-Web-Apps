@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jsbench</title>
+<!-- A small JavaScript benchmark for Firefox on arc-wasm (topic guest-jit,
+     docs/topics/guest-jit.md): SpiderMonkey with its JIT (baseline
+     interpreter and compiler, native regexps: ARM code the ARM CPU runs)
+     against its C++ interpreter only (ro.arcwasm.jit=0). Three rounds of six
+     kernels; each round's time goes to the page, the title and dump() (the
+     VM's log: browser.dom.window.dump.enabled), e.g.
+     "JSBENCH round 2: 812 ms (loop 120, objects ...)"; then the kernels'
+     results, the same in every mode ("JSBENCH results ok" against the
+     values below, from V8 in Node). -->
+<style>
+  body { font: 16px/1.4 sans-serif; margin: 16px; }
+  pre { font-size: 13px; }
+</style>
+<h1>jsbench</h1>
+<pre id="out">running…</pre>
+<script>
+  var out = document.getElementById('out');
+  function log(s) {
+    out.textContent = (out.textContent === 'running…' ? '' : out.textContent + '\n') + s;
+    if (window.dump) dump('JSBENCH ' + s + '\n');
+  }
+  var kernels = {
+    loop: function () {
+      var s = 0;
+      for (var i = 0; i < 300000; i++) s = (s + i * i) % 1000003;
+      return s;
+    },
+    objects: function () {
+      var a = [];
+      for (var i = 0; i < 20000; i++) a.push({x: i, y: i * 2, z: 'n' + (i & 15)});
+      var s = 0;
+      for (var j = 0; j < a.length; j++) s += a[j].x + a[j].y + a[j].z.length;
+      return s;
+    },
+    strings: function () {
+      var parts = [];
+      for (var i = 0; i < 10000; i++) parts.push(i.toString(36));
+      return parts.join(',').split(',').length;
+    },
+    sort: function () {
+      var a = [], x = 12345;
+      for (var i = 0; i < 10000; i++) { x = (x * 1103515245 + 12345) & 0x7fffffff; a.push(x); }
+      a.sort(function (p, q) { return p - q; });
+      return a[5000];
+    },
+    fib: function () {
+      function fib(n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }
+      return fib(20);
+    },
+    regexp: function () {
+      var re = /([a-z]+)@([a-z]+)\.com/g, text = '', n = 0;
+      for (var i = 0; i < 200; i++) text += 'user' + i + ' wrote to alice' + '@example.com and bob@example.com; ';
+      for (var k = 0; k < 10; k++) { re.lastIndex = 0; while (re.exec(text)) n++; }
+      return n;
+    },
+  };
+  var expected = {loop: 266000, objects: 600017500, strings: 10000, sort: 1066385920, fib: 6765, regexp: 4000};
+  var round = 0, total = [], results = {};
+  function next() {
+    round++;
+    var t0 = performance.now(), parts = [];
+    for (var name in kernels) {
+      var t = performance.now();
+      results[name] = kernels[name]();
+      parts.push(name + ' ' + Math.round(performance.now() - t));
+    }
+    var ms = Math.round(performance.now() - t0);
+    total.push(ms);
+    log('round ' + round + ': ' + ms + ' ms (' + parts.join(', ') + ')');
+    document.title = 'jsbench ' + total.join(' / ') + ' ms';
+    if (round < 3) setTimeout(next, 50);
+    else {
+      log('done: ' + total.join(' / ') + ' ms');
+      var bad = Object.keys(expected).filter(function (k) { return results[k] !== expected[k]; });
+      log('results ' + (bad.length ? 'WRONG: ' + bad.map(function (k) { return k + '=' + results[k]; }).join(', ')
+                                   : 'ok') + ' ' + JSON.stringify(results));
+    }
+  }
+  setTimeout(next, 100);
+</script>
+</html>

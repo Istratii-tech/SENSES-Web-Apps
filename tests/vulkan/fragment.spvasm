@@ -1,0 +1,28 @@
+; color = texture(tex, vec2(0.5)): a combined image sampler.
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %color
+               OpExecutionMode %main OriginUpperLeft
+               OpDecorate %color Location 0
+               OpDecorate %tex DescriptorSet 0
+               OpDecorate %tex Binding 0
+       %void = OpTypeVoid
+         %fn = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v2float = OpTypeVector %float 2
+    %v4float = OpTypeVector %float 4
+ %ptr_out_v4 = OpTypePointer Output %v4float
+      %color = OpVariable %ptr_out_v4 Output
+        %img = OpTypeImage %float 2D 0 0 0 1 Unknown
+         %si = OpTypeSampledImage %img
+     %ptr_si = OpTypePointer UniformConstant %si
+        %tex = OpVariable %ptr_si UniformConstant
+  %float_0_5 = OpConstant %float 0.5
+         %uv = OpConstantComposite %v2float %float_0_5 %float_0_5
+       %main = OpFunction %void None %fn
+          %e = OpLabel
+          %s = OpLoad %si %tex
+          %c = OpImageSampleImplicitLod %v4float %s %uv
+               OpStore %color %c
+               OpReturn
+               OpFunctionEnd

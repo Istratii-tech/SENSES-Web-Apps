@@ -1,0 +1,86 @@
+diff --git a/libcore/ojluni/src/main/java/java/util/concurrent/ThreadPoolExecutor.java b/libcore/ojluni/src/main/java/java/util/concurrent/ThreadPoolExecutor.java
+index af88e4ff4..7af77a856 100644
+--- a/libcore/ojluni/src/main/java/java/util/concurrent/ThreadPoolExecutor.java
++++ b/libcore/ojluni/src/main/java/java/util/concurrent/ThreadPoolExecutor.java
+@@ -1073,6 +1073,41 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
+         }
+     }
+ 
++    // arc-wasm (topic threads-trim): with arcwasm.pool.core_idle_ms (phones),
++    // a task while the pool is below its core size goes to a thread that is
++    // already idle instead of starting one more (a browser worker each, ~5 MB
++    // of the tab): Opera GX's pools started ~19 threads for short tasks. A
++    // submitter reserves one waiting thread (arcReserved < arcWaiting) before
++    // it queues, so the task always has a thread (no deadlock where the
++    // original would have started one); a waiting thread does not time out
++    // while reservations are open.
++    private final java.util.concurrent.atomic.AtomicInteger arcWaiting =
++            new java.util.concurrent.atomic.AtomicInteger();
++    private final java.util.concurrent.atomic.AtomicInteger arcReserved =
++            new java.util.concurrent.atomic.AtomicInteger();
++
++    private boolean arcQueueToIdle(Runnable command) {
++        for (;;) {
++            int r = arcReserved.get();
++            if (arcWaiting.get() - r <= 0)
++                return false;
++            if (arcReserved.compareAndSet(r, r + 1))
++                break;
++        }
++        if (workQueue.offer(command))
++            return true;
++        arcReserved.decrementAndGet();
++        return false;
++    }
++
++    private void arcTookTask() {
++        for (;;) {
++            int r = arcReserved.get();
++            if (r <= 0 || arcReserved.compareAndSet(r, r - 1))
++                return;
++        }
++    }
++
+     private Runnable getTask() {
+         boolean timedOut = false; // Did the last poll() time out?
+ 
+@@ -1111,15 +1146,28 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
+                 continue;
+             }
+ 
++            boolean arc = arcCoreIdleNanos() > 0;
++            if (arc)
++                arcWaiting.incrementAndGet();
+             try {
+                 Runnable r = timed ?
+                     workQueue.poll(wait, TimeUnit.NANOSECONDS) :
+                     workQueue.take();
++                if (arc) {
++                    arcWaiting.decrementAndGet();
++                    arc = false;
++                    if (r != null)
++                        arcTookTask();
++                }
+                 if (r != null)
+                     return r;
+-                timedOut = true;
++                // (a task reserved for a waiting thread is on its way: stay)
++                timedOut = arcReserved.get() <= 0;
+             } catch (InterruptedException retry) {
+                 timedOut = false;
++            } finally {
++                if (arc)
++                    arcWaiting.decrementAndGet();
+             }
+         }
+     }
+@@ -1404,6 +1452,9 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
+          */
+         int c = ctl.get();
+         if (workerCountOf(c) < corePoolSize) {
++            // arc-wasm (threads-trim): an idle thread first (above getTask)
++            if (arcCoreIdleNanos() > 0 && isRunning(c) && arcQueueToIdle(command))
++                return;
+             if (addWorker(command, true))
+                 return;
+             c = ctl.get();

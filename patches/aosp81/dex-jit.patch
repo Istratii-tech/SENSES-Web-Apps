@@ -1,0 +1,110 @@
+diff --git a/art/runtime/interpreter/interpreter.cc b/art/runtime/interpreter/interpreter.cc
+index cd4ac6185..62d25e792 100644
+--- a/art/runtime/interpreter/interpreter.cc
++++ b/art/runtime/interpreter/interpreter.cc
+@@ -274,6 +274,17 @@ static inline JValue Execute(
+       }
+     }
+ 
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm (dex-jit): compiled code; the call counts towards compiling
++    // the method (shim/art8/dex_jit_art8.cc).
++    if (ArtWasmCanCallFlat(self, method)) {
++      ArtJitFn jit_fn = ArtJitLookup(self, method);
++      if (jit_fn != nullptr) {
++        return ArtJitRun(self, &shadow_frame, jit_fn);
++      }
++    }
++#endif
++
+     if (!stay_in_interpreter) {
+       jit::Jit* jit = Runtime::Current()->GetJit();
+       if (jit != nullptr) {
+diff --git a/art/runtime/interpreter/interpreter_common.h b/art/runtime/interpreter/interpreter_common.h
+index 8b35a42c9..1fd437ee8 100644
+--- a/art/runtime/interpreter/interpreter_common.h
++++ b/art/runtime/interpreter/interpreter_common.h
+@@ -60,6 +60,8 @@
+ 
+ #if defined(__EMSCRIPTEN__)
+ #include "interpreter_frames_wasm8.h"
++// arc-wasm (dex-jit): compiled methods (shim/art8/dex_jit_art8.h).
++#include "dex_jit_art8.h"
+ #endif
+ 
+ namespace art {
+diff --git a/art/runtime/interpreter/interpreter_switch_impl.cc b/art/runtime/interpreter/interpreter_switch_impl.cc
+index 842355716..81b845625 100644
+--- a/art/runtime/interpreter/interpreter_switch_impl.cc
++++ b/art/runtime/interpreter/interpreter_switch_impl.cc
+@@ -370,6 +370,13 @@ NO_INLINE static ShadowFrame* ArtWasmTryFlatInvoke(Thread* self, ShadowFrame* ca
+                                                         kRuntimePointerSize);
+       break;
+     case kInterface: {
++      if (UNLIKELY(resolved->GetDeclaringClass()->IsObjectClass())) {
++        // arc-wasm (dex-jit): an Object method through an interface type
++        // (FindMethodFromCode: the vtable; the IMT has only interface methods).
++        m = receiver->GetClass()->GetEmbeddedVTableEntry(resolved->GetMethodIndex(),
++                                                          kRuntimePointerSize);
++        break;
++      }
+       m = receiver->GetClass()->GetImt(kRuntimePointerSize)->Get(
+           ArtWasmImtIndex(resolved), kRuntimePointerSize);
+       if (UNLIKELY(m->IsRuntimeMethod())) {  // conflict or unimplemented
+@@ -401,6 +408,13 @@ NO_INLINE static ShadowFrame* ArtWasmTryFlatInvoke(Thread* self, ShadowFrame* ca
+        (code_item->insns_[0] & 0xff) == Instruction::RETURN_VOID_NO_BARRIER)) {
+     return kArtWasmEmptyCall;
+   }
++  // arc-wasm (dex-jit): a method with compiled code runs out of the loop,
++  // like a native one (ArtWasmCallNativeFromLoop); this counts calls towards
++  // compiling it.
++  if (UNLIKELY(ArtJitLookup(self, m) != nullptr) && ArtJitHasRoom()) {
++    *native = m;
++    return kArtWasmNativeCall;
++  }
+   const uint16_t num_regs = code_item->registers_size_;
+   const uint16_t num_ins = is_range ? inst->VRegA_3rc(inst_data) : inst->VRegA_35c(inst_data);
+   DCHECK_EQ(num_ins, code_item->ins_size_);
+@@ -440,6 +454,10 @@ NO_INLINE static bool ArtWasmCallNativeFromLoop(Thread* self, ShadowFrame* calle
+                                                 const Instruction* inst, uint16_t inst_data,
+                                                 ArtMethod* m, JValue* result)
+     REQUIRES_SHARED(Locks::mutator_lock_) {
++  if (!m->IsNative()) {
++    // arc-wasm (dex-jit): compiled code (ArtWasmTryFlatInvoke).
++    return ArtJitCallFromLoop(self, caller, inst, inst_data, m, nullptr, result, is_range);
++  }
+   const uint32_t vregC = is_range ? inst->VRegC_3rc() : inst->VRegC_35c();
+   const uint16_t num_ins = is_range ? inst->VRegA_3rc(inst_data) : inst->VRegA_35c(inst_data);
+   void* memory = ArtWasmFlatFrameAlloc(ShadowFrame::ComputeSize(num_ins));
+@@ -850,7 +868,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+   size_t flat_depth = resume->depth;
+   JValue flat_result;
+   ShadowFrame* flat_sf = resuming ? resume->sf : &shadow_frame;
+-  uint32_t yield_countdown = kYieldBranches;
++  uint32_t yield_countdown = g_art_wasm_yield_branches;  // arc-wasm (dex-jit): kYieldBranches
+   if (resuming) {
+     code_item = flat_sf->GetCodeItem();
+   } else {
+@@ -3197,6 +3215,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+       self, code_item, shadow_frame, result_register, interpret_one_instruction, &resume);
+   while (UNLIKELY(resume.yielded)) {
+     resume.yielded = false;
++    const bool plain_yield = !resume.suspend && !resume.listeners;
+     if (resume.suspend) {
+       resume.suspend = false;
+       self->CheckSuspend();
+@@ -3209,6 +3228,14 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+           self, code_item, shadow_frame, resume.result_register, interpret_one_instruction,
+           &resume);
+     } else {
++      // arc-wasm (dex-jit): on-stack replacement at the loop header where
++      // the loop yielded (every g_art_wasm_yield_branches backward branches).
++      if (!do_access_check && !transaction_active && plain_yield && g_art_jit_osr) {
++        JValue osr_result;
++        if (ArtJitOsr(self, &resume.sf, &resume.depth, &resume.result_register, &osr_result) == 1) {
++          return osr_result;
++        }
++      }
+       result = ExecuteSwitchImplLoop<do_access_check, transaction_active>(
+           self, code_item, shadow_frame, resume.result_register, interpret_one_instruction,
+           &resume);

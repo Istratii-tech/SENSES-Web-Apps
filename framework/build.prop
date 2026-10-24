@@ -1,0 +1,44 @@
+# begin build properties
+# arc-wasm: the properties AOSP 4.4.4_r2's build/tools/buildinfo.sh writes
+# (values from build/core/version_defaults.mk and build_id.mk), loaded into
+# the property store at startup (shim/framework/load_properties.cc) as
+# init does. android.os.Build reads them; Resources passes
+# Build.VERSION.RESOURCES_SDK_INT to the AssetManager, and resources only
+# match configurations up to that SDK version (aapt gives density-qualified
+# ones an implicit -v4).
+ro.build.id=KTU84Q
+ro.build.display.id=KTU84Q
+ro.build.version.incremental=eng.arcwasm
+ro.build.version.sdk=19
+ro.build.version.codename=REL
+ro.build.version.release=4.4.4
+ro.build.date=Thu Oct 16 00:00:00 UTC 2026
+ro.build.date.utc=1792022400
+ro.build.type=eng
+ro.build.user=arcwasm
+ro.build.host=arcwasm
+ro.build.tags=test-keys
+ro.product.model=arc-wasm
+ro.product.brand=arcwasm
+ro.product.name=arcwasm
+ro.product.device=wasm32
+ro.product.board=browser
+ro.product.cpu.abi=wasm32
+ro.product.manufacturer=arc-wasm
+ro.product.locale.language=en
+ro.product.locale.region=US
+ro.wifi.channels=
+ro.board.platform=browser
+# ro.build.product is obsolete; use ro.product.device
+ro.build.product=wasm32
+# Do not try to parse ro.build.description or .fingerprint
+ro.build.description=arcwasm-eng 4.4.4 KTU84Q eng.arcwasm test-keys
+ro.build.fingerprint=arcwasm/arcwasm/wasm32:4.4.4/KTU84Q/eng.arcwasm:eng/test-keys
+ro.build.characteristics=default
+# end build properties
+#
+# ADDITIONAL_BUILD_PROPERTIES
+#
+# No media decoders (topic gles-audio: AudioTrack plays, nothing decodes):
+# ViewRootImpl plays no click sounds and SoundPool is AOSP's stub.
+config.disable_media=true

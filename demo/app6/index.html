@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Android 6 app on WebAssembly</title>
+<style>
+  :root { --bg: #0e1016; --fg: #d7dbe5; --muted: #8a90a0; --ok: #6fd28a; --bad: #ff7b72; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #f6f7f9; --fg: #1d2030; --muted: #5a6072; --ok: #1a7f37; --bad: #cf222e; }
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+               font: 14px/1.4 system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px; }
+  header { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+  canvas { display: block; width: 100%; max-width: 360px; aspect-ratio: 9 / 16;
+           background: #000; border-radius: 6px; touch-action: none; outline: none; }
+  pre { margin: 8px 0 0; font: 12px/1.45 ui-monospace, monospace;
+        white-space: pre-wrap; word-break: break-word; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .log { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header id="cmd"></header>
+  <!-- An Android 6.0.1 app on ART, launched the way a launcher does it
+       (topic fw6-system, docs/topics/fw6-system.md): the in-process
+       system_server (arcwasm.server.SystemServer, framework/java-arcwasm6)
+       starts the package's launcher Activity; ActivityThread 6.0.1 runs it,
+       ViewRootImpl draws its window in software into a libgui Surface, the
+       in-process SurfaceFlinger composites it onto this canvas, and
+       pointer/keyboard events go to it through its InputChannel.
+       ?pkg=PACKAGE or ?pkg=PACKAGE/.Activity (default: the API 23 test app),
+       ?selftest=1: three taps on its button. The display does not rotate:
+       ?size=WxH sets it (default 360x640, a phone held upright), ?landscape=1
+       is 640x360 (for landscape-only apps, e.g. games). -->
+  <canvas id="canvas" width="360" height="640" tabindex="0"></canvas>
+  <pre id="out"></pre>
+</main>
+<script src="report.js"></script>
+<script>
+  // ?pkg=PACKAGE (default: the API 23 test APK, org.arcwasm.testapp6) or
+  // ?pkg=PACKAGE/.Activity; ?selftest=1 taps the button three times with
+  // synthetic DOM events and checks that MainActivity counted them.
+  // ?arg=... adds artvm options before the class (e.g. ?arg=-Xmx512m), ?opt=...
+  // SystemServer's (?opt=--trace, ?opt=--dump).
+  var params = new URLSearchParams(location.search);
+  var selfTest = params.get('selftest') === '1';
+  var args = params.getAll('arg').concat(['arcwasm.server.SystemServer'].concat(params.getAll('opt')).concat([
+                                          params.get('pkg') || 'org.arcwasm.testapp6']));
+  document.getElementById('cmd').textContent = 'artvm ' + args.join(' ') +
+      '  (ART and framework 6.0.1)';
+  var canvas = document.getElementById('canvas');
+  // The display's size is the canvas's when artvm starts.
+  var size = (params.get('size') || (params.get('landscape') === '1' ? '640x360' : ''))
+      .split('x').map(Number);
+  if (size.length === 2 && size[0] > 0 && size[1] > 0) {
+    canvas.width = size[0];
+    canvas.height = size[1];
+    canvas.style.maxWidth = Math.max(size[0], 360) + 'px';
+    canvas.style.aspectRatio = size[0] + ' / ' + size[1];
+  }
+  var outEl = document.getElementById('out');
+  var started = performance.now();
+  var done = false;
+  function emit(text) {
+    var line = document.createElement('span');
+    if (/^AppSelfTest: .*passed/.test(text)) line.className = 'ok';
+    else if (/^AppSelfTest: .*failed|Exception|Error|Abort/.test(text)) line.className = 'bad';
+    else if (/^[VDIWEF]\//.test(text)) line.className = 'log';
+    line.textContent = text + '\n';
+    outEl.appendChild(line);
+    while (outEl.childNodes.length > 40) outEl.removeChild(outEl.firstChild);
+    arcReport(text);
+    var ready = /MainActivity: ready button=(\d+),(\d+)/.exec(text);
+    if (ready) {
+      emit('AppSelfTest: MainActivity on screen after ' +
+           Math.round(performance.now() - started) + ' ms');
+      if (selfTest) setTimeout(function () { tap3(+ready[1], +ready[2]); }, 200);
+    }
+    var clicks = /MainActivity: clicks=(\d+)/.exec(text);
+    if (selfTest && clicks && +clicks[1] === 3 && !done) {
+      done = true;
+      emit('AppSelfTest: 3 taps -> 3 clicks, passed (' +
+           Math.round(performance.now() - started) + ' ms)');
+    }
+  }
+  // Taps at display coordinates (bx, by), mapped to client coordinates the
+  // way the page shows the canvas.
+  function tap3(bx, by) {
+    var rect = canvas.getBoundingClientRect();
+    function pointer(type) {
+      var init = { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse',
+                   isPrimary: true,
+                   clientX: rect.left + bx * rect.width / canvas.width,
+                   clientY: rect.top + by * rect.height / canvas.height,
+                   pressure: type === 'pointerup' ? 0 : 0.5,
+                   buttons: type === 'pointerup' ? 0 : 1 };
+      var e = typeof PointerEvent === 'function' ? new PointerEvent(type, init)
+                                                 : new MouseEvent(type, init);
+      if (e.pointerId === undefined) {
+        Object.defineProperty(e, 'pointerId', { value: 1 });
+        Object.defineProperty(e, 'pointerType', { value: 'mouse' });
+        Object.defineProperty(e, 'pressure', { value: init.pressure });
+      }
+      canvas.dispatchEvent(e);
+    }
+    var k = 0;
+    (function next() {
+      if (k >= 6) return;
+      pointer(k % 2 ? 'pointerup' : 'pointerdown');
+      k++;
+      setTimeout(next, 80);
+    })();
+    setTimeout(function () {
+      if (!done) { done = true; emit('AppSelfTest: no 3 clicks within 20 s, failed'); }
+    }, 20000);
+  }
+  var Module = {
+    arguments: args,
+    canvas: canvas,
+    print: emit,
+    printErr: emit,
+    onExit: function (code) { emit('EXIT ' + code); document.title = 'EXIT ' + code; },
+    onAbort: function (what) { emit('ABORT ' + what); },
+  };
+</script>
+<script src="artvm.js"></script>
+<script>
+  // Frames per second on the canvas, every 2 s (also reaches tools/serve.py's
+  // log, which is how runs in Safari are checked).
+  var lastFrames = 0;
+  setInterval(function () {
+    if (!Module._arcwasm_display_frames) return;
+    var n = Module._arcwasm_display_frames();
+    emit('AppStats: frames=' + n + ' fps=' + ((n - lastFrames) / 2).toFixed(1) +
+         ' visible=' + (document.visibilityState === 'visible'));
+    lastFrames = n;
+  }, 2000);
+</script>
+</body>
+</html>

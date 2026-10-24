@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- arc-wasm: the test app for Android 10 on ART 10 (topic fw10-system,
+     docs/topics/fw10-system.md): the 8.1 one (tests/apk8) made for API 29:
+     minSdkVersion 29, targetSdkVersion 29 (dex 039 from d8 with min-api 29),
+     org.apache.http.legacy as a <uses-library> (no longer on the boot class
+     path since 9), a foreground service of a type (API 29), a runtime
+     permission, scoped storage's legacy flag, values-v29 resources, and two
+     activities without a window: a trampoline that starts another for a
+     result from onResume, and one that answers and finishes in onCreate
+     (Theme.NoDisplay) - the activity lifecycle of 10 (ClientTransaction,
+     top resumed activity) without graphics.
+     tools/build_test_apk.sh with MIN_SDK=29 TARGET_SDK=29. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.arcwasm.testapp10"
+    android:versionCode="29"
+    android:versionName="10">
+
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="29" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <application
+        android:name=".App10"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/AppTheme"
+        android:requestLegacyExternalStorage="true">
+
+        <uses-library android:name="org.apache.http.legacy" android:required="false" />
+
+        <activity android:name=".MainActivity" android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".TrampolineActivity" android:exported="false" />
+        <activity android:name=".ResultActivity" android:exported="false"
+            android:theme="@android:style/Theme.NoDisplay" />
+
+        <service android:name=".CounterService" android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- In a process of its own, as on a device (a light process: topic multiproc). -->
+        <service android:name=".RemoteService" android:process=":remote"
+            android:exported="false" />
+
+        <service android:name=".SyncJobService"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="true" />
+
+        <receiver android:name=".PingReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="org.arcwasm.testapp10.PING" />
+            </intent-filter>
+        </receiver>
+
+        <provider android:name=".NotesProvider"
+            android:authorities="org.arcwasm.testapp10.notes"
+            android:exported="false" />
+    </application>
+</manifest>

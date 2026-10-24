@@ -1,0 +1,109 @@
+diff --git a/frameworks/base/core/jni/android_os_Parcel.cpp b/frameworks/base/core/jni/android_os_Parcel.cpp
+index aa451e3a..eb7ed859 100644
+--- a/frameworks/base/core/jni/android_os_Parcel.cpp
++++ b/frameworks/base/core/jni/android_os_Parcel.cpp
+@@ -236,7 +236,7 @@ static void android_os_Parcel_writeString(JNIEnv* env, jclass clazz, jint native
+         if (val) {
+             const jchar* str = env->GetStringCritical(val, 0);
+             if (str) {
+-                err = parcel->writeString16(str, env->GetStringLength(val));
++                err = parcel->writeString16(reinterpret_cast<const char16_t*>(str), env->GetStringLength(val));
+                 env->ReleaseStringCritical(val, str);
+             }
+         } else {
+@@ -340,7 +340,7 @@ static jstring android_os_Parcel_readString(JNIEnv* env, jclass clazz, jint nati
+         size_t len;
+         const char16_t* str = parcel->readString16Inplace(&len);
+         if (str) {
+-            return env->NewString(str, len);
++            return env->NewString(reinterpret_cast<const jchar*>(str), len);
+         }
+         return NULL;
+     }
+@@ -382,7 +382,7 @@ static jobject android_os_Parcel_openFileDescriptor(JNIEnv* env, jclass clazz,
+         jniThrowException(env, "java/lang/IllegalStateException", NULL);
+         return NULL;
+     }
+-    String8 name8(str, env->GetStringLength(name));
++    String8 name8(reinterpret_cast<const char16_t*>(str), env->GetStringLength(name));
+     env->ReleaseStringCritical(name, str);
+     int flags=0;
+     switch (mode&0x30000000) {
+@@ -577,7 +577,7 @@ static void android_os_Parcel_writeInterfaceToken(JNIEnv* env, jclass clazz, jin
+         // the caller expects to be invoking
+         const jchar* str = env->GetStringCritical(name, 0);
+         if (str != NULL) {
+-            parcel->writeInterfaceToken(String16(str, env->GetStringLength(name)));
++            parcel->writeInterfaceToken(String16(reinterpret_cast<const char16_t*>(str), env->GetStringLength(name)));
+             env->ReleaseStringCritical(name, str);
+         }
+     }
+@@ -594,7 +594,7 @@ static void android_os_Parcel_enforceInterface(JNIEnv* env, jclass clazz, jint n
+             IPCThreadState* threadState = IPCThreadState::self();
+             const int32_t oldPolicy = threadState->getStrictModePolicy();
+             const bool isValid = parcel->enforceInterface(
+-                String16(str, env->GetStringLength(name)),
++                String16(reinterpret_cast<const char16_t*>(str), env->GetStringLength(name)),
+                 threadState);
+             env->ReleaseStringCritical(name, str);
+             if (isValid) {
+diff --git a/frameworks/base/core/jni/android_util_Binder.cpp b/frameworks/base/core/jni/android_util_Binder.cpp
+index 3ac2225e..ba4c597e 100644
+--- a/frameworks/base/core/jni/android_util_Binder.cpp
++++ b/frameworks/base/core/jni/android_util_Binder.cpp
+@@ -924,7 +924,7 @@ static jstring android_os_BinderProxy_getInterfaceDescriptor(JNIEnv* env, jobjec
+     IBinder* target = (IBinder*) env->GetIntField(obj, gBinderProxyOffsets.mObject);
+     if (target != NULL) {
+         const String16& desc = target->getInterfaceDescriptor();
+-        return env->NewString(desc.string(), desc.size());
++        return env->NewString(reinterpret_cast<const jchar*>(desc.string()), desc.size());
+     }
+     jniThrowException(env, "java/lang/RuntimeException",
+             "No binder found for object");
+diff --git a/frameworks/native/cmds/servicemanager/binder.c b/frameworks/native/cmds/servicemanager/binder.c
+index 1985756a..2f4b125f 100644
+--- a/frameworks/native/cmds/servicemanager/binder.c
++++ b/frameworks/native/cmds/servicemanager/binder.c
+@@ -232,7 +232,19 @@ int binder_parse(struct binder_state *bs, struct binder_io *bio,
+                 bio_init(&reply, rdata, sizeof(rdata), 4);
+                 bio_init_from_txn(&msg, txn);
+                 res = func(bs, txn, &msg, &reply);
+-                binder_send_reply(bs, &reply, txn->data, res);
++                if (txn->flags & TF_ONE_WAY) {
++                    /* No reply to a one-way call (as in AOSP 5.0's binder.c):
++                     * only free its buffer. */
++                    struct {
++                        uint32_t cmd_free;
++                        void *buffer;
++                    } __attribute__((packed)) data;
++                    data.cmd_free = BC_FREE_BUFFER;
++                    data.buffer = txn->data;
++                    binder_write(bs, &data, sizeof(data));
++                } else {
++                    binder_send_reply(bs, &reply, txn->data, res);
++                }
+             }
+             ptr += sizeof(*txn) / sizeof(uint32_t);
+             break;
+diff --git a/frameworks/native/libs/binder/IPCThreadState.cpp b/frameworks/native/libs/binder/IPCThreadState.cpp
+index 5951a3ff..041f613b 100644
+--- a/frameworks/native/libs/binder/IPCThreadState.cpp
++++ b/frameworks/native/libs/binder/IPCThreadState.cpp
+@@ -844,7 +844,7 @@ status_t IPCThreadState::talkWithDriver(bool doReceive)
+         IF_LOG_COMMANDS() {
+             alog << "About to read/write, write size = " << mOut.dataSize() << endl;
+         }
+-#if defined(HAVE_ANDROID_OS)
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)
+         if (ioctl(mProcess->mDriverFD, BINDER_WRITE_READ, &bwr) >= 0)
+             err = NO_ERROR;
+         else
+@@ -1144,7 +1144,7 @@ void IPCThreadState::threadDestructor(void *st)
+         IPCThreadState* const self = static_cast<IPCThreadState*>(st);
+         if (self) {
+                 self->flushCommands();
+-#if defined(HAVE_ANDROID_OS)
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)
+         if (self->mProcess->mDriverFD > 0) {
+             ioctl(self->mProcess->mDriverFD, BINDER_THREAD_EXIT, 0);
+         }

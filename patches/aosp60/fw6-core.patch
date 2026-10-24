@@ -1,0 +1,257 @@
+diff --git a/art/runtime/gc/heap.cc b/art/runtime/gc/heap.cc
+index d4282672..39c46091 100644
+--- a/art/runtime/gc/heap.cc
++++ b/art/runtime/gc/heap.cc
+@@ -2391,6 +2391,18 @@ collector::GcType Heap::CollectGarbageInternal(collector::GcType gc_type, GcCaus
+     // space to run the GC.
+     return collector::kGcTypeNone;
+   }
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: no GC while the class linker builds the core classes without
++  // an image (ClassLinker::InitWithoutImage). Until then java.lang.DexCache
++  // is not linked and has no reference offsets, so a GC would keep the dex
++  // caches but not trace them, and free their string/type/method/field
++  // arrays. On a device InitWithoutImage only runs in dex2oat with a large
++  // -Xms; here a long boot class path (the framework's, 14 dex files) fills
++  // the initial heap first. The allocation then grows the heap instead.
++  if (runtime->GetClassLinker() == nullptr || !runtime->GetClassLinker()->IsInitialized()) {
++    return collector::kGcTypeNone;
++  }
++#endif
+   bool compacting_gc;
+   {
+     gc_complete_lock_->AssertNotHeld(self);
+diff --git a/frameworks/base/core/java/com/android/internal/util/Predicates.java b/frameworks/base/core/java/com/android/internal/util/Predicates.java
+index f5051e42..c954431d 100644
+--- a/frameworks/base/core/java/com/android/internal/util/Predicates.java
++++ b/frameworks/base/core/java/com/android/internal/util/Predicates.java
+@@ -33,7 +33,7 @@ public class Predicates {
+      * will be "short-circuited" as soon as the answer is determined.
+      */
+     public static <T> Predicate<T> and(Predicate<? super T>... components) {
+-        return and(Arrays.asList(components));
++        return Predicates.<T>and(Arrays.<Predicate<? super T>>asList(components));
+     }
+ 
+     /**
+@@ -54,7 +54,7 @@ public class Predicates {
+      * will be "short-circuited" as soon as the answer is determined.
+      */
+     public static <T> Predicate<T> or(Predicate<? super T>... components) {
+-        return or(Arrays.asList(components));
++        return Predicates.<T>or(Arrays.<Predicate<? super T>>asList(components));
+     }
+ 
+     /**
+diff --git a/frameworks/native/cmds/servicemanager/binder.c b/frameworks/native/cmds/servicemanager/binder.c
+index 6eecee1e..c75e2969 100644
+--- a/frameworks/native/cmds/servicemanager/binder.c
++++ b/frameworks/native/cmds/servicemanager/binder.c
+@@ -243,6 +243,20 @@ int binder_parse(struct binder_state *bs, struct binder_io *bio,
+                 bio_init(&reply, rdata, sizeof(rdata), 4);
+                 bio_init_from_txn(&msg, txn);
+                 res = func(bs, txn, &msg, &reply);
++#if defined(ARC_WASM)
++                /* arc-wasm: no reply to a one-way call (the driver would
++                 * fail it: "reply with no transaction stack"), only free
++                 * its buffer, as AOSP's later binder.c does. */
++                if (txn->flags & TF_ONE_WAY) {
++                    struct {
++                        uint32_t cmd_free;
++                        binder_uintptr_t buffer;
++                    } __attribute__((packed)) data;
++                    data.cmd_free = BC_FREE_BUFFER;
++                    data.buffer = txn->data.ptr.buffer;
++                    binder_write(bs, &data, sizeof(data));
++                } else
++#endif
+                 binder_send_reply(bs, &reply, txn->data.ptr.buffer, res);
+             }
+             ptr += sizeof(*txn);
+diff --git a/frameworks/native/libs/binder/IPCThreadState.cpp b/frameworks/native/libs/binder/IPCThreadState.cpp
+index af18e119..048e2f3e 100644
+--- a/frameworks/native/libs/binder/IPCThreadState.cpp
++++ b/frameworks/native/libs/binder/IPCThreadState.cpp
+@@ -852,7 +852,7 @@ status_t IPCThreadState::talkWithDriver(bool doReceive)
+         IF_LOG_COMMANDS() {
+             alog << "About to read/write, write size = " << mOut.dataSize() << endl;
+         }
+-#if defined(HAVE_ANDROID_OS)
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)  // arc-wasm: the in-process driver
+         if (ioctl(mProcess->mDriverFD, BINDER_WRITE_READ, &bwr) >= 0)
+             err = NO_ERROR;
+         else
+@@ -1166,7 +1166,7 @@ void IPCThreadState::threadDestructor(void *st)
+         IPCThreadState* const self = static_cast<IPCThreadState*>(st);
+         if (self) {
+                 self->flushCommands();
+-#if defined(HAVE_ANDROID_OS)
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)  // arc-wasm: the in-process driver
+         if (self->mProcess->mDriverFD > 0) {
+             ioctl(self->mProcess->mDriverFD, BINDER_THREAD_EXIT, 0);
+         }
+diff --git a/system/core/include/private/android_filesystem_config.h b/system/core/include/private/android_filesystem_config.h
+index 2ed27dca..6d529eab 100644
+--- a/system/core/include/private/android_filesystem_config.h
++++ b/system/core/include/private/android_filesystem_config.h
+@@ -26,7 +26,7 @@
+ #include <sys/types.h>
+ #include <stdint.h>
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)  // arc-wasm: bionic's UAPI header, as on a device
+ #include <linux/capability.h>
+ #else
+ #include "android_filesystem_capability.h"
+diff --git a/system/core/include/utils/AndroidThreads.h b/system/core/include/utils/AndroidThreads.h
+index aad1e82c..170fff84 100644
+--- a/system/core/include/utils/AndroidThreads.h
++++ b/system/core/include/utils/AndroidThreads.h
+@@ -73,7 +73,7 @@ extern void androidSetCreateThreadFunc(android_create_thread_fn func);
+ // ------------------------------------------------------------------
+ // Extra functions working with raw pids.
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)  // arc-wasm: shim/framework/thread_priority.cc
+ // Change the priority AND scheduling group of a particular thread.  The priority
+ // should be one of the ANDROID_PRIORITY constants.  Returns INVALID_OPERATION
+ // if the priority set failed, else another value if just the group set failed;
+diff --git a/system/core/include/utils/Looper.h b/system/core/include/utils/Looper.h
+index da2d5f2b..234ceea3 100644
+--- a/system/core/include/utils/Looper.h
++++ b/system/core/include/utils/Looper.h
+@@ -448,6 +448,11 @@ private:
+     const bool mAllowNonCallbacks; // immutable
+ 
+     int mWakeEventFd;  // immutable
++#if defined(ARC_WASM)
++    // arc-wasm: no eventfd in the kernel layer; mWakeEventFd is the read
++    // end of a pipe (as Looper was until Android 6), this its write end.
++    int mWakeWritePipeFd;  // immutable
++#endif
+     Mutex mLock;
+ 
+     Vector<MessageEnvelope> mMessageEnvelopes; // guarded by mLock
+diff --git a/system/core/include/utils/TypeHelpers.h b/system/core/include/utils/TypeHelpers.h
+index 13c90815..fd113fa7 100644
+--- a/system/core/include/utils/TypeHelpers.h
++++ b/system/core/include/utils/TypeHelpers.h
+@@ -288,6 +288,11 @@ ANDROID_INT32_HASH(int32_t)
+ ANDROID_INT32_HASH(uint32_t)
+ ANDROID_INT64_HASH(int64_t)
+ ANDROID_INT64_HASH(uint64_t)
++#if defined(ARC_WASM)
++// arc-wasm: in wasm32 uintptr_t and size_t are unsigned long, a type of its
++// own (as in the 4.4 graphics topic's patch).
++ANDROID_INT32_HASH(unsigned long)
++#endif
+ ANDROID_REINTERPRET_HASH(float, uint32_t)
+ ANDROID_REINTERPRET_HASH(double, uint64_t)
+ 
+diff --git a/system/core/libutils/Looper.cpp b/system/core/libutils/Looper.cpp
+index 5b0ff3a7..825d5bc0 100644
+--- a/system/core/libutils/Looper.cpp
++++ b/system/core/libutils/Looper.cpp
+@@ -21,7 +21,11 @@
+ #include <fcntl.h>
+ #include <limits.h>
+ #include <inttypes.h>
++#if defined(ARC_WASM)
++#include <fcntl.h>
++#else
+ #include <sys/eventfd.h>
++#endif
+ 
+ 
+ namespace android {
+@@ -72,7 +76,16 @@ Looper::Looper(bool allowNonCallbacks) :
+         mAllowNonCallbacks(allowNonCallbacks), mSendingMessage(false),
+         mPolling(false), mEpollFd(-1), mEpollRebuildRequired(false),
+         mNextRequestSeq(0), mResponseIndex(0), mNextMessageUptime(LLONG_MAX) {
++#if defined(ARC_WASM)
++    int wakeFds[2];
++    LOG_ALWAYS_FATAL_IF(pipe(wakeFds) != 0, "Could not create wake pipe.  errno=%d", errno);
++    mWakeEventFd = wakeFds[0];
++    mWakeWritePipeFd = wakeFds[1];
++    fcntl(mWakeEventFd, F_SETFL, O_NONBLOCK);
++    fcntl(mWakeWritePipeFd, F_SETFL, O_NONBLOCK);
++#else
+     mWakeEventFd = eventfd(0, EFD_NONBLOCK);
++#endif
+     LOG_ALWAYS_FATAL_IF(mWakeEventFd < 0, "Could not make wake event fd.  errno=%d", errno);
+ 
+     AutoMutex _l(mLock);
+@@ -81,6 +94,9 @@ Looper::Looper(bool allowNonCallbacks) :
+ 
+ Looper::~Looper() {
+     close(mWakeEventFd);
++#if defined(ARC_WASM)
++    close(mWakeWritePipeFd);
++#endif
+     if (mEpollFd >= 0) {
+         close(mEpollFd);
+     }
+@@ -406,9 +422,15 @@ void Looper::wake() {
+     ALOGD("%p ~ wake", this);
+ #endif
+ 
++#if defined(ARC_WASM)
++    // One byte per wake; a full pipe (EAGAIN) is already awake.
++    ssize_t nWrite = TEMP_FAILURE_RETRY(write(mWakeWritePipeFd, "W", 1));
++    if (nWrite != 1) {
++#else
+     uint64_t inc = 1;
+     ssize_t nWrite = TEMP_FAILURE_RETRY(write(mWakeEventFd, &inc, sizeof(uint64_t)));
+     if (nWrite != sizeof(uint64_t)) {
++#endif
+         if (errno != EAGAIN) {
+             ALOGW("Could not write wake signal, errno=%d", errno);
+         }
+@@ -420,8 +442,17 @@ void Looper::awoken() {
+     ALOGD("%p ~ awoken", this);
+ #endif
+ 
++#if defined(ARC_WASM)
++    // Drain the pipe (an eventfd read resets the counter at once).
++    char buffer[16];
++    ssize_t nRead;
++    do {
++        nRead = TEMP_FAILURE_RETRY(read(mWakeEventFd, buffer, sizeof(buffer)));
++    } while (nRead == sizeof(buffer));
++#else
+     uint64_t counter;
+     TEMP_FAILURE_RETRY(read(mWakeEventFd, &counter, sizeof(uint64_t)));
++#endif
+ }
+ 
+ void Looper::pushResponse(int events, const Request& request) {
+diff --git a/system/core/libutils/Threads.cpp b/system/core/libutils/Threads.cpp
+index 1e014c64..cc4f1d08 100644
+--- a/system/core/libutils/Threads.cpp
++++ b/system/core/libutils/Threads.cpp
+@@ -301,7 +301,9 @@ void androidSetCreateThreadFunc(android_create_thread_fn func)
+     gCreateThreadFn = func;
+ }
+ 
+-#ifdef HAVE_ANDROID_OS
++// arc-wasm: a browser has no thread priorities (setpriority fails), so these
++// two come from shim/fw6/thread_priority.cc, which records them per thread.
++#if defined(HAVE_ANDROID_OS) && !defined(ARC_WASM)
+ int androidSetThreadPriority(pid_t tid, int pri)
+ {
+     int rc = 0;
+@@ -845,8 +847,14 @@ pid_t Thread::getTid() const
+     Mutex::Autolock _l(mLock);
+     pid_t tid;
+     if (mRunning) {
++#if defined(ARC_WASM)
++        // arc-wasm: no pthread_gettid_np (bionic); the thread stores its own
++        // tid first thing in _threadLoop (-1 until then).
++        tid = mTid;
++#else
+         pthread_t pthread = android_thread_id_t_to_pthread(mThread);
+         tid = pthread_gettid_np(pthread);
++#endif
+     } else {
+         ALOGW("Thread (this=%p): getTid() is undefined before run()", this);
+         tid = -1;

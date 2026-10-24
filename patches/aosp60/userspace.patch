@@ -1,0 +1,199 @@
+diff --git a/frameworks/base/core/java/android/app/ActivityThread.java b/frameworks/base/core/java/android/app/ActivityThread.java
+index da21eaff..b995d04f 100644
+--- a/frameworks/base/core/java/android/app/ActivityThread.java
++++ b/frameworks/base/core/java/android/app/ActivityThread.java
+@@ -2656,7 +2656,31 @@ public final class ActivityThread {
+     public void handleInstallProvider(ProviderInfo info) {
+         final StrictMode.ThreadPolicy oldPolicy = StrictMode.allowThreadDiskWrites();
+         try {
+-            installContentProviders(mInitialApplication, Lists.newArrayList(info));
++            // arc-wasm (topic userspace): one process hosts every package. A
++            // package other than the bound one gets its Application before its
++            // providers and Application.onCreate after them, as
++            // handleBindApplication does (Launcher3's LauncherProvider, for one,
++            // reaches its LauncherAppState through the Application).
++            LoadedApk packageInfo = getPackageInfoNoCheck(info.applicationInfo,
++                    CompatibilityInfo.DEFAULT_COMPATIBILITY_INFO);
++            Application app = packageInfo.getApplication();
++            boolean created = false;
++            if (app == null) {
++                app = packageInfo.makeApplication(false, null);
++                created = true;
++            }
++            installContentProviders(app != null ? app : mInitialApplication,
++                    Lists.newArrayList(info));
++            if (created && app != null) {
++                try {
++                    mInstrumentation.callApplicationOnCreate(app);
++                } catch (Exception e) {
++                    if (!mInstrumentation.onException(app, e)) {
++                        throw new RuntimeException("Unable to create application "
++                                + app.getClass().getName() + ": " + e.toString(), e);
++                    }
++                }
++            }
+         } finally {
+             StrictMode.setThreadPolicy(oldPolicy);
+         }
+diff --git a/frameworks/base/core/java/android/app/trust/TrustManager.java b/frameworks/base/core/java/android/app/trust/TrustManager.java
+index aff69f07..60708409 100644
+--- a/frameworks/base/core/java/android/app/trust/TrustManager.java
++++ b/frameworks/base/core/java/android/app/trust/TrustManager.java
+@@ -50,6 +50,17 @@ public class TrustManager {
+         mTrustListeners = new ArrayMap<TrustListener, ITrustListener>();
+     }
+ 
++    /**
++     * arc-wasm (topic userspace): Android 6.0.0's method, which the 6.0
++     * SystemUI of Google's emulator image calls (KeyguardUpdateMonitor,
++     * KeyguardViewMediator); 6.0.1 tracks this in LockPatternUtils instead.
++     * There is no lock screen secret here, so the user always counts as
++     * authenticated.
++     */
++    public boolean hasUserAuthenticatedSinceBoot(int userId) {
++        return true;
++    }
++
+     /**
+      * Reports that user {@param userId} has tried to unlock the device.
+      *
+diff --git a/frameworks/base/core/java/android/content/pm/ParceledListSlice.java b/frameworks/base/core/java/android/content/pm/ParceledListSlice.java
+index cfb44733..77b3558e 100644
+--- a/frameworks/base/core/java/android/content/pm/ParceledListSlice.java
++++ b/frameworks/base/core/java/android/content/pm/ParceledListSlice.java
+@@ -101,7 +101,14 @@ public class ParceledListSlice<T extends Parcelable> implements Parcelable {
+             }
+             while (i < N && reply.readInt() != 0) {
+                 final T parcelable = reply.readCreator(creator, loader);
+-                verifySameType(listElementClass, parcelable.getClass());
++                // arc-wasm (topic userspace): when no item fit inline (the
++                // parcel was already full), the type comes from the first one
++                // here, as later AOSP does; 6.0.1 compared against null.
++                if (listElementClass == null) {
++                    listElementClass = parcelable.getClass();
++                } else {
++                    verifySameType(listElementClass, parcelable.getClass());
++                }
+ 
+                 mList.add(parcelable);
+ 
+diff --git a/frameworks/base/core/java/android/os/Binder.java b/frameworks/base/core/java/android/os/Binder.java
+index 64562a49..c164d8f2 100644
+--- a/frameworks/base/core/java/android/os/Binder.java
++++ b/frameworks/base/core/java/android/os/Binder.java
+@@ -384,7 +384,22 @@ public class Binder implements IBinder {
+         if (data != null) {
+             data.setDataPosition(0);
+         }
+-        boolean r = onTransact(code, data, reply, flags);
++        // arc-wasm (topic userspace): a call within this process runs on the
++        // caller's thread, and the callee's enforceInterface() sets that
++        // thread's StrictMode policy from the call (with PENALTY_GATHER). Put
++        // it back after the call, as JavaBBinder::onTransact does for a binder
++        // thread; else the caller keeps gathering violations for good and
++        // every later call appends its stack to them, until it runs out of
++        // memory.
++        final int policy = StrictMode.getThreadPolicyMask();
++        boolean r;
++        try {
++            r = onTransact(code, data, reply, flags);
++        } finally {
++            if (StrictMode.getThreadPolicyMask() != policy) {
++                StrictMode.restoreThreadPolicyMask(policy);
++            }
++        }
+         if (reply != null) {
+             reply.setDataPosition(0);
+         }
+diff --git a/frameworks/base/core/java/android/os/HandlerThread.java b/frameworks/base/core/java/android/os/HandlerThread.java
+index 2904105e..0d4ea5be 100644
+--- a/frameworks/base/core/java/android/os/HandlerThread.java
++++ b/frameworks/base/core/java/android/os/HandlerThread.java
+@@ -58,9 +58,32 @@ public class HandlerThread extends Thread {
+         }
+         Process.setThreadPriority(mPriority);
+         onLooperPrepared();
+-        Looper.loop();
++        loopLeniently();
+         mTid = -1;
+     }
++
++    /**
++     * arc-wasm (topic userspace): in the lenient mode of the phone-like
++     * systems (arcwasm.server.lenient), an exception out of one message is
++     * logged and the thread goes on with the next, as the app thread does
++     * (arcwasm.server.CrashRecovery): every app runs in one process here, and
++     * a worker thread that died (an app's loader, say) left the app waiting
++     * for it for good, where on a device the process would be restarted.
++     */
++    private static void loopLeniently() {
++        for (;;) {
++            try {
++                Looper.loop();
++                return;
++            } catch (RuntimeException e) {
++                if (!SystemProperties.getBoolean("arcwasm.server.lenient", false)) {
++                    throw e;
++                }
++                android.util.Log.e("HandlerThread", Thread.currentThread().getName()
++                        + ": a message threw; going on with the next", e);
++            }
++        }
++    }
+     
+     /**
+      * This method returns the Looper associated with this thread. If this thread not been started
+diff --git a/frameworks/base/core/java/android/os/Process.java b/frameworks/base/core/java/android/os/Process.java
+index e0a0fd0c..27d0bb03 100644
+--- a/frameworks/base/core/java/android/os/Process.java
++++ b/frameworks/base/core/java/android/os/Process.java
+@@ -1051,6 +1051,15 @@ public class Process {
+      * other's processes.
+      */
+     public static final void killProcess(int pid) {
++        // arc-wasm (topic userspace): every app runs in this one process, so
++        // an app killing "its" process (HTC's launcher does, for an activity
++        // that has a process of its own on a device) would end them all. In
++        // the lenient mode of the phone-like systems that is not done.
++        if (pid == myPid() && SystemProperties.getBoolean("arcwasm.server.lenient", false)) {
++            android.util.Log.w("Process", "not killing this process (every app runs in it)",
++                    new Throwable("killProcess"));
++            return;
++        }
+         sendSignal(pid, SIGNAL_KILL);
+     }
+ 
+diff --git a/frameworks/base/core/java/android/os/StrictMode.java b/frameworks/base/core/java/android/os/StrictMode.java
+index f10b982a..811f7900 100644
+--- a/frameworks/base/core/java/android/os/StrictMode.java
++++ b/frameworks/base/core/java/android/os/StrictMode.java
+@@ -871,6 +871,11 @@ public final class StrictMode {
+         setThreadPolicyMask(policy.mask);
+     }
+ 
++    /** arc-wasm (topic userspace): for Binder.transact's in-process calls. */
++    static void restoreThreadPolicyMask(final int policyMask) {
++        setThreadPolicyMask(policyMask);
++    }
++
+     private static void setThreadPolicyMask(final int policyMask) {
+         // In addition to the Java-level thread-local in Dalvik's
+         // BlockGuard, we also need to keep a native thread-local in
+diff --git a/frameworks/base/core/java/android/service/notification/ZenModeConfig.java b/frameworks/base/core/java/android/service/notification/ZenModeConfig.java
+index 87634961..6705013d 100644
+--- a/frameworks/base/core/java/android/service/notification/ZenModeConfig.java
++++ b/frameworks/base/core/java/android/service/notification/ZenModeConfig.java
+@@ -657,6 +657,13 @@ public class ZenModeConfig implements Parcelable {
+         return toTimeCondition(context, now + millis, minutesFromNow, userHandle, shortVersion);
+     }
+ 
++    // arc-wasm (topic userspace): Android 6.0.0's signature, which the 6.0
++    // SystemUI of Google's emulator image calls (ZenModePanel).
++    public static Condition toTimeCondition(Context context, long time, int minutes,
++            long now, int userHandle, boolean shortVersion) {
++        return toTimeCondition(context, time, minutes, userHandle, shortVersion);
++    }
++
+     public static Condition toTimeCondition(Context context, long time, int minutes,
+             int userHandle, boolean shortVersion) {
+         final int num;

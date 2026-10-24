@@ -1,0 +1,179 @@
+diff --git a/external/conscrypt/common/src/jni/main/cpp/conscrypt/native_crypto.cc b/external/conscrypt/common/src/jni/main/cpp/conscrypt/native_crypto.cc
+index 1a0679c30..aa49ac9b6 100644
+--- a/external/conscrypt/common/src/jni/main/cpp/conscrypt/native_crypto.cc
++++ b/external/conscrypt/common/src/jni/main/cpp/conscrypt/native_crypto.cc
+@@ -3626,11 +3626,13 @@ static void NativeCrypto_HMAC_CTX_free(JNIEnv* env, jclass, jlong hmacCtxRef) {
+     delete hmacCtx;
+ }
+ 
++// arc-wasm: the Java method takes "long evp_md" (wasm calls a function only
++// through its exact type; ARM read the low word of the long as an object).
+ static void NativeCrypto_HMAC_Init_ex(JNIEnv* env, jclass, jobject hmacCtxRef, jbyteArray keyArray,
+-                                      jobject evpMdRef) {
++                                      jlong evpMdRef) {
+     CHECK_ERROR_QUEUE_ON_RETURN;
+     HMAC_CTX* hmacCtx = fromContextObject<HMAC_CTX>(env, hmacCtxRef);
+-    const EVP_MD* md = reinterpret_cast<const EVP_MD*>(evpMdRef);
++    const EVP_MD* md = reinterpret_cast<const EVP_MD*>(static_cast<uintptr_t>(evpMdRef));
+     JNI_TRACE("HMAC_Init_ex(%p, %p, %p)", hmacCtx, keyArray, md);
+     if (hmacCtx == nullptr) {
+         return;
+@@ -4047,7 +4049,8 @@ static jlong NativeCrypto_X509_get_notAfter(JNIEnv* env, jclass, jlong x509Ref,
+ }
+ 
+ // NOLINTNEXTLINE(runtime/int)
+-static long NativeCrypto_X509_get_version(JNIEnv* env, jclass, jlong x509Ref, CONSCRYPT_UNUSED jobject holder) {
++// arc-wasm: jlong as in Java (C long is 32 bits in wasm32 and on ARM).
++static jlong NativeCrypto_X509_get_version(JNIEnv* env, jclass, jlong x509Ref, CONSCRYPT_UNUSED jobject holder) {
+     CHECK_ERROR_QUEUE_ON_RETURN;
+     X509* x509 = reinterpret_cast<X509*>(static_cast<uintptr_t>(x509Ref));
+     JNI_TRACE("X509_get_version(%p)", x509);
+@@ -4422,7 +4425,8 @@ static jbyteArray NativeCrypto_X509_CRL_get_issuer_name(JNIEnv* env, jclass, jlo
+ }
+ 
+ // NOLINTNEXTLINE(runtime/int)
+-static long NativeCrypto_X509_CRL_get_version(JNIEnv* env, jclass, jlong x509CrlRef, CONSCRYPT_UNUSED jobject holder) {
++// arc-wasm: jlong as in Java (C long is 32 bits in wasm32 and on ARM).
++static jlong NativeCrypto_X509_CRL_get_version(JNIEnv* env, jclass, jlong x509CrlRef, CONSCRYPT_UNUSED jobject holder) {
+     CHECK_ERROR_QUEUE_ON_RETURN;
+     X509_CRL* crl = reinterpret_cast<X509_CRL*>(static_cast<uintptr_t>(x509CrlRef));
+     JNI_TRACE("X509_CRL_get_version(%p)", crl);
+diff --git a/frameworks/av/include/media/VolumeShaper.h b/frameworks/av/include/media/VolumeShaper.h
+index 79afd6cf9..41942eff6 100644
+--- a/frameworks/av/include/media/VolumeShaper.h
++++ b/frameworks/av/include/media/VolumeShaper.h
+@@ -561,7 +561,16 @@ public:
+         if (clock_gettime(CLOCK_MONOTONIC, &tv) != 0) {
+             return 0; // system is really sick, just return 0 for consistency.
+         }
++#if defined(__EMSCRIPTEN__)
++        // arc-wasm: Emscripten's CLOCK_MONOTONIC counts from about the epoch
++        // (~1.8e15 us), not from boot; Translate<float> then loses all
++        // precision. Clock-time shapers only need differences: count from
++        // the first call in the process.
++        static const int64_t base = convertTimespecToUs(tv);
++        return convertTimespecToUs(tv) - base;
++#else
+         return convertTimespecToUs(tv);
++#endif
+     }
+ 
+     /* Native implementation of VolumeShaper.  This is NOT mirrored
+diff --git a/frameworks/av/media/libstagefright/MediaExtractorFactory.cpp b/frameworks/av/media/libstagefright/MediaExtractorFactory.cpp
+index 4c8be1f19..8c3876c65 100644
+--- a/frameworks/av/media/libstagefright/MediaExtractorFactory.cpp
++++ b/frameworks/av/media/libstagefright/MediaExtractorFactory.cpp
+@@ -29,7 +29,9 @@
+ #include <media/stagefright/MediaExtractorFactory.h>
+ #include <media/IMediaExtractor.h>
+ #include <media/IMediaExtractorService.h>
++#ifndef ARC_WASM
+ #include <nativeloader/dlext_namespaces.h>
++#endif
+ #include <private/android_filesystem_config.h>
+ #include <cutils/properties.h>
+ #include <utils/String8.h>
+@@ -223,6 +225,15 @@ void MediaExtractorFactory::RegisterExtractor(const sp<ExtractorPlugin> &plugin,
+     pluginList.push_back(plugin);
+ }
+ 
++#ifdef ARC_WASM
++// arc-wasm: the extractor plugins are linked into the program, each one's
++// GETEXTRACTORDEF renamed (the table is shim/fw10cm/extractors10.cc).
++struct ArcWasmExtractor {
++    const char *name;
++    ExtractorDef (*getDef)();
++};
++extern const ArcWasmExtractor kArcWasmExtractors[];  // ends with {nullptr, nullptr}
++#else
+ //static
+ void MediaExtractorFactory::RegisterExtractors(
+         const char *libDirPath, const android_dlextinfo* dlextinfo,
+@@ -261,6 +272,8 @@ void MediaExtractorFactory::RegisterExtractors(
+     }
+ }
+ 
++#endif  // ARC_WASM
++
+ static bool compareFunc(const sp<ExtractorPlugin>& first, const sp<ExtractorPlugin>& second) {
+     return strcmp(first->def.extractor_name, second->def.extractor_name) < 0;
+ }
+@@ -279,6 +292,12 @@ void MediaExtractorFactory::LoadExtractors() {
+ 
+     std::shared_ptr<std::list<sp<ExtractorPlugin>>> newList(new std::list<sp<ExtractorPlugin>>());
+ 
++#ifdef ARC_WASM
++    for (const ArcWasmExtractor *e = kArcWasmExtractors; e->name != nullptr; ++e) {
++        String8 path(e->name);
++        RegisterExtractor(new ExtractorPlugin(e->getDef(), nullptr, path), *newList);
++    }
++#else
+     android_namespace_t *mediaNs = android_get_exported_namespace("media");
+     if (mediaNs != NULL) {
+         const android_dlextinfo dlextinfo = {
+@@ -300,6 +319,7 @@ void MediaExtractorFactory::LoadExtractors() {
+             "64"
+ #endif
+             "/extractors", NULL, *newList);
++#endif  // ARC_WASM
+ 
+     newList->sort(compareFunc);
+     gPlugins = newList;
+diff --git a/frameworks/av/media/libstagefright/include/media/stagefright/MediaExtractorFactory.h b/frameworks/av/media/libstagefright/include/media/stagefright/MediaExtractorFactory.h
+index 2ab98e140..aaa72ced7 100644
+--- a/frameworks/av/media/libstagefright/include/media/stagefright/MediaExtractorFactory.h
++++ b/frameworks/av/media/libstagefright/include/media/stagefright/MediaExtractorFactory.h
+@@ -24,6 +24,11 @@
+ #include <android/dlext.h>
+ #include <media/IMediaExtractor.h>
+ 
++#ifdef ARC_WASM
++// arc-wasm: no linker namespaces; the plugins are linked in (LoadExtractors).
++struct android_dlextinfo;
++#endif
++
+ namespace android {
+ 
+ class DataSource;
+diff --git a/frameworks/av/media/ndk/NdkMediaCodec.cpp b/frameworks/av/media/ndk/NdkMediaCodec.cpp
+index c23f19b9d..8f8e47513 100644
+--- a/frameworks/av/media/ndk/NdkMediaCodec.cpp
++++ b/frameworks/av/media/ndk/NdkMediaCodec.cpp
+@@ -554,9 +554,11 @@ uint8_t* AMediaCodec_getOutputBuffer(AMediaCodec *mData, size_t idx, size_t *out
+     return NULL;
+ }
+ 
++// arc-wasm: int32_t, as the header declares them (_off_t_compat; off_t is 64 bits in
++// wasm32, 32 in the NDK's ABI; the build defines __USE_FILE_OFFSET64).
+ EXPORT
+ media_status_t AMediaCodec_queueInputBuffer(AMediaCodec *mData,
+-        size_t idx, off_t offset, size_t size, uint64_t time, uint32_t flags) {
++        size_t idx, int32_t offset, size_t size, uint64_t time, uint32_t flags) {
+ 
+     AString errorMsg;
+     status_t ret = mData->mCodec->queueInputBuffer(idx, offset, size, time, flags, &errorMsg);
+@@ -749,7 +751,7 @@ EXPORT
+ media_status_t AMediaCodec_queueSecureInputBuffer(
+         AMediaCodec* codec,
+         size_t idx,
+-        off_t offset,
++        int32_t offset,  // arc-wasm: as declared (see above)
+         AMediaCodecCryptoInfo* crypto,
+         uint64_t time,
+         uint32_t flags) {
+diff --git a/frameworks/base/core/jni/android_media_AudioTrack.cpp b/frameworks/base/core/jni/android_media_AudioTrack.cpp
+index daa63475f..c8fe514d0 100644
+--- a/frameworks/base/core/jni/android_media_AudioTrack.cpp
++++ b/frameworks/base/core/jni/android_media_AudioTrack.cpp
+@@ -855,8 +855,9 @@ static void android_media_AudioTrack_set_playback_params(JNIEnv *env,  jobject t
+ 
+ 
+ // ----------------------------------------------------------------------------
+-static jobject android_media_AudioTrack_get_playback_params(JNIEnv *env,  jobject thiz,
+-        jobject params) {
++// arc-wasm: no third argument, as the Java method is "()PlaybackParams" (wasm
++// calls a function only through its exact type).
++static jobject android_media_AudioTrack_get_playback_params(JNIEnv *env,  jobject thiz) {
+     sp<AudioTrack> lpTrack = getAudioTrack(env, thiz);
+     if (lpTrack == NULL) {
+         jniThrowException(env, "java/lang/IllegalStateException",

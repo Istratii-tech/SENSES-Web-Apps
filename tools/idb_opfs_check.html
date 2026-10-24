@@ -1,0 +1,98 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>idb_opfs check</title>
+<!-- shim/opfs/idb_opfs.js against a model (topic opfs-oom-ios): random writes,
+     reads, truncates and read-only reads (getFile().readInto, slice) of a few
+     files, from views of a SharedArrayBuffer as the VM's wasm memory, with
+     the chunk cache let go (trim) at random. Served with the repository's
+     root (tools/serve.py PORT .), opened as /tools/idb_opfs_check.html?seed=N
+     in Chrome or Safari; the result is the page's title ("ok ..." or
+     "FAIL ...") and goes to the server's log. -->
+<pre id="out"></pre>
+<script src="../shim/opfs/idb_opfs.js"></script>
+<script>
+(async function () {
+  const seed0 = +(new URLSearchParams(location.search).get('seed') || 1);
+  let seed = seed0;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) >>> 0; return (seed >>> 8) % n; };
+  const say = (s) => {
+    document.getElementById('out').textContent += s + '\n';
+    document.title = s;
+    fetch('/__log', {method: 'POST', body: 'idb_opfs_check: ' + s}).catch(() => {});
+  };
+  try {
+    await new Promise((r) => { const q = indexedDB.deleteDatabase('arc-wasm-data'); q.onsuccess = q.onerror = r; });
+    const shared = typeof SharedArrayBuffer !== 'undefined' ? new Uint8Array(new SharedArrayBuffer(1 << 21))
+                                                            : new Uint8Array(1 << 21);
+    const root = await arcIdbOpfs.getDirectory();
+    const dir = await root.getDirectoryHandle('d', {create: true});
+    const N = 3, MAX = 600000;
+    const model = [], handles = [], files = [];
+    for (let f = 0; f < N; f++) {
+      model.push(new Uint8Array(0));
+      files.push(await dir.getFileHandle('f' + f, {create: true}));
+      handles.push(await files[f].createSyncAccessHandle());
+    }
+    const grow = (m, n) => { if (m.length >= n) return m; const g = new Uint8Array(n); g.set(m); return g; };
+    const ops = +(new URLSearchParams(location.search).get('ops') || 3000);
+    for (let k = 0; k < ops; k++) {
+      const f = rnd(N), h = handles[f];
+      const what = rnd(10);
+      const at = rnd(4) ? rnd(MAX) : rnd(4) * 65536 + rnd(3) - 1;
+      const len = [1, 7, 4096, 65535, 65536, 65537, 130000, 300000][rnd(8)];
+      if (at < 0) continue;
+      if (what < 4) {  // write from the shared memory
+        const off = rnd(1 << 20);
+        const src = shared.subarray(off, off + len);
+        for (let i = 0; i < len; i++) src[i] = rnd(256);
+        const n = await h.write(src, {at});
+        if (n !== len) throw new Error('write returned ' + n);
+        model[f] = grow(model[f], at + len);
+        model[f].set(src, at);
+      } else if (what < 7) {  // read into the shared memory
+        const off = rnd(1 << 20);
+        const dst = shared.subarray(off, off + len);
+        const n = await h.read(dst, {at});
+        const want = Math.max(0, Math.min(len, model[f].length - at));
+        if (n !== want) throw new Error(k + ': read returned ' + n + ', not ' + want);
+        for (let i = 0; i < n; i++) if (dst[i] !== model[f][at + i]) throw new Error(k + ': read: byte ' + (at + i) + ' of f' + f);
+      } else if (what < 8) {  // truncate
+        const size = rnd(3) ? rnd(MAX) : rnd(8) * 65536;
+        await h.truncate(size);
+        const m = new Uint8Array(size);
+        m.set(model[f].subarray(0, Math.min(size, model[f].length)));
+        model[f] = m;
+        if ((await h.getSize()) !== size) throw new Error('size after truncate');
+      } else if (what < 9) {  // read-only reads of a snapshot
+        const file = await files[f].getFile();
+        if (file.size !== model[f].length) throw new Error(k + ': getFile size ' + file.size + ' not ' + model[f].length);
+        const off = rnd(1 << 20);
+        const dst = shared.subarray(off, off + len);
+        const n = await file.readInto(dst, at);
+        const want = Math.max(0, Math.min(len, model[f].length - at));
+        if (n !== want) throw new Error(k + ': readInto returned ' + n + ', not ' + want);
+        for (let i = 0; i < n; i++) if (dst[i] !== model[f][at + i]) throw new Error(k + ': readInto: byte ' + (at + i));
+        const b = new Uint8Array(await file.slice(at, at + len).arrayBuffer());
+        if (b.length !== want) throw new Error(k + ': slice length ' + b.length);
+        for (let i = 0; i < want; i++) if (b[i] !== model[f][at + i]) throw new Error(k + ': slice: byte ' + (at + i));
+      } else {
+        arcIdbOpfs.trim();  // what comes next is read from the database
+      }
+    }
+    // Reopened: what the database holds.
+    for (let f = 0; f < N; f++) await handles[f].close();
+    arcIdbOpfs.trim();
+    for (let f = 0; f < N; f++) {
+      const file = await files[f].getFile();
+      const all = new Uint8Array(file.size);
+      await file.readInto(all, 0);
+      if (all.length !== model[f].length) throw new Error('final size of f' + f);
+      for (let i = 0; i < all.length; i++) if (all[i] !== model[f][i]) throw new Error('final: byte ' + i + ' of f' + f);
+    }
+    say('ok seed ' + seed0 + ': ' + ops + ' operations, sizes ' + model.map((m) => m.length).join(', ') +
+        (typeof SharedArrayBuffer !== 'undefined' ? ' (shared views)' : ''));
+  } catch (e) {
+    say('FAIL seed ' + seed0 + ': ' + (e && e.stack || e));
+  }
+})();
+</script>

@@ -1,0 +1,102 @@
+diff --git a/external/icu/android_icu4j/src/main/java/android/icu/impl/ICUBinary.java b/external/icu/android_icu4j/src/main/java/android/icu/impl/ICUBinary.java
+index a35ff3b07..e58b553b7 100644
+--- a/external/icu/android_icu4j/src/main/java/android/icu/impl/ICUBinary.java
++++ b/external/icu/android_icu4j/src/main/java/android/icu/impl/ICUBinary.java
+@@ -521,6 +521,14 @@ public final class ICUBinary {
+ 
+     @SuppressWarnings("resource")  // Closing a file closes its channel.
+     private static ByteBuffer mapFile(File path) {
++        // arc-wasm (topic a10-size): the .dat file ICU4C already has mapped
++        // (libcore.icu.ICU.getMappedIcuData): one copy of it in memory, not two.
++        if (path.getName().endsWith(".dat")) {
++            ByteBuffer mapped = libcore.icu.ICU.getMappedIcuData(path.getPath());
++            if (mapped != null) {
++                return mapped.asReadOnlyBuffer();
++            }
++        }
+         FileInputStream file;
+         try {
+             file = new FileInputStream(path);
+diff --git a/libcore/luni/src/main/java/libcore/icu/ICU.java b/libcore/luni/src/main/java/libcore/icu/ICU.java
+index d8d878dfd..c47b0669d 100644
+--- a/libcore/luni/src/main/java/libcore/icu/ICU.java
++++ b/libcore/luni/src/main/java/libcore/icu/ICU.java
+@@ -407,6 +407,13 @@ public final class ICU {
+   private static native String[] getAvailableNumberFormatLocalesNative();
+ 
+   public static native String[] getAvailableCurrencyCodes();
++
++  /**
++   * arc-wasm (topic a10-size): a read-write direct buffer of the ICU data file {@code path}
++   * as libcore mapped it for ICU4C, or null when libcore did not map that file. ICU4J's
++   * ICUBinary reads it instead of mapping the file a second time.
++   */
++  public static native java.nio.ByteBuffer getMappedIcuData(String path);
+   public static native String getCurrencyCode(String countryCode);
+ 
+   public static String getCurrencyDisplayName(Locale locale, String currencyCode) {
+diff --git a/libcore/luni/src/main/native/libcore_icu_ICU.cpp b/libcore/luni/src/main/native/libcore_icu_ICU.cpp
+index 8a571fddd..16e53d5c4 100644
+--- a/libcore/luni/src/main/native/libcore_icu_ICU.cpp
++++ b/libcore/luni/src/main/native/libcore_icu_ICU.cpp
+@@ -807,7 +807,11 @@ static jstring ICU_getDefaultLocale(JNIEnv* env, jclass) {
+   return env->NewStringUTF(icu::Locale::getDefault().getName());
+ }
+ 
++// arc-wasm (topic a10-size): defined after ICURegistration, below.
++static jobject ICU_getMappedIcuData(JNIEnv* env, jclass, jstring javaPath);
++
+ static JNINativeMethod gMethods[] = {
++    NATIVE_METHOD(ICU, getMappedIcuData, "(Ljava/lang/String;)Ljava/nio/ByteBuffer;"),
+     NATIVE_METHOD(ICU, addLikelySubtags, "(Ljava/lang/String;)Ljava/lang/String;"),
+     NATIVE_METHOD(ICU, getAvailableBreakIteratorLocalesNative, "()[Ljava/lang/String;"),
+     NATIVE_METHOD(ICU, getAvailableCalendarLocalesNative, "()[Ljava/lang/String;"),
+@@ -880,6 +884,11 @@ struct IcuDataMap {
+     TryUnmap();
+   }
+ 
++  // arc-wasm (topic a10-size): the mapping, for ICU4J (ICU_getMappedIcuData).
++  const std::string& path() const { return path_; }
++  void* data() const { return data_; }
++  size_t length() const { return data_length_; }
++
+  private:
+   IcuDataMap(const std::string& path)
+     : path_(path),
+@@ -1066,6 +1075,18 @@ struct ICURegistration {
+     return runtimeModulePath;
+   }
+ 
++  // arc-wasm (topic a10-size): a direct ByteBuffer of the mapped data file |path|, or
++  // null (not one of the files above).
++  jobject MappedData(JNIEnv* env, const char* path) const {
++    for (const auto* map : {icu_datamap_from_data_.get(), icu_datamap_from_tz_module_.get(),
++                            icu_datamap_from_runtime_module_.get()}) {
++      if (map != nullptr && map->path() == path && map->data() != MAP_FAILED) {
++        return env->NewDirectByteBuffer(map->data(), static_cast<jlong>(map->length()));
++      }
++    }
++    return nullptr;
++  }
++
+   std::unique_ptr<IcuDataMap> icu_datamap_from_data_;
+   std::unique_ptr<IcuDataMap> icu_datamap_from_tz_module_;
+   std::unique_ptr<IcuDataMap> icu_datamap_from_runtime_module_;
+@@ -1075,6 +1096,17 @@ struct ICURegistration {
+ // when dlclose is called (even if JNI_OnUnload is not).
+ static std::unique_ptr<ICURegistration> sIcuRegistration;
+ 
++// arc-wasm (topic a10-size): ICU4J's ICUBinary maps the same .dat files again (its own
++// MappedByteBuffer). On a device both share the file's pages; here a mapping is a copy in
++// wasm memory (icudt63l.dat: 23 MB), so ICU4J reads ICU4C's mapping instead.
++static jobject ICU_getMappedIcuData(JNIEnv* env, jclass, jstring javaPath) {
++  ScopedUtfChars path(env, javaPath);
++  if (path.c_str() == nullptr || sIcuRegistration == nullptr) {
++    return nullptr;
++  }
++  return sIcuRegistration->MappedData(env, path.c_str());
++}
++
+ // Init ICU, configuring it and loading the data files.
+ void register_libcore_icu_ICU(JNIEnv* env) {
+   sIcuRegistration.reset(new ICURegistration(env));

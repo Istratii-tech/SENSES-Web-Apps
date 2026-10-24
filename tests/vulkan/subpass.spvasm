@@ -1,0 +1,33 @@
+; color = subpassLoad(in0) * 0.5: an input attachment (topic vulkan's SPIR-V pass
+; makes it a texture read at gl_FragCoord).
+               OpCapability Shader
+               OpCapability InputAttachment
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %color
+               OpExecutionMode %main OriginUpperLeft
+               OpDecorate %color Location 0
+               OpDecorate %in0 DescriptorSet 0
+               OpDecorate %in0 Binding 1
+               OpDecorate %in0 InputAttachmentIndex 0
+       %void = OpTypeVoid
+         %fn = OpTypeFunction %void
+      %float = OpTypeFloat 32
+        %int = OpTypeInt 32 1
+      %v2int = OpTypeVector %int 2
+    %v4float = OpTypeVector %float 4
+ %ptr_out_v4 = OpTypePointer Output %v4float
+      %color = OpVariable %ptr_out_v4 Output
+        %img = OpTypeImage %float SubpassData 0 0 0 2 Unknown
+    %ptr_img = OpTypePointer UniformConstant %img
+        %in0 = OpVariable %ptr_img UniformConstant
+      %int_0 = OpConstant %int 0
+      %zero2 = OpConstantComposite %v2int %int_0 %int_0
+  %float_0_5 = OpConstant %float 0.5
+       %main = OpFunction %void None %fn
+          %e = OpLabel
+          %i = OpLoad %img %in0
+          %c = OpImageRead %v4float %i %zero2
+          %h = OpVectorTimesScalar %v4float %c %float_0_5
+               OpStore %color %h
+               OpReturn
+               OpFunctionEnd

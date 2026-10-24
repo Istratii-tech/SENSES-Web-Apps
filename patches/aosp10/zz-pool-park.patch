@@ -1,0 +1,315 @@
+diff --git a/art/runtime/interpreter/interpreter.cc b/art/runtime/interpreter/interpreter.cc
+index 1d5604629..43d0722cb 100644
+--- a/art/runtime/interpreter/interpreter.cc
++++ b/art/runtime/interpreter/interpreter.cc
+@@ -639,6 +639,16 @@ void EnterInterpreterFromDeoptimize(Thread* self,
+   ret_val->SetJ(value.GetJ());
+ }
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm (topic java-pool-park, shim/art10/dormant_wasm10.cc): a dormant
++// thread's heap frame, continued at its dex pc as a deoptimized one.
++JValue ArtWasmResumeFrame(Thread* self, ShadowFrame* shadow_frame, JValue result) {
++  CodeItemDataAccessor accessor(shadow_frame->GetMethod()->DexInstructionData());
++  return Execute(self, accessor, *shadow_frame, result, /* stay_in_interpreter= */ true,
++                 /* from_deoptimize= */ true);
++}
++#endif
++
+ JValue EnterInterpreterFromEntryPoint(Thread* self, const CodeItemDataAccessor& accessor,
+                                       ShadowFrame* shadow_frame) {
+   DCHECK_EQ(self, Thread::Current());
+diff --git a/art/runtime/monitor.cc b/art/runtime/monitor.cc
+index 676bceb76..56a7ea904 100644
+--- a/art/runtime/monitor.cc
++++ b/art/runtime/monitor.cc
+@@ -16,6 +16,10 @@
+ 
+ #include "monitor-inl.h"
+ 
++#if defined(__EMSCRIPTEN__)
++#include "dormant_wasm10.h"  // arc-wasm (java-pool-park)
++#endif
++
+ #include <vector>
+ 
+ #include "android-base/stringprintf.h"
+@@ -765,7 +769,11 @@ void Monitor::SignalContendersAndReleaseMonitorLock(Thread* self) {
+         // immediately contend on it. The lock ordering here is:
+         // monitor_lock_, self->GetWaitMutex, thread->GetWaitMutex
+         monitor_lock_.Unlock(self);
++#if defined(__EMSCRIPTEN__)
++        ArtWasmDormant::SignalWaiter(self, thread);  // arc-wasm (java-pool-park): or dormant
++#else
+         thread->GetWaitConditionVariable()->Signal(self);
++#endif
+         return;
+       }
+     }
+@@ -857,6 +865,14 @@ void Monitor::Wait(Thread* self, int64_t ms, int32_t ns,
+       was_interrupted = true;
+     } else {
+       // Wait for a notification or a timeout to occur.
++#if defined(__EMSCRIPTEN__)
++      // arc-wasm (topic java-pool-park): a long wait may leave the worker
++      // (then ArcWasmEndDormantWait finishes it on another).
++      if (ArtWasmDormant::MonitorWait(self, this, why, ms, ns, prev_lock_count, saved_method,
++                                      saved_dex_pc, interruptShouldThrow, &timed_out)) {
++        // (the wait is over)
++      } else
++#endif
+       if (why == kWaiting) {
+         self->GetWaitConditionVariable()->Wait(self);
+       } else {
+@@ -918,6 +934,36 @@ void Monitor::Wait(Thread* self, int64_t ms, int32_t ns,
+   monitor_lock_.Unlock(self);
+ }
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm (topic java-pool-park): the end of Wait above for a thread that
++// went dormant in it, on its new pthread (runnable, frames not yet continued).
++void Monitor::ArcWasmEndDormantWait(Thread* self, int prev_lock_count, ArtMethod* saved_method,
++                                    uintptr_t saved_dex_pc, bool interruptShouldThrow,
++                                    bool timed_out) {
++  bool was_interrupted;
++  {
++    MutexLock mu(self, *self->GetWaitMutex());
++    DCHECK(self->GetWaitMonitor() != nullptr);
++    self->SetWaitMonitor(nullptr);
++    was_interrupted = self->IsInterrupted();
++  }
++  if (was_interrupted && interruptShouldThrow) {
++    self->SetInterrupted(false);
++    self->ThrowNewException("Ljava/lang/InterruptedException;", nullptr);
++  }
++  Runtime::Current()->GetRuntimeCallbacks()->MonitorWaitFinished(this, timed_out);
++  Lock<LockReason::kForWait>(self);
++  monitor_lock_.Lock(self);
++  owner_ = self;
++  lock_count_ = prev_lock_count;
++  locking_method_ = saved_method;
++  locking_dex_pc_ = saved_dex_pc;
++  --num_waiters_;
++  RemoveFromWaitSet(self);
++  monitor_lock_.Unlock(self);
++}
++#endif
++
+ void Monitor::Notify(Thread* self) {
+   DCHECK(self != nullptr);
+   MutexLock mu(self, monitor_lock_);
+diff --git a/art/runtime/monitor.h b/art/runtime/monitor.h
+index 4187f27c9..78eca85f6 100644
+--- a/art/runtime/monitor.h
++++ b/art/runtime/monitor.h
+@@ -336,6 +336,12 @@ class Monitor {
+   Monitor* next_free_ GUARDED_BY(Locks::allocated_monitor_ids_lock_);
+ #endif
+ 
++  friend class ArtWasmDormant;  // arc-wasm (java-pool-park): dormant waits.
++#if defined(__EMSCRIPTEN__)
++  void ArcWasmEndDormantWait(Thread* self, int prev_lock_count, ArtMethod* saved_method,
++                             uintptr_t saved_dex_pc, bool interruptShouldThrow, bool timed_out)
++      REQUIRES(!monitor_lock_) REQUIRES_SHARED(Locks::mutator_lock_);
++#endif
+   friend class MonitorInfo;
+   friend class MonitorList;
+   friend class MonitorPool;
+diff --git a/art/runtime/thread.cc b/art/runtime/thread.cc
+index 12332c017..4c51768ba 100644
+--- a/art/runtime/thread.cc
++++ b/art/runtime/thread.cc
+@@ -19,6 +19,7 @@
+ #if defined(__EMSCRIPTEN__)
+ #include <emscripten/threading.h>  // arc-wasm: Park, Unpark
+ #include <math.h>
++#include "dormant_wasm10.h"  // arc-wasm (java-pool-park): dormant waits
+ #endif
+ 
+ #include <limits.h>  // for INT_MAX
+@@ -397,7 +398,10 @@ void Thread::Park(bool is_absolute, int64_t time) {
+     Runtime::Current()->GetRuntimeCallbacks()->ThreadParkStart(is_absolute, time);
+     bool timed_out = false;
+     volatile void* addr = tls32_.park_state_.Address();
+-    if (!is_absolute && time == 0) {
++    // (topic java-pool-park: a long wait may leave the worker.)
++    if (ArtWasmDormant::ParkWait(this, is_absolute, time, &timed_out)) {
++      // (the wait is over)
++    } else if (!is_absolute && time == 0) {
+       ScopedThreadSuspension sts(this, ThreadState::kWaiting);
+       DCHECK_EQ(NumberOfHeldMutexes(), 0u);
+       emscripten_futex_wait(addr, kNoPermitWaiterWaiting, INFINITY);
+@@ -457,6 +461,8 @@ void Thread::Unpark() {
+   if (tls32_.park_state_.exchange(kPermitAvailable, std::memory_order_relaxed)
+       == kNoPermitWaiterWaiting) {
+     emscripten_futex_wake(tls32_.park_state_.Address(), 1);
++    // (topic java-pool-park: a dormant thread gets a new worker.)
++    ArtWasmDormant::Unparked(this);
+   }
+ #else
+   UNIMPLEMENTED(WARNING);
+@@ -687,6 +693,10 @@ void* Thread::CreateCallback(void* arg) {
+     ObjPtr<mirror::Object> receiver = self->tlsPtr_.opeer;
+     jmethodID mid = WellKnownClasses::java_lang_Thread_run;
+     ScopedLocalRef<jobject> ref(soa.Env(), soa.AddLocalReference<jobject>(receiver));
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm (topic java-pool-park): the thread may wait without its worker.
++    ArtWasmDormant::ThreadStart(self);
++#endif
+     InvokeVirtualOrInterfaceWithJValues(soa, ref.get(), mid, nullptr);
+   }
+   // Detach and delete self.
+@@ -2492,6 +2502,9 @@ void Thread::Destroy() {
+ }
+ 
+ Thread::~Thread() {
++#if defined(__EMSCRIPTEN__)
++  ArtWasmDormant::ThreadGone(this);  // arc-wasm (java-pool-park)
++#endif
+   CHECK(tlsPtr_.class_loader_override == nullptr);
+   CHECK(tlsPtr_.jpeer == nullptr);
+   CHECK(tlsPtr_.opeer == nullptr);
+@@ -2682,7 +2695,11 @@ void Thread::Notify() {
+ 
+ void Thread::NotifyLocked(Thread* self) {
+   if (wait_monitor_ != nullptr) {
++#if defined(__EMSCRIPTEN__)
++    ArtWasmDormant::SignalWaiter(self, this);  // arc-wasm (java-pool-park): or dormant
++#else
+     wait_cond_->Signal(self);
++#endif
+   }
+ }
+ 
+diff --git a/art/runtime/thread.h b/art/runtime/thread.h
+index dd483c188..c5b441c0a 100644
+--- a/art/runtime/thread.h
++++ b/art/runtime/thread.h
+@@ -1599,7 +1599,7 @@ class Thread {
+       thread_local_objects(0), mterp_current_ibase(nullptr), thread_local_alloc_stack_top(nullptr),
+       thread_local_alloc_stack_end(nullptr),
+       flip_function(nullptr), method_verifier(nullptr), thread_local_mark_stack(nullptr),
+-      async_exception(nullptr) {
++      async_exception(nullptr), arc_dormant(nullptr) {
+       std::fill(held_mutexes, held_mutexes + kLockLevelCount, nullptr);
+     }
+ 
+@@ -1757,6 +1757,11 @@ class Thread {
+ 
+     // The pending async-exception or null.
+     mirror::Throwable* async_exception;
++
++    // arc-wasm (topic java-pool-park): the thread's record for dormant waits
++    // (shim/art10/dormant_wasm10.cc), or null: a thread started by
++    // Thread.start may wait without a browser worker.
++    void* arc_dormant;
+   } tlsPtr_;
+ 
+   // Small thread-local cache to be used from the interpreter.
+@@ -1798,6 +1803,7 @@ class Thread {
+   friend class ScopedThreadStateChange;
+   friend class StubTest;  // For accessing entrypoints.
+   friend class ThreadList;  // For ~Thread and Destroy.
++  friend class ArtWasmDormant;  // arc-wasm (java-pool-park): dormant waits.
+ 
+   friend class EntrypointsOrderTest;  // To test the order of tls entries.
+ 
+diff --git a/frameworks/base/core/jni/android_os_MessageQueue.cpp b/frameworks/base/core/jni/android_os_MessageQueue.cpp
+index f7a98d16f..80b6acc3a 100644
+--- a/frameworks/base/core/jni/android_os_MessageQueue.cpp
++++ b/frameworks/base/core/jni/android_os_MessageQueue.cpp
+@@ -104,7 +104,52 @@ void NativeMessageQueue::raiseException(JNIEnv* env, const char* msg, jthrowable
+     }
+ }
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm (topic java-pool-park): the thread of an idle looper waits without
++// its browser worker (ART 10: shim/art10/dormant_wasm10.cc; weak elsewhere).
++extern "C" int arc_java_dormant_epoll(int epfd, int timeout_ms, void (*on_resume)(void*),
++                                      void* arg) __attribute__((weak));
++extern "C" int arc_java_dormant_grace_ms(void) __attribute__((weak));
++
++// On the dormant thread's new pthread: the looper is the thread's again.
++static void ArcLooperResumed(void* looper) {
++    Looper::setForThread(static_cast<Looper*>(looper));
++}
++#endif
++
+ void NativeMessageQueue::pollOnce(JNIEnv* env, jobject pollObj, int timeoutMillis) {
++#if defined(__EMSCRIPTEN__)
++    // A long wait: the grace period as usual, then (nothing came) without the
++    // worker; the Java loop takes it as an early return of this poll.
++    const int grace = arc_java_dormant_grace_ms ? arc_java_dormant_grace_ms() : -1;
++    if (grace >= 0 && (timeoutMillis < 0 || timeoutMillis > grace)) {
++        const nsecs_t start = systemTime(SYSTEM_TIME_MONOTONIC);
++        mPollEnv = env;
++        mPollObj = pollObj;
++        const int result = mLooper->pollOnce(grace);
++        mPollObj = NULL;
++        mPollEnv = NULL;
++        if (mExceptionObj) {
++            env->Throw(mExceptionObj);
++            env->DeleteLocalRef(mExceptionObj);
++            mExceptionObj = NULL;
++            return;
++        }
++        if (result != Looper::POLL_TIMEOUT) {
++            return;
++        }
++        if (timeoutMillis >= 0) {
++            timeoutMillis -= static_cast<int>(ns2ms(systemTime(SYSTEM_TIME_MONOTONIC) - start));
++            if (timeoutMillis <= 0) {
++                return;
++            }
++        }
++        const int epfd = mLooper->getEpollFdForDormantWait();
++        if (epfd >= 0) {
++            arc_java_dormant_epoll(epfd, timeoutMillis, ArcLooperResumed, mLooper.get());
++        }
++    }
++#endif
+     mPollEnv = env;
+     mPollObj = pollObj;
+     mLooper->pollOnce(timeoutMillis);
+diff --git a/system/core/libutils/Looper.cpp b/system/core/libutils/Looper.cpp
+index 403b091ac..138354502 100644
+--- a/system/core/libutils/Looper.cpp
++++ b/system/core/libutils/Looper.cpp
+@@ -684,6 +684,17 @@ bool Looper::isPolling() const {
+     return mPolling;
+ }
+ 
++#if defined(__EMSCRIPTEN__)
++int Looper::getEpollFdForDormantWait() {
++    AutoMutex _l(mLock);
++    if (mEpollRebuildRequired || mNextMessageUptime != LLONG_MAX ||
++            mResponseIndex < mResponses.size()) {
++        return -1;
++    }
++    return mEpollFd.get();
++}
++#endif
++
+ void Looper::Request::initEventItem(struct epoll_event* eventItem) const {
+     int epollEvents = 0;
+     if (events & EVENT_INPUT) epollEvents |= EPOLLIN;
+diff --git a/system/core/libutils/include/utils/Looper.h b/system/core/libutils/include/utils/Looper.h
+index e4c9f03c2..357c7349a 100644
+--- a/system/core/libutils/include/utils/Looper.h
++++ b/system/core/libutils/include/utils/Looper.h
+@@ -395,6 +395,15 @@ public:
+      */
+     bool isPolling() const;
+ 
++#if defined(__EMSCRIPTEN__)
++    /**
++     * arc-wasm (topic java-pool-park): the epoll descriptor an idle looper's
++     * thread may wait on without its browser worker (nothing native due, no
++     * responses left, no rebuild pending), or -1.
++     */
++    int getEpollFdForDormantWait();
++#endif
++
+     /**
+      * Prepares a looper associated with the calling thread, and returns it.
+      * If the thread already has a looper, it is returned.  Otherwise, a new

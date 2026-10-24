@@ -1,0 +1,70 @@
+diff --git a/art/libartbase/base/zip_archive.cc b/art/libartbase/base/zip_archive.cc
+index 5056edc60..6163916f5 100644
+--- a/art/libartbase/base/zip_archive.cc
++++ b/art/libartbase/base/zip_archive.cc
+@@ -131,9 +131,21 @@ MemMap ZipEntry::MapDirectlyFromFile(const char* zip_filename, std::string* erro
+     LOG(INFO) << "zip_archive: " << "make mmap of " << name << " @ offset = " << offset;
+   }
+ 
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (topic boot-dex): read-only, so that a stored entry of a file of
++  // the /system image is the image's own pages, not a copy
++  // (posix_translation's readonly_file.cc: a MAP_PRIVATE mapping without
++  // PROT_WRITE). Write protection is not enforced in wasm (mprotect is a no-op
++  // for ART, shim/art10/art_runtime_wasm10.h); the one writer, run-time
++  // quickening, says so first (ClassVerifier::VerifyClass), and
++  // readonly_file.cc keeps the image's bytes for other readers of the file.
++  const int prot = PROT_READ;
++#else
++  const int prot = PROT_READ | PROT_WRITE;
++#endif
+   MemMap map =
+       MemMap::MapFile(GetUncompressedLength(),  // Byte count
+-                      PROT_READ | PROT_WRITE,
++                      prot,
+                       MAP_PRIVATE,
+                       zip_fd,
+                       offset,
+diff --git a/art/libdexfile/dex/art_dex_file_loader.cc b/art/libdexfile/dex/art_dex_file_loader.cc
+index d17c61e5c..e76a0b6dd 100644
+--- a/art/libdexfile/dex/art_dex_file_loader.cc
++++ b/art/libdexfile/dex/art_dex_file_loader.cc
+@@ -64,6 +64,13 @@ class MemMapContainer : public DexFileContainer {
+   }
+ 
+   bool DisableWrite() override {
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm (topic boot-dex): a stored dex is mapped read-only from the
++    // start (ZipEntry::MapDirectlyFromFile).
++    if (IsReadOnly()) {
++      return true;
++    }
++#endif
+     CHECK(!IsReadOnly());
+     if (!mem_map_.IsValid()) {
+       return false;
+diff --git a/art/runtime/verifier/class_verifier.cc b/art/runtime/verifier/class_verifier.cc
+index fbada3997..5ba2332a8 100644
+--- a/art/runtime/verifier/class_verifier.cc
++++ b/art/runtime/verifier/class_verifier.cc
+@@ -36,6 +36,10 @@
+ 
+ #if defined(__EMSCRIPTEN__)
+ #include "quickening_wasm10.h"  // arc-wasm: shim/art10
++// arc-wasm (topic boot-dex): posix_translation's readonly_file.cc saves the
++// /system image's bytes before quickening writes a dex mapped from it.
++extern "C" void arc_readonly_image_will_write(const void* addr, size_t length)
++    __attribute__((weak));
+ #endif
+ 
+ namespace art {
+@@ -196,6 +200,9 @@ FailureKind ClassVerifier::VerifyClass(Thread* self,
+   t_arc_has_final_instance_field = saved_has_final_instance_field;
+   if (failure_data.kind == FailureKind::kNoFailure) {
+     for (const ArcQuickEdit& e : quick_edits) {
++      if (arc_readonly_image_will_write != nullptr) {
++        arc_readonly_image_will_write(e.insn, e.two_units ? 4u : 2u);
++      }
+       if (e.two_units) {
+         // (The field index the offset replaces: GetIndexFromQuickening.)
+         ArtWasmRecordQuickening(e.insn, e.insn[1]);

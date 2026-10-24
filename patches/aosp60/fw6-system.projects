@@ -1,0 +1,5 @@
+# Topic fw6-system: the audio HAL headers (system/audio.h, audio_utils) for the
+# in-process mixer of shim/audio built for ART, and libmedia's public headers
+# (AudioResamplerPublic.h: AudioPlaybackRate) for the AudioTrack JNI 6.0.1.
+system/media
+frameworks/av

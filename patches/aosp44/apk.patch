@@ -1,0 +1,291 @@
+diff --git a/dalvik/vm/RawDexFile.cpp b/dalvik/vm/RawDexFile.cpp
+index 45987671..7c731adf 100644
+--- a/dalvik/vm/RawDexFile.cpp
++++ b/dalvik/vm/RawDexFile.cpp
+@@ -141,6 +141,28 @@ int dvmRawDexFileOpen(const char* fileName, const char* odexOutputName,
+         goto bail;
+     }
+ 
++#if defined(__wasm__)
++    /*
++     * arc-wasm: no dexopt (it runs in a fork()ed child). Read the DEX into
++     * memory and prepare it in place, as dvmJarFileOpen() does for
++     * classes.dex; nothing is written to odexOutputName.
++     */
++    {
++        u1* dexBytes = (u1*) malloc(fileSize);
++        if (dexBytes == NULL ||
++            TEMP_FAILURE_RETRY(pread(dexFd, dexBytes, fileSize, 0))
++                != (ssize_t) fileSize ||
++            !dvmPrepareDexInMemory(dexBytes, fileSize, &pDvmDex)) {
++            ALOGE("Unable to read+prepare DEX from '%s'", fileName);
++            free(dexBytes);
++            goto bail;
++        }
++        /* dexBytes now belongs to pDvmDex for the life of the VM. */
++        cachedName = strdup(odexOutputName != NULL ? odexOutputName : fileName);
++        goto opened;
++    }
++#endif
++
+     /*
+      * See if the cached file matches. If so, optFd will become a reference
+      * to the cached file and will have been seeked to just past the "opt"
+@@ -224,6 +246,9 @@ int dvmRawDexFileOpen(const char* fileName, const char* odexOutputName,
+         locked = false;
+     }
+ 
++#if defined(__wasm__)
++opened:
++#endif
+     ALOGV("Successfully opened '%s'", fileName);
+ 
+     *ppRawDexFile = (RawDexFile*) calloc(1, sizeof(RawDexFile));
+diff --git a/frameworks/base/core/jni/android_util_AssetManager.cpp b/frameworks/base/core/jni/android_util_AssetManager.cpp
+index 2c23f9db..a11464f8 100644
+--- a/frameworks/base/core/jni/android_util_AssetManager.cpp
++++ b/frameworks/base/core/jni/android_util_AssetManager.cpp
+@@ -556,22 +556,22 @@ static jint android_content_AssetManager_getResourceIdentifier(JNIEnv* env, jobj
+     }
+ 
+     const char16_t* defType16 = defType
+-        ? env->GetStringChars(defType, NULL) : NULL;
++        ? reinterpret_cast<const char16_t*>(env->GetStringChars(defType, NULL)) : NULL;
+     jsize defTypeLen = defType
+         ? env->GetStringLength(defType) : 0;
+     const char16_t* defPackage16 = defPackage
+-        ? env->GetStringChars(defPackage, NULL) : NULL;
++        ? reinterpret_cast<const char16_t*>(env->GetStringChars(defPackage, NULL)) : NULL;
+     jsize defPackageLen = defPackage
+         ? env->GetStringLength(defPackage) : 0;
+ 
+     jint ident = am->getResources().identifierForName(
+-        name16.get(), name16.size(), defType16, defTypeLen, defPackage16, defPackageLen);
++        reinterpret_cast<const char16_t*>(name16.get()), name16.size(), defType16, defTypeLen, defPackage16, defPackageLen);
+ 
+     if (defPackage16) {
+-        env->ReleaseStringChars(defPackage, defPackage16);
++        env->ReleaseStringChars(defPackage, reinterpret_cast<const jchar*>(defPackage16));
+     }
+     if (defType16) {
+-        env->ReleaseStringChars(defType, defType16);
++        env->ReleaseStringChars(defType, reinterpret_cast<const jchar*>(defType16));
+     }
+ 
+     return ident;
+@@ -1502,7 +1502,7 @@ static jobjectArray android_content_AssetManager_getArrayStringResource(JNIEnv*
+                 str = env->NewStringUTF(str8);
+             } else {
+                 const char16_t* str16 = pool->stringAt(value.data, &strLen);
+-                str = env->NewString(str16, strLen);
++                str = env->NewString(reinterpret_cast<const jchar*>(str16), strLen);
+             }
+ 
+             // If one of our NewString{UTF} calls failed due to memory, an
+diff --git a/frameworks/base/core/jni/android_util_XmlBlock.cpp b/frameworks/base/core/jni/android_util_XmlBlock.cpp
+index ad6033b1..55cc0bd8 100644
+--- a/frameworks/base/core/jni/android_util_XmlBlock.cpp
++++ b/frameworks/base/core/jni/android_util_XmlBlock.cpp
+@@ -264,19 +264,19 @@ static jint android_content_XmlBlock_nativeGetAttributeIndex(JNIEnv* env, jobjec
+     const char16_t* ns16 = NULL;
+     jsize nsLen = 0;
+     if (ns) {
+-        ns16 = env->GetStringChars(ns, NULL);
++        ns16 = reinterpret_cast<const char16_t*>(env->GetStringChars(ns, NULL));
+         nsLen = env->GetStringLength(ns);
+     }
+ 
+-    const char16_t* name16 = env->GetStringChars(name, NULL);
++    const char16_t* name16 = reinterpret_cast<const char16_t*>(env->GetStringChars(name, NULL));
+     jsize nameLen = env->GetStringLength(name);
+ 
+     jint idx = (jint)st->indexOfAttribute(ns16, nsLen, name16, nameLen);
+ 
+     if (ns) {
+-        env->ReleaseStringChars(ns, ns16);
++        env->ReleaseStringChars(ns, reinterpret_cast<const jchar*>(ns16));
+     }
+-    env->ReleaseStringChars(name, name16);
++    env->ReleaseStringChars(name, reinterpret_cast<const jchar*>(name16));
+ 
+     return idx;
+ }
+diff --git a/frameworks/base/include/androidfw/ResourceTypes.h b/frameworks/base/include/androidfw/ResourceTypes.h
+index 97afa59b..9b8d053f 100644
+--- a/frameworks/base/include/androidfw/ResourceTypes.h
++++ b/frameworks/base/include/androidfw/ResourceTypes.h
+@@ -650,25 +650,25 @@ public:
+ 
+     // These are available for all nodes:
+     int32_t getCommentID() const;
+-    const uint16_t* getComment(size_t* outLen) const;
++    const char16_t* getComment(size_t* outLen) const;
+     uint32_t getLineNumber() const;
+     
+     // This is available for TEXT:
+     int32_t getTextID() const;
+-    const uint16_t* getText(size_t* outLen) const;
++    const char16_t* getText(size_t* outLen) const;
+     ssize_t getTextValue(Res_value* outValue) const;
+     
+     // These are available for START_NAMESPACE and END_NAMESPACE:
+     int32_t getNamespacePrefixID() const;
+-    const uint16_t* getNamespacePrefix(size_t* outLen) const;
++    const char16_t* getNamespacePrefix(size_t* outLen) const;
+     int32_t getNamespaceUriID() const;
+-    const uint16_t* getNamespaceUri(size_t* outLen) const;
++    const char16_t* getNamespaceUri(size_t* outLen) const;
+     
+     // These are available for START_TAG and END_TAG:
+     int32_t getElementNamespaceID() const;
+-    const uint16_t* getElementNamespace(size_t* outLen) const;
++    const char16_t* getElementNamespace(size_t* outLen) const;
+     int32_t getElementNameID() const;
+-    const uint16_t* getElementName(size_t* outLen) const;
++    const char16_t* getElementName(size_t* outLen) const;
+     
+     // Remaining methods are for retrieving information about attributes
+     // associated with a START_TAG:
+@@ -677,10 +677,10 @@ public:
+     
+     // Returns -1 if no namespace, -2 if idx out of range.
+     int32_t getAttributeNamespaceID(size_t idx) const;
+-    const uint16_t* getAttributeNamespace(size_t idx, size_t* outLen) const;
++    const char16_t* getAttributeNamespace(size_t idx, size_t* outLen) const;
+ 
+     int32_t getAttributeNameID(size_t idx) const;
+-    const uint16_t* getAttributeName(size_t idx, size_t* outLen) const;
++    const char16_t* getAttributeName(size_t idx, size_t* outLen) const;
+     uint32_t getAttributeNameResID(size_t idx) const;
+ 
+     // These will work only if the underlying string pool is UTF-8.
+@@ -688,7 +688,7 @@ public:
+     const char* getAttributeName8(size_t idx, size_t* outLen) const;
+ 
+     int32_t getAttributeValueStringID(size_t idx) const;
+-    const uint16_t* getAttributeStringValue(size_t idx, size_t* outLen) const;
++    const char16_t* getAttributeStringValue(size_t idx, size_t* outLen) const;
+     
+     int32_t getAttributeDataType(size_t idx) const;
+     int32_t getAttributeData(size_t idx) const;
+@@ -1455,7 +1455,7 @@ public:
+                                size_t defPackageLen = 0,
+                                uint32_t* outTypeSpecFlags = NULL) const;
+ 
+-    static bool expandResourceRef(const uint16_t* refStr, size_t refLen,
++    static bool expandResourceRef(const char16_t* refStr, size_t refLen,
+                                   String16* outPackage,
+                                   String16* outType,
+                                   String16* outName,
+diff --git a/frameworks/base/libs/androidfw/ResourceTypes.cpp b/frameworks/base/libs/androidfw/ResourceTypes.cpp
+index 1cc3563e..51642ad1 100644
+--- a/frameworks/base/libs/androidfw/ResourceTypes.cpp
++++ b/frameworks/base/libs/androidfw/ResourceTypes.cpp
+@@ -564,7 +564,7 @@ decodeLength(const uint8_t** str)
+     return len;
+ }
+ 
+-const uint16_t* ResStringPool::stringAt(size_t idx, size_t* u16len) const
++const char16_t* ResStringPool::stringAt(size_t idx, size_t* u16len) const
+ {
+     if (mError == NO_ERROR && idx < mHeader->stringCount) {
+         const bool isUTF8 = (mHeader->flags&ResStringPool_header::UTF8_FLAG) != 0;
+@@ -883,7 +883,7 @@ int32_t ResXMLParser::getCommentID() const
+     return mCurNode != NULL ? dtohl(mCurNode->comment.index) : -1;
+ }
+ 
+-const uint16_t* ResXMLParser::getComment(size_t* outLen) const
++const char16_t* ResXMLParser::getComment(size_t* outLen) const
+ {
+     int32_t id = getCommentID();
+     return id >= 0 ? mTree.mStrings.stringAt(id, outLen) : NULL;
+@@ -902,7 +902,7 @@ int32_t ResXMLParser::getTextID() const
+     return -1;
+ }
+ 
+-const uint16_t* ResXMLParser::getText(size_t* outLen) const
++const char16_t* ResXMLParser::getText(size_t* outLen) const
+ {
+     int32_t id = getTextID();
+     return id >= 0 ? mTree.mStrings.stringAt(id, outLen) : NULL;
+@@ -925,7 +925,7 @@ int32_t ResXMLParser::getNamespacePrefixID() const
+     return -1;
+ }
+ 
+-const uint16_t* ResXMLParser::getNamespacePrefix(size_t* outLen) const
++const char16_t* ResXMLParser::getNamespacePrefix(size_t* outLen) const
+ {
+     int32_t id = getNamespacePrefixID();
+     //printf("prefix=%d  event=%p\n", id, mEventCode);
+@@ -940,7 +940,7 @@ int32_t ResXMLParser::getNamespaceUriID() const
+     return -1;
+ }
+ 
+-const uint16_t* ResXMLParser::getNamespaceUri(size_t* outLen) const
++const char16_t* ResXMLParser::getNamespaceUri(size_t* outLen) const
+ {
+     int32_t id = getNamespaceUriID();
+     //printf("uri=%d  event=%p\n", id, mEventCode);
+@@ -958,7 +958,7 @@ int32_t ResXMLParser::getElementNamespaceID() const
+     return -1;
+ }
+ 
+-const uint16_t* ResXMLParser::getElementNamespace(size_t* outLen) const
++const char16_t* ResXMLParser::getElementNamespace(size_t* outLen) const
+ {
+     int32_t id = getElementNamespaceID();
+     return id >= 0 ? mTree.mStrings.stringAt(id, outLen) : NULL;
+@@ -975,7 +975,7 @@ int32_t ResXMLParser::getElementNameID() const
+     return -1;
+ }
+ 
+-const uint16_t* ResXMLParser::getElementName(size_t* outLen) const
++const char16_t* ResXMLParser::getElementName(size_t* outLen) const
+ {
+     int32_t id = getElementNameID();
+     return id >= 0 ? mTree.mStrings.stringAt(id, outLen) : NULL;
+@@ -1004,7 +1004,7 @@ int32_t ResXMLParser::getAttributeNamespaceID(size_t idx) const
+     return -2;
+ }
+ 
+-const uint16_t* ResXMLParser::getAttributeNamespace(size_t idx, size_t* outLen) const
++const char16_t* ResXMLParser::getAttributeNamespace(size_t idx, size_t* outLen) const
+ {
+     int32_t id = getAttributeNamespaceID(idx);
+     //printf("attribute namespace=%d  idx=%d  event=%p\n", id, idx, mEventCode);
+@@ -1035,7 +1035,7 @@ int32_t ResXMLParser::getAttributeNameID(size_t idx) const
+     return -1;
+ }
+ 
+-const uint16_t* ResXMLParser::getAttributeName(size_t idx, size_t* outLen) const
++const char16_t* ResXMLParser::getAttributeName(size_t idx, size_t* outLen) const
+ {
+     int32_t id = getAttributeNameID(idx);
+     //printf("attribute name=%d  idx=%d  event=%p\n", id, idx, mEventCode);
+@@ -1075,7 +1075,7 @@ int32_t ResXMLParser::getAttributeValueStringID(size_t idx) const
+     return -1;
+ }
+ 
+-const uint16_t* ResXMLParser::getAttributeStringValue(size_t idx, size_t* outLen) const
++const char16_t* ResXMLParser::getAttributeStringValue(size_t idx, size_t* outLen) const
+ {
+     int32_t id = getAttributeValueStringID(idx);
+     //XML_NOISY(printf("getAttributeValue 0x%x=0x%x\n", idx, id));
+@@ -3904,7 +3904,7 @@ nope:
+     return 0;
+ }
+ 
+-bool ResTable::expandResourceRef(const uint16_t* refStr, size_t refLen,
++bool ResTable::expandResourceRef(const char16_t* refStr, size_t refLen,
+                                  String16* outPackage,
+                                  String16* outType,
+                                  String16* outName,
+@@ -5156,7 +5156,7 @@ status_t ResTable::parsePackage(const ResTable_package* const pkg,
+             idx = mPackageGroups.size()+1;
+ 
+             char16_t tmpName[sizeof(pkg->name)/sizeof(char16_t)];
+-            strcpy16_dtoh(tmpName, pkg->name, sizeof(pkg->name)/sizeof(char16_t));
++            strcpy16_dtoh((uint16_t*)tmpName, (const uint16_t*)pkg->name, sizeof(pkg->name)/sizeof(char16_t));
+             group = new PackageGroup(this, String16(tmpName), id);
+             if (group == NULL) {
+                 delete package;

@@ -1,0 +1,18 @@
+diff --git a/frameworks/base/graphics/java/android/graphics/drawable/RippleForeground.java b/frameworks/base/graphics/java/android/graphics/drawable/RippleForeground.java
+index cce9ba319..4ee68dccf 100644
+--- a/frameworks/base/graphics/java/android/graphics/drawable/RippleForeground.java
++++ b/frameworks/base/graphics/java/android/graphics/drawable/RippleForeground.java
+@@ -332,7 +332,12 @@ class RippleForeground extends RippleComponent {
+      * @param p the paint used to draw the ripple
+      */
+     public void draw(Canvas c, Paint p) {
+-        final boolean hasDisplayListCanvas = !mForceSoftware && c instanceof RecordingCanvas;
++        // arc-wasm: a window drawn in software (no WebGL2 for hwui) can still
++        // hand a ripple the recording canvas of a RenderNode no view owns
++        // (Jetpack Compose's graphics layers record into their own nodes): its
++        // render-thread animators need an attached node, so it draws in software.
++        final boolean hasDisplayListCanvas = !mForceSoftware && c instanceof RecordingCanvas
++                && (((RecordingCanvas) c).mNode == null || ((RecordingCanvas) c).mNode.isAttached());
+ 
+         pruneSwFinished();
+         if (hasDisplayListCanvas) {

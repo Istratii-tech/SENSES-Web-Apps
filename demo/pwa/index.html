@@ -1,0 +1,983 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Android">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<title>Android</title>
+<style>
+  /* Topic userspace: the stock home screens of Android 4.4 (Launcher2 +
+     SystemUI, Dalvik) and Android 6.0 (Launcher3, ART), as the user picks, as
+     an installable web app for phones (docs/topics/userspace.md, "PWA").
+     Always dark: the frame around Android's screen is the phone's bezel. */
+  :root { --bg: #000; --card: #12161f; --fg: #e6e9f0; --muted: #9aa1b2;
+          --accent: #3ddc84; --bad: #ff7b72; color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
+               font: 15px/1.45 -apple-system, system-ui, sans-serif;
+               -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+               -webkit-text-size-adjust: 100%; overscroll-behavior: none; }
+  #app { position: fixed; inset: 0; display: flex; flex-direction: column;
+         padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); }
+  #screen { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center;
+            justify-content: center; overflow: hidden; background: #000; }
+  canvas { display: block; background: #000; touch-action: none; outline: none; }
+  /* The phone: its display and SENSES's key panel, turned as a whole when
+     the phone is held sideways for a turned Android display (fit()). */
+  #phone { display: flex; flex-direction: column; flex: none; }
+  /* SENSES's key panel (ISTRATII_TECH SENSES, art/KeyPanel.kt): right under
+     the frame, as wide as it, 72 units high for 511 of width; black, "back"
+     and "home" outlined in grey, the SENSES plate between them; the status
+     line in the strip between the frame and the keys. */
+  #panel { position: relative; flex: none; background: #000; touch-action: none;
+           -webkit-tap-highlight-color: transparent; }
+  #panel svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #mem { position: absolute; left: 0; right: 0; top: 0; text-align: center; color: #6f6f6f;
+         white-space: nowrap; overflow: hidden; pointer-events: none;
+         font-variant-numeric: tabular-nums; }
+
+  /* The panel's menu (SENSES's control panel): dark. */
+  #sheet { position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: flex-end;
+           background: #000a; }
+  #sheet[hidden] { display: none; }
+  #sheet .box { background: #121212; border-radius: 18px 18px 0 0;
+                padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+                display: flex; flex-direction: column; gap: 8px; }
+  #sheet .logo { display: block; height: 30px; margin: 4px auto 10px; }
+  #sheet button { height: 48px; border: 0; border-radius: 12px; background: #1f1f1f; color: #e3e3e3;
+                  font: inherit; font-size: 16px; text-align: left; padding: 0 16px;
+                  -webkit-tap-highlight-color: transparent; }
+  #sheet button:active { background: #2c2c2c; }
+  #sheet button[hidden] { display: none; }
+  #sheet button.close { text-align: center; color: #9a9a9a; background: none; }
+  #sheet .others { display: flex; flex-direction: column; gap: 6px; padding-left: 14px; }
+  #sheet .others[hidden] { display: none; }
+  #sheet .others button { height: 42px; font-size: 15px; background: #181818; }
+  #stopping { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+              background: #000c; color: #d0d0d0; font-size: 17px; text-align: center; padding: 24px; }
+  #stopping[hidden] { display: none; }
+
+  #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+             padding: 24px; background: var(--bg); }
+  #overlay[hidden] { display: none; }
+  .card { width: 100%; max-width: 360px; text-align: center; }
+  .card img { width: 88px; height: 88px; border-radius: 20px; }
+  .card h1 { margin: 16px 0 6px; font-size: 22px; font-weight: 600; }
+  .card p { margin: 8px 0; color: var(--muted); }
+  #status { min-height: 1.45em; color: var(--fg); }
+  .bar { height: 6px; margin: 14px 0 6px; border-radius: 3px; background: #ffffff1a; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  .bar.busy > div { width: 30%; animation: busy 1.4s ease-in-out infinite; }
+  @keyframes busy { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+  #steps { margin: 18px 0 8px; padding: 0; list-style: none; text-align: left; }
+  #steps li { display: flex; gap: 12px; align-items: center; margin: 10px 0; }
+  #steps b { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+             background: #ffffff14; font-size: 14px; }
+  .share { display: inline-block; vertical-align: -4px; width: 18px; height: 18px; }
+  .actions { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; }
+  .actions button { height: 44px; border-radius: 10px; border: 0; font: inherit; font-weight: 600;
+                    background: var(--accent); color: #062b16; }
+  .actions button.secondary { background: #ffffff14; color: var(--fg); font-weight: 500; }
+  .actions button[hidden] { display: none; }
+  .error { color: var(--bad) !important; }
+
+  .systems { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
+  .systems button { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border: 0;
+                    border-radius: 14px; background: #ffffff10; color: var(--fg); font: inherit;
+                    text-align: left; -webkit-tap-highlight-color: transparent; }
+  .systems button:active { background: #ffffff22; }
+  .systems b { font-size: 26px; font-weight: 600; color: var(--accent); min-width: 54px; }
+  .systems span { display: flex; flex-direction: column; }
+  .systems small { color: var(--muted); font-size: 13px; }
+
+  #logbox { position: fixed; left: 0; right: 0; bottom: 0; height: 55%; display: flex; flex-direction: column;
+            background: #000e; border-top: 1px solid #222; }
+  #logbox[hidden] { display: none; }
+  #logbar { display: flex; align-items: center; gap: 8px; flex: none; height: 40px; padding: 0 8px;
+            background: #121212; color: #9a9a9a; font-size: 14px; }
+  #logbar button { height: 32px; border: 0; border-radius: 8px; background: #1f1f1f; color: #e3e3e3;
+                   font: inherit; padding: 0 12px; }
+  #log { flex: 1; margin: 0; padding: 8px 10px; overflow: auto; color: #9aa1b2;
+         font: 11px/1.4 ui-monospace, monospace; padding-bottom: env(safe-area-inset-bottom);
+         white-space: pre-wrap; word-break: break-word; -webkit-user-select: text; user-select: text; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="screen">
+    <!-- Android's display: SurfaceFlinger takes this canvas over (as an
+         OffscreenCanvas) with the size it has at startup, so the page sets
+         width/height before loading dalvikvm.js. -->
+    <div id="phone">
+    <canvas id="canvas" width="360" height="640" tabindex="0"></canvas>
+    <div id="panel" hidden>
+      <svg viewBox="0 0 511 72" preserveAspectRatio="none" aria-hidden="true">
+        <g fill="none" stroke="#969696" stroke-width="2.9" stroke-linecap="butt" stroke-linejoin="miter">
+          <polyline points="106.1,21.3 92.9,32 106.1,42.7"/>
+          <polygon points="398.6,41.7 398.6,29.6 407.23,22.6 415.85,29.6 415.85,41.7"/>
+        </g>
+        <!-- SENSES: its mask (art: logo_menu) filled with the metal gradient of
+             art/logo_menu.svg, placed by KeyPanel.logoBox. -->
+        <svg x="190.65" y="14.15" width="126.9" height="35.44" viewBox="612.487 387.966 30.4297 8.5"
+             preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="shine" gradientUnits="userSpaceOnUse" x1="627.699" y1="388.132"
+                            x2="627.699" y2="396.504"
+                            gradientTransform="matrix(0.696811 -0.717255 3.030674 2.944293 -996.241235 -312.990331)">
+              <stop offset="0" stop-color="#141414"/>
+              <stop offset="0.44" stop-color="#d3d1d1"/>
+              <stop offset="1" stop-color="#141414"/>
+            </linearGradient>
+            <mask id="ink" style="mask-type: alpha" maskUnits="userSpaceOnUse"
+                  x="612.487" y="387.966" width="30.4297" height="8.5">
+              <image href="senses-mask.png" x="612.487" y="387.966" width="30.4297" height="8.5"
+                     preserveAspectRatio="none"/>
+            </mask>
+          </defs>
+          <rect x="612.487" y="387.966" width="30.4297" height="8.5" fill="url(#shine)" mask="url(#ink)"/>
+        </svg>
+        <rect id="glow" rx="16" fill="#ffffff" fill-opacity="0.12" visibility="hidden"/>
+      </svg>
+      <div id="mem"></div>
+    </div>
+    </div>
+  </div>
+</div>
+<div id="sheet" hidden>
+  <div class="box">
+    <svg class="logo" viewBox="612.487 387.966 30.4297 8.5" aria-label="SENSES">
+      <rect x="612.487" y="387.966" width="30.4297" height="8.5" fill="url(#shine)" mask="url(#ink)"/>
+    </svg>
+    <button id="installapk">Установить APK</button>
+    <input id="apkfile" type="file" hidden>
+    <button id="switch">Сменить систему</button>
+    <div class="others" id="others" hidden></div>
+    <button id="sheetlog">Журнал</button>
+    <button id="stop">Остановить систему</button>
+    <button id="sheetclose" class="close">Закрыть</button>
+  </div>
+</div>
+<div id="stopping" hidden>Система останавливается…</div>
+
+<div id="overlay">
+  <div class="card">
+    <img src="icon-180.png" alt="">
+    <h1 id="title">Android</h1>
+    <div id="install" hidden>
+      <p>Установите на экран «Домой», чтобы работало без интернета:</p>
+      <ol id="steps">
+        <li><b>1</b><span>Нажмите
+          <svg class="share" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-label="«Поделиться»">
+            <path d="M12 15V3M8 7l4-4 4 4M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/></svg>
+          «Поделиться» внизу</span></li>
+        <li><b>2</b><span>Выберите «На экран „Домой“»</span></li>
+        <li><b>3</b><span>Откройте «Android» с экрана «Домой»</span></li>
+      </ol>
+      <p>Выбранная система (около 90 МБ) скачается один раз.</p>
+    </div>
+    <div id="choose" hidden>
+      <p>Какую систему запустить?</p>
+      <div class="systems">
+        <button data-os="44"><b>4.4</b><span>Android 4.4 KitKat<small>Dalvik · Launcher2, статус-бар · около 95 МБ</small></span></button>
+        <button data-os="60"><b>6.0</b><span>Android 6.0 Marshmallow<small>ART · Launcher3, статус-бар · около 90 МБ</small></span></button>
+        <button data-os="htc" hidden><b>HTC</b><span>HTC Sense 5.5<small>Android 4.4 · лаунчер BlinkFeed, статус-бар HTC · около 105 МБ</small></span></button>
+      </div>
+      <p><small>Сменить систему потом можно в меню: коснитесь надписи SENSES внизу.</small></p>
+    </div>
+    <div id="progress" hidden>
+      <p id="status"></p>
+      <div class="bar" id="bar"><div></div></div>
+      <p id="hint"></p>
+    </div>
+    <div class="actions">
+      <button id="run" class="secondary" hidden>Запустить в браузере</button>
+      <button id="retry" hidden>Попробовать снова</button>
+      <button id="tochoose" class="secondary" hidden>Выбрать другую систему</button>
+      <button id="showlog" class="secondary" hidden>Показать журнал</button>
+    </div>
+  </div>
+</div>
+<div id="logbox" hidden>
+  <div id="logbar"><button id="logback">&#8249; Назад</button><span>Журнал</span></div>
+  <pre id="log"></pre>
+</div>
+
+<script src="report.js"></script>
+<script>
+(function () {
+  'use strict';
+  // ?pkg=PACKAGE[/.Activity] (default: the stock launcher), ?systemui=0 (no
+  // status bar), ?log=1 (log panel), ?run=1 (start in the browser tab, not
+  // only from the home screen icon), ?canvas2d=1 (the display without WebGL,
+  // as on iOS 16: shim/graphics/framebuffer_gralloc.cc), ?memdata=1 (/data in
+  // IndexedDB, as where OPFS cannot write: shim/opfs/library_arc_opfs.js),
+  // ?remotegl=1 (apps' GL on the page's thread, as without WebGL in workers:
+  // shim/gles/remote_webgl.js).
+  // ?os=44|60|htc starts that system without asking (the choice is kept in
+  // localStorage otherwise).
+  var params = new URLSearchParams(location.search);
+  // The systems: their files (build/pwa/a44, a60, htc: mk/topic-pwa.mk), what
+  // the VM is started with, the download size for the texts. HTC Sense is
+  // only in builds made with its firmware (its button is shown when
+  // htc/dalvikvm.js is there).
+  var SYSTEMS = {
+    '44': { name: 'Android 4.4', script: 'a44/dalvikvm.js', mb: 95, vm: 'dalvik',
+            args: function () {
+              var a = ['arcwasm.server.SystemServer', params.get('pkg') || 'com.android.launcher'];
+              if (params.get('systemui') !== '0') a.splice(1, 0, '--systemui');
+              return a;
+            } },
+    '60': { name: 'Android 6.0', script: 'a60/artvm.js', mb: 90, vm: 'art',
+            args: function () {
+              var pkg = params.get('pkg');
+              // ?dump=1: windows, layers and thread stacks every 5 s in the log.
+              return ['arcwasm.server.SystemServer'].concat(
+                  params.get('dump') === '1' ? ['--dump'] : [],
+                  params.get('systemui') !== '0' ? ['--systemui'] : [],
+                  pkg ? [pkg] : ['--home', 'com.android.launcher3']);
+            } },
+    'htc': { name: 'HTC Sense', script: 'htc/dalvikvm.js', mb: 105, vm: 'dalvik', display: [360, 640],
+             args: function () {
+               var a = ['arcwasm.server.SystemServer', params.get('pkg') || 'com.htc.launcher'];
+               if (params.get('systemui') !== '0') a.splice(1, 0, '--systemui');
+               return a;
+             } },
+  };
+  // The Java heap's limit (-Xmx) by the wasm memory this device allowed
+  // (Module.arcwasmMemoryMax, shim/memory/fit_memory.js). Every app shares
+  // the one VM: Dalvik's own default is 16 MB for all of them. Dalvik
+  // reserves its whole heap at startup, so it gets less of the same memory.
+  var HEAPS = {
+    dalvik: [[1536, 256], [1024, 192], [768, 128], [0, 64]],
+    art: [[1536, 384], [1024, 192], [0, 128]],
+  };
+  function heapFor(vm, maxBytes) {
+    var mb = maxBytes / 1048576;
+    var steps = HEAPS[vm];
+    for (var i = 0; i < steps.length; i++)
+      if (mb >= steps[i][0]) return '-Xmx' + steps[i][1] + 'm';
+  }
+  function savedOs() {
+    var os = params.get('os');
+    if (!os) { try { os = localStorage.getItem('pwa-os'); } catch (e) {} }
+    return SYSTEMS[os] ? os : null;
+  }
+  function saveOs(os) {
+    try {
+      if (os) localStorage.setItem('pwa-os', os); else localStorage.removeItem('pwa-os');
+    } catch (e) {}
+  }
+  // Whether a system's files are on this device already (the service
+  // worker's cache, sw.js): it starts without the internet then.
+  function downloaded(os) {
+    if (!window.caches) return Promise.resolve(false);
+    var data = new URL(SYSTEMS[os].script.replace(/\.js$/, '.data'), location.href).href;
+    return caches.match(data, { ignoreSearch: true }).then(function (r) { return !!r; },
+                                                             function () { return false; });
+  }
+  // A mark after a system's name: on the device, or (offline) not.
+  function markDownloaded(os, el) {
+    downloaded(os).then(function (yes) {
+      var mark = document.createElement('small');
+      mark.className = 'mark';
+      if (yes) mark.textContent = ' · в телефоне';
+      else if (navigator.onLine === false) mark.textContent = ' · нужен интернет';
+      else return;
+      el.appendChild(mark);
+    });
+  }
+  var $ = function (id) { return document.getElementById(id); };
+  var canvas = $('canvas'), logEl = $('log');
+
+  // --- log ---------------------------------------------------------------
+  // Hidden unless ?log=1 or something fails; every line also goes to
+  // tools/serve.py's console (report.js), which is how an iPhone is watched.
+  var arcLog = window.arcLog = [];
+  function emit(text) {
+    text = String(text);
+    var line = document.createElement('span');
+    line.textContent = text + '\n';
+    logEl.appendChild(line);
+    // For debugging: the last lines with the second they came (arcLog in the console).
+    arcLog.push((performance.now() / 1000).toFixed(2) + ' ' + text);
+    if (arcLog.length > 5000) arcLog.splice(0, 1000);
+    while (logEl.childNodes.length > 200) logEl.removeChild(logEl.firstChild);
+    if (!$('logbox').hidden) logEl.scrollTop = logEl.scrollHeight;
+    if (window.arcReport) arcReport(text);
+    watchBoot(text);
+  }
+  function showLog() { $('logbox').hidden = false; logEl.scrollTop = logEl.scrollHeight; }
+  $('logback').onclick = function () { $('logbox').hidden = true; };
+  if (params.get('log') === '1') showLog();
+  $('showlog').onclick = showLog;
+  $('retry').onclick = function () { location.reload(); };
+  // Back to the choice of systems: when the picked one cannot be downloaded
+  // (no internet) or fails, another one can be started.
+  $('tochoose').onclick = function () { reloadInto(null); };
+
+  // --- overlay -------------------------------------------------------------
+  function overlay(mode) {
+    $('overlay').hidden = !mode;
+    $('install').hidden = mode !== 'install';
+    $('choose').hidden = mode !== 'choose';
+    $('progress').hidden = mode !== 'progress';
+    $('run').hidden = mode !== 'install';
+  }
+  function status(text, fraction, hint) {
+    overlay('progress');
+    $('status').textContent = text;
+    $('status').classList.remove('error');
+    $('bar').hidden = false;
+    $('bar').classList.toggle('busy', fraction == null);
+    $('bar').firstChild.style.width = fraction == null ? '' : Math.round(fraction * 100) + '%';
+    $('hint').textContent = hint || '';
+  }
+  var failed = false;
+  function fail(text, hint) {
+    if (failed) return;
+    failed = true;
+    emit('PWA: failed: ' + text + (hint ? ' (' + hint + ')' : ''));
+    overlay('progress');
+    $('status').textContent = text;
+    $('status').classList.add('error');
+    $('bar').hidden = true;
+    $('hint').textContent = hint || '';
+    $('retry').hidden = false;
+    $('tochoose').hidden = false;
+    $('showlog').hidden = false;
+  }
+  // Out of memory before the home screen: mostly right after a restart or
+  // a switch of systems, while the previous page's wasm memory (1.5 GB) is
+  // not given back yet (iPhone 12 Pro, iOS 16.1: the next try a few seconds
+  // later works; iPhone X: only after ~30 s). So it tries again by itself,
+  // waiting longer each time (3 to 20 s) and, from the third retry, with
+  // less memory (shim/memory/fit_memory.js: Module.arcwasmMemoryCap); after
+  // five, the error.
+  var MEMORY_RETRIES = 5, RETRY_SECONDS = [3, 6, 10, 15, 20];
+  // "Out of memory" (RangeError, Emscripten's "Cannot enlarge memory"), not
+  // "Out of bounds memory access" (a crash: corrupted memory, not too little).
+  function isOutOfMemory(text) {
+    return /out of memory|cannot enlarge memory|RangeError: (Array buffer allocation|Out of)/i.test(text) &&
+           !/out of bounds/i.test(text);
+  }
+  function memoryRetries() {
+    try { return +(sessionStorage.getItem('pwa-memory-retries') || 0); } catch (e) { return 0; }
+  }
+  function outOfMemory(what) {
+    var n = memoryRetries();
+    if (homeShown || failed || n >= MEMORY_RETRIES) {
+      fail('Не хватило памяти', 'Закройте другие приложения и вкладки и попробуйте снова.');
+      return;
+    }
+    failed = true;  // what fails next in this page is the same shortage
+    emit('PWA: out of memory at startup (' + what + '): retry ' + (n + 1) + ' of ' + MEMORY_RETRIES);
+    try { sessionStorage.setItem('pwa-memory-retries', String(n + 1)); } catch (e) {}
+    status('Освобождаю память…', null, 'Попытка ' + (n + 1) + ' из ' + MEMORY_RETRIES);
+    setTimeout(function () { location.reload(); }, RETRY_SECONDS[n] * 1000);
+  }
+  window.addEventListener('error', function (e) {
+    var msg = String(e.message || e.error || '');
+    if (isOutOfMemory(msg))
+      outOfMemory(msg);
+    else if (!homeShown) fail('Ошибка запуска', msg);
+    // A thread of the VM died (a wasm trap): Android stands still from now
+    // on, the screen would just freeze.
+    else if (/RuntimeError|Aborted\(/.test(msg)) {
+      heapReport();
+      fail('Сбой Android', msg);
+    }
+  });
+  // After a thread's wasm trap: malloc's heap walked for damage, into the
+  // log (shim/memory/dlmalloc_report.c; once, here on the page's thread,
+  // since the thread that found it is gone).
+  var heapReported = false;
+  function heapReport() {
+    if (heapReported || !window.Module || !Module._arc_dlmalloc_walk) return;
+    heapReported = true;
+    try { Module._arc_dlmalloc_walk(); } catch (e) { emit('PWA: heap walk failed: ' + e); }
+  }
+  window.addEventListener('unhandledrejection', function (e) {
+    if (started && !homeShown) fail('Ошибка запуска', String(e.reason));
+  });
+
+  // --- layout ----------------------------------------------------------------
+  // Android's display: 360 px wide at 160 dpi (360 dp, a common phone width),
+  // as tall as the free area's proportions allow, in portrait even when the
+  // phone is held sideways; a system made for one phone has that phone's
+  // proportions instead (HTC Sense: the HTC One's 16:9, 360x640), with bars
+  // around it. Fixed for the session; the canvas is scaled to fit.
+  function pickDisplaySize(system) {
+    if (system.display) {
+      canvas.width = system.display[0];
+      canvas.height = system.display[1];
+      return;
+    }
+    var box = $('screen').getBoundingClientRect();
+    var w = Math.max(1, Math.min(box.width, box.height));
+    var h = Math.max(box.width, box.height);
+    var width = 360;
+    // What is left above the key panel (PANEL_H for PANEL_W of width).
+    var height = Math.round(width * (h / w - PANEL_H / PANEL_W) / 2) * 2;
+    canvas.width = width;
+    canvas.height = Math.max(480, Math.min(800, height));
+  }
+  // The frame and SENSES's key panel under it, as KeyPanel.plan lays them out:
+  // the frame as wide as the window and the panel below it; when tight, the
+  // panel squashed down to SQUASH_MIN, then the frame narrowed until the
+  // panel fits (the panel is never cut: it is the only way to the menu); the
+  // rest of the height above and below the two, evenly (#screen centers).
+  var PANEL_W = 511, PANEL_H = 72, SQUASH_MIN = 0.90;
+  // Android turned its display (an app wants landscape: WindowManagerService
+  // rotation, Surface.ROTATION_90 or 270) and the phone is held sideways (the
+  // page is wider than high): the phone element is turned the other way, so
+  // the app stands upright; held upright, it shows sideways, as on a phone.
+  function androidRotation() {
+    var f = bootStart && window.Module && Module._arcwasm_input_rotation;
+    try { return f ? f() : 0; } catch (e) { return 0; }
+  }
+  function turnNow() {
+    var r = androidRotation();
+    if ((r !== 1 && r !== 3) || innerWidth <= innerHeight) return 0;
+    return r === 1 ? -90 : 90;
+  }
+  var turn = 0;
+  setInterval(function () { if (turnNow() !== turn) fit(); }, 300);
+  function fit() {
+    turn = turnNow();
+    if (window.Module && Module.arcwasmInput) Module.arcwasmInput.turn = turn;
+    $('phone').style.transform = turn ? 'rotate(' + turn + 'deg)' : '';
+    var rect = $('screen').getBoundingClientRect();
+    // Turned, the phone lies across the screen: lay it out in the swapped box.
+    var box = turn ? {width: rect.height, height: rect.width} : rect;
+    var ar = canvas.height / canvas.width;
+    var cw = box.width, ch = cw * ar;
+    if (box.height - ch < PANEL_H * (cw / PANEL_W) * SQUASH_MIN) {
+      cw = box.height / (ar + PANEL_H / PANEL_W);
+      ch = cw * ar;
+    }
+    var panelH = Math.min(box.height - ch, PANEL_H * cw / PANEL_W);
+    canvas.style.width = Math.floor(cw) + 'px';
+    canvas.style.height = Math.floor(ch) + 'px';
+    var panel = $('panel');
+    panel.style.width = Math.floor(cw) + 'px';
+    panel.style.height = Math.floor(panelH) + 'px';
+    // The status line: KeyPanel.ST_T..ST_B (0..20 units), small.
+    var st = 20 * panelH / PANEL_H;
+    $('mem').style.height = st + 'px';
+    $('mem').style.lineHeight = st + 'px';
+    $('mem').style.fontSize = Math.max(8, Math.min(12, st * 0.55)) + 'px';
+  }
+  window.addEventListener('resize', fit);
+  // No page zoom or scrolling from stray gestures (iOS ignores user-scalable).
+  document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
+  document.addEventListener('touchmove', function (e) {
+    if (!logEl.contains(e.target)) e.preventDefault();
+  }, { passive: false });
+
+  // SENSES's key panel (PanelKeys): three areas of KeyPanel.hitUnits —
+  // "back" (held as long as the finger is), "home" (short: HOME on release;
+  // long: APP_SWITCH, the recent apps, and no HOME) and the SENSES plate
+  // (short: this page's menu; long: MENU to Android). Keys go through the
+  // canvas's keyboard path as "Android:N" (browser_input.js).
+  var BACK = 0, HOME = 1, LOGO = 2, LONG_MS = 500;
+  var HITS = [[30, 4, 170, 68], [337, 4, 477, 68], [172, 4, 336, 68]];
+  function sendKey(type, keyCode) {
+    var code = 'Android:' + keyCode;
+    canvas.dispatchEvent(new KeyboardEvent(type, { code: code, key: code, bubbles: true }));
+  }
+  function tapKey(keyCode) { sendKey('keydown', keyCode); sendKey('keyup', keyCode); }
+  (function () {
+    var panel = $('panel'), glow = $('glow');
+    var pressed = -1, pointer = null, longFired = false, timer = 0;
+    function areaAt(e) {
+      var input = window.Module && Module.arcwasmInput;
+      var at = input ? input.localPoint(panel, e.clientX, e.clientY, PANEL_W, PANEL_H) : null;
+      if (!at) {
+        var r = panel.getBoundingClientRect();
+        at = [(e.clientX - r.left) / r.width * PANEL_W, (e.clientY - r.top) / r.height * PANEL_H];
+      }
+      var u = at[0], v = at[1];
+      for (var i = 0; i < HITS.length; i++) {
+        var h = HITS[i];
+        if (u >= h[0] && u < h[2] && v >= h[1] && v < h[3]) return i;
+      }
+      return -1;
+    }
+    function light(i) {
+      if (i < 0) { glow.setAttribute('visibility', 'hidden'); return; }
+      var h = HITS[i];
+      glow.setAttribute('x', h[0]); glow.setAttribute('y', h[1]);
+      glow.setAttribute('width', h[2] - h[0]); glow.setAttribute('height', h[3] - h[1]);
+      glow.setAttribute('visibility', 'visible');
+    }
+    panel.addEventListener('pointerdown', function (e) {
+      if (pointer !== null) return;
+      var i = areaAt(e);
+      if (i < 0) return;
+      e.preventDefault();
+      pointer = e.pointerId; pressed = i; longFired = false;
+      try { panel.setPointerCapture(e.pointerId); } catch (x) {}
+      light(i);
+      if (i === BACK) sendKey('keydown', 4);
+      else timer = setTimeout(function () {
+        longFired = true;
+        if (navigator.vibrate) navigator.vibrate(20);
+        tapKey(pressed === HOME ? 187 : 82);
+      }, LONG_MS);
+    });
+    function end(e, cancelled) {
+      if (e.pointerId !== pointer) return;
+      clearTimeout(timer);
+      var onIt = !cancelled && areaAt(e) === pressed;
+      if (pressed === BACK) sendKey('keyup', 4);
+      else if (onIt && !longFired) {
+        if (pressed === HOME) tapKey(3);
+        else openMenu();
+      }
+      pointer = null; pressed = -1; light(-1);
+    }
+    panel.addEventListener('pointerup', function (e) { end(e, false); });
+    panel.addEventListener('pointercancel', function (e) { end(e, true); });
+    panel.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  })();
+
+  // The SENSES plate's shine (Shine.Menu): the gradient of art/logo_menu.svg
+  // moved down and back over 2 s (translate 0 -> 7 -> -7 -> 0 at keyTimes
+  // 0, 0.512, 0.514, 1, as the SVG's animation), 2 s after the panel shows,
+  // then once a minute (the person's schedule); in between it stands still.
+  var SHINE_M = [0.696811, -0.717255, 3.030674, 2.944293, -996.241235, -312.990331];
+  var SHINE_TY = [0, 7, -7, 0], SHINE_KEYS = [0, 0.512109, 0.51425, 1], SHINE_MS = 2000;
+  function shineAt(t) {
+    var f = Math.min(1, Math.max(0, t / SHINE_MS)), i = SHINE_KEYS.length - 2;
+    for (var k = 1; k < SHINE_KEYS.length; k++) if (f < SHINE_KEYS[k]) { i = k - 1; break; }
+    var u = Math.min(1, Math.max(0, (f - SHINE_KEYS[i]) / (SHINE_KEYS[i + 1] - SHINE_KEYS[i])));
+    var ty = SHINE_TY[i] + (SHINE_TY[i + 1] - SHINE_TY[i]) * u, m = SHINE_M;
+    $('shine').setAttribute('gradientTransform', 'matrix(' + [m[0], m[1], m[2], m[3],
+        m[4] + m[2] * ty, m[5] + m[3] * ty].join(' ') + ')');
+  }
+  function shine() {
+    var t0 = performance.now();
+    (function frame() {
+      var t = performance.now() - t0;
+      shineAt(t);
+      if (t < SHINE_MS) requestAnimationFrame(frame);
+    })();
+  }
+  function startShine() {
+    setTimeout(function () { shine(); setInterval(shine, 60000); }, 2000);
+  }
+
+  // The menu (SENSES's control panel, dark): install an APK, another system,
+  // the log, stop the system, close.
+  function openMenu() {
+    var others = $('others');
+    others.hidden = true;
+    others.textContent = '';
+    Object.keys(SYSTEMS).forEach(function (os) {
+      if (os === currentOs) return;
+      if (os === 'htc' && !htcAvailable) return;
+      var b = document.createElement('button');
+      b.textContent = SYSTEMS[os].name;
+      markDownloaded(os, b);
+      b.onclick = function () { switchTo(os); };
+      others.appendChild(b);
+    });
+    $('sheet').hidden = false;
+  }
+  $('sheet').addEventListener('click', function (e) { if (e.target === this) this.hidden = true; });
+
+  // --- boot progress -----------------------------------------------------------
+  // The overlay stays until the home screen has drawn: SystemServer logs the
+  // start of the first Activity, then the display's frame counter moves.
+  var started = false, homeStarted = false, homeShown = false, homeFrames = 0, bootStart = 0;
+  // Exports exist before the module is ready, as stubs that abort the
+  // runtime when called (ASSERTIONS): only after onRuntimeInitialized.
+  function frames() { return bootStart ? Module._arcwasm_display_frames() : 0; }
+  function watchBoot(text) {
+    if (!homeStarted && /^SystemServer: started /.test(text)) {
+      homeStarted = true;
+      homeFrames = frames();
+    }
+    // Every app (SystemUI, the launcher) runs in the VM's one app process:
+    // if it dies the screen freezes, so start the system again instead.
+    if (/^E\/ActivityManager: process \S+ died$/.test(text)) restartAfterCrash();
+  }
+  var restarting = false;
+  function restartAfterCrash() {
+    if (restarting || failed) return;
+    restarting = true;
+    var now = Date.now(), recent = [];
+    try { recent = JSON.parse(sessionStorage.getItem('pwa-crashes') || '[]'); } catch (e) {}
+    recent = recent.filter(function (t) { return now - t < 120000; }).concat([now]);
+    try { sessionStorage.setItem('pwa-crashes', JSON.stringify(recent)); } catch (e) {}
+    if (recent.length > 3) {
+      fail('Android падает при запуске', 'Журнал покажет, на чём.');
+      return;
+    }
+    status('Перезапуск Android…', null, 'Приложение упало; данные в /data сохранены.');
+    setTimeout(function () { location.reload(); }, 1500);
+  }
+  // ?installurl=PATH (tests in browsers that cannot be clicked: Safari): once
+  // the home screen is up, that APK is installed without the installer's
+  // confirmation (arcwasm.server.ApkInbox, "arcwasm-direct-" names).
+  function installFromUrl() {
+    var url = params.get('installurl');
+    var input = window.Module && Module.arcwasmInput;
+    if (!url || !input) return;
+    fetch(url).then(function (r) { return r.arrayBuffer(); }).then(function (data) {
+      var ok = input.sendFile('arcwasm-direct-' + url.replace(/.*\//, ''), new Uint8Array(data));
+      emit('PWA: installurl ' + url + ' (' + data.byteLength + ' bytes) ' + (ok ? 'sent' : 'NOT sent'));
+    }, function (e) { emit('PWA: installurl ' + url + ': ' + e); });
+  }
+  // ?cycle=SECONDS with ?pkg=PKG/CLASS (tests in browsers that cannot be
+  // clicked): every SECONDS the home screen, then the app again, as a user
+  // leaving and coming back (arcwasm.server.ApkInbox commands).
+  function cycleApp() {
+    var secs = parseInt(params.get('cycle'), 10), pkg = params.get('pkg');
+    var input = window.Module && Module.arcwasmInput;
+    if (!secs || !pkg || !input) return;
+    var home = true, n = 0;
+    setInterval(function () {
+      var name = home ? 'arcwasm-home' : 'arcwasm-launch-' + pkg.replace('/', ':');
+      var sent = input.sendFile(name, new Uint8Array(1));  // (no buffer for 0 bytes)
+      var label = 'cycle ' + (++n) + ': ' + (home ? 'home' : pkg);
+      emit('PWA: ' + label + (sent ? '' : ' NOT sent'));
+      // What the screen shows a while later: black or not.
+      setTimeout(function () { emit('PWA: ' + label + ': screen ' + screenLit()); }, secs * 500);
+      home = !home;
+    }, secs * 1000);
+  }
+  // The share of the display's pixels that are not black, in percent (2D
+  // canvas: what the page shows).
+  function screenLit() {
+    try {
+      var c = canvas.getContext('2d');
+      var d = c.getImageData(0, 0, canvas.width, canvas.height).data, lit = 0;
+      for (var i = 0; i < d.length; i += 4 * 7) if (d[i] + d[i + 1] + d[i + 2] > 48) lit++;
+      return Math.round(lit * 100 / (d.length / (4 * 7))) + '% lit';
+    } catch (e) {
+      return 'unknown (' + e + ')';
+    }
+  }
+  function bootTicker() {
+    var timer = setInterval(function () {
+      if (failed) { clearInterval(timer); return; }
+      var secs = Math.round((performance.now() - bootStart) / 1000);
+      if ((homeStarted && frames() > homeFrames + 2) || (secs > 240 && frames() > 0)) {
+        clearInterval(timer);
+        homeShown = true;
+        $('tochoose').hidden = true;
+        try { sessionStorage.removeItem('pwa-memory-retries'); } catch (e) {}
+        installFromUrl();
+        cycleApp();
+        emit('PWA: home screen after ' + secs + ' s');
+        setTimeout(function () { overlay(null); canvas.focus(); }, 600);
+        return;
+      }
+      status('Запуск Android…', null, secs + ' с · первый запуск дольше, до пары минут');
+    }, 500);
+  }
+
+  // --- start ---------------------------------------------------------------------
+  var Module;
+  var currentOs = null, htcAvailable = false;
+  // HTC Sense: when this build has it (the choice screen's button, the menu).
+  fetch(SYSTEMS.htc.script, { method: 'HEAD' }).then(function (r) {
+    htcAvailable = r.ok;
+    if (r.ok) document.querySelector('#choose button[data-os="htc"]').hidden = false;
+  }, function () {});
+  function start(os) {
+    if (started) return;
+    started = true;
+    currentOs = os;
+    var system = SYSTEMS[os];
+    $('panel').hidden = false;
+    fit();
+    startShine();
+    $('title').textContent = system.name;
+    // Installing apps: the 4.4 systems (6.0's package manager does not yet).
+    $('installapk').hidden = os === '60';
+    overlay('progress');
+    pickDisplaySize(system);
+    fit();
+    var args = system.args();
+    emit('PWA: ' + system.script + ' ' + args.join(' ') + ' · display ' + canvas.width + 'x' +
+         canvas.height + ' · ' + navigator.userAgent);
+    if (navigator.storage && navigator.storage.persist)
+      navigator.storage.persist().then(function (ok) { emit('PWA: persistent storage ' + ok); });
+    status('Загрузка системы…', 0, 'Около ' + system.mb + ' МБ при первом запуске, потом из памяти телефона.');
+    $('tochoose').hidden = false;  // until the home screen (download and start can hang)
+    // Offline and not on the device: no use waiting for the download.
+    if (navigator.onLine === false) {
+      downloaded(os).then(function (yes) {
+        if (!yes && !bootStart)
+          fail('Нет интернета', system.name + ' ещё не скачана на телефон. Подключитесь к сети ' +
+               'или выберите систему, которая уже в телефоне.');
+      });
+    }
+    // The system's files are next to its script: .wasm already resolves
+    // there, the file packager's .data would resolve against the page.
+    var dir = system.script.replace(/[^/]*$/, '');
+    var retries = memoryRetries();
+    // ?prop=KEY=VALUE (repeatable; 4.4 and HTC): system properties for
+    // debugging, e.g. prop=debug.ndk.jit=0 (no translation of app code).
+    if (system.vm == 'dalvik')
+      params.getAll('prop').forEach(function (p) { args.splice(1, 0, '--prop=' + p); });
+    Module = window.Module = {
+      arguments: args,
+      // After failed starts for memory: first just later (the old page's
+      // memory comes back), then at most 1 GB, then 768 MB. ?memcap=MB (a
+      // test switch) gives a desktop browser a phone's memory.
+      arcwasmMemoryCap: retries >= 4 ? 12288 : retries >= 2 ? 16384 :
+          (parseInt(params.get('memcap'), 10) || 0) * 16,
+      // ?initmem=MB: the memory starts that big, so it need not grow under
+      // running threads (shim/memory/fit_memory.js).
+      arcwasmMemoryInitial: /^\d{3,}$/.test(params.get('initmem') || '') ? +params.get('initmem') : 0,
+      // The wasm memory is made by now: the heap's limit goes first.
+      preRun: [function () {
+        var max = Module.arcwasmMemoryMax || 0;
+        args.unshift(heapFor(system.vm, max));
+        emit('PWA: wasm memory up to ' + Math.round(max / 1048576) + ' MB, Java heap ' + args[0]);
+      }],
+      locateFile: function (path, prefix) { return (prefix || dir) + path; },
+      canvas: canvas,
+      print: emit,
+      printErr: emit,
+      // Emscripten's progress for dalvikvm.data: "Downloading data... (LOADED/TOTAL)".
+      setStatus: function (text) {
+        var m = /\((\d+)\/(\d+)\)/.exec(text);
+        if (m && !failed && !bootStart) {
+          var mb = function (n) { return Math.round(n / 1048576); };
+          status('Загрузка системы… ' + mb(+m[1]) + ' из ' + mb(+m[2]) + ' МБ', m[1] / m[2],
+                 'Только при первом запуске, потом из памяти телефона.');
+        }
+      },
+      onRuntimeInitialized: function () {
+        bootStart = performance.now();
+        bootTicker();
+      },
+      onExit: function (code) { fail('Android завершился (код ' + code + ')'); },
+      onAbort: function (what) {
+        if (isOutOfMemory(String(what)))
+          outOfMemory(String(what));
+        else {
+          heapReport();
+          fail('Сбой: ' + what);
+        }
+      },
+    };
+    var s = document.createElement('script');
+    // Test switches for the threads, which see only the script's URL.
+    var query = ['canvas2d', 'memdata', 'remotegl'].filter(function (k) {
+      return params.get(k) === '1' || (k == 'memdata' && params.get(k) === 'mem');
+    }).map(function (k) { return k + '=' + params.get(k); }).join('&');
+    s.src = system.script + (query ? '?' + query : '');
+    s.onerror = function () { fail('Не удалось загрузить систему', 'Нужен интернет для первого запуска.'); };
+    document.body.appendChild(s);
+    setInterval(function () {
+      if (bootStart)
+        arcReport('AppStats: frames=' + frames() + ' visible=' + document.visibilityState);
+    }, 5000);
+  }
+
+  // The saved system, or the choice screen.
+  function choose() {
+    var os = savedOs();
+    if (os) {
+      start(os);
+      return;
+    }
+    overlay('choose');
+    document.querySelectorAll('#choose button[data-os]').forEach(function (b) {
+      if (!b.querySelector('.mark')) markDownloaded(b.dataset.os, b.querySelector('small'));
+      b.onclick = function () {
+        saveOs(b.dataset.os);
+        start(b.dataset.os);
+      };
+    });
+  }
+
+  // --- memory line ------------------------------------------------------------------
+  // Under the screen, every 5 s once Android runs: the browser's storage for
+  // this site (Android's /data, the cached systems) of the quota this device
+  // gives it (navigator.storage.estimate: it differs per device and browser),
+  // and the VM's memory: the wasm heap's top of what the device let it have.
+  // Binary units, as wasm memory is sized (512 MB, not 537).
+  function size(bytes) {
+    var mb = bytes / 1048576;
+    if (mb >= 1024) return (mb / 1024).toFixed(1).replace('.', ',') + ' ГБ';
+    return Math.round(mb) + ' МБ';
+  }
+  function updateMemory() {
+    var parts = [];
+    var top = window.Module && Module._arcwasm_heap_top;
+    var memory = (window.Module && Module.arcwasmMemoryMax) ||
+        (typeof wasmMemory !== 'undefined' && wasmMemory ? wasmMemory.buffer.byteLength : 0);
+    if (typeof top === 'function' && memory) {
+      // What the VM may grow to: as much as this device allowed, up to 2 GB
+      // (fit_memory.js); pages cannot see the phone's RAM itself.
+      try { parts[1] = 'ОЗУ ' + size(top()) + ' / ' + size(memory); } catch (e) {}
+    }
+    var show = function () {
+      var text = parts.filter(Boolean).join(' · ');
+      $('mem').textContent = text;
+      $('mem').hidden = !text;
+    };
+    if (navigator.storage && navigator.storage.estimate) {
+      navigator.storage.estimate().then(function (e) {
+        if (e && e.quota) parts[0] = 'Хранилище ' + size(e.usage || 0) + ' / ' + size(e.quota);
+        show();
+      }, show);
+    } else {
+      show();
+    }
+  }
+  setInterval(function () { if (bootStart) updateMemory(); }, 5000);
+
+  // The ⋮ menu: installing an app, another system (the page reloads to the
+  // choice screen: one VM per page), the log.
+  $('sheetclose').onclick = function () { $('sheet').hidden = true; };
+  $('sheetlog').onclick = function () { $('sheet').hidden = true; showLog(); };
+  // Installing an app: the picked APK goes to Android (Module.arcwasmInput.
+  // sendFile, shim/input/browser_input.js), which opens it with its package
+  // installer or installs it (arcwasm.server.ApkInbox); then it is in the
+  // launcher's app list, and stays (/data) where OPFS keeps data.
+  $('installapk').onclick = function () {
+    $('sheet').hidden = true;
+    $('apkfile').value = '';
+    $('apkfile').click();
+  };
+  $('apkfile').onchange = function () {
+    var file = this.files && this.files[0];
+    if (!file) return;
+    // No accept= on the input: iOS's Files picker greys out .apk files for a
+    // type it does not know. Checked here instead.
+    if (!/\.apk$/i.test(file.name)) {
+      alert(file.name + ' — это не APK. Выберите файл .apk.');
+      return;
+    }
+    var input = window.Module && Module.arcwasmInput;
+    if (!input || !bootStart) {
+      alert('Android ещё загружается. Попробуйте через минуту.');
+      return;
+    }
+    file.arrayBuffer().then(function (data) {
+      var ok = input.sendFile(file.name, new Uint8Array(data));
+      emit('PWA: APK ' + file.name + ' (' + data.byteLength + ' bytes) ' + (ok ? 'sent' : 'NOT sent'));
+      if (!ok) alert('Не хватило памяти, чтобы передать ' + file.name + '.');
+    }, function (e) {
+      alert('Не удалось прочитать ' + file.name + ': ' + e);
+    });
+  };
+  // Another system: the list right in the menu; one VM per page, so the
+  // page reloads into the picked one.
+  $('switch').onclick = function () { $('others').hidden = !$('others').hidden; };
+  function reloadInto(os) {
+    saveOs(os);
+    // The VM's threads end now, not when the old page is collected: its
+    // memory (up to 1.5 GB) is wanted by the next page at once.
+    try { if (window.PThread) PThread.terminateAllThreads(); } catch (e) {}
+    var url = new URL(location.href);
+    url.searchParams.delete('os');
+    location.replace(url.toString());
+  }
+  function switchTo(os) {
+    $('sheet').hidden = true;
+    $('stopping').hidden = false;
+    setTimeout(function () { reloadInto(os); }, 300);
+  }
+  // Stop: the screen dims with "the system is stopping" (as SENSES's Stop),
+  // and the page comes back to the choice of systems.
+  $('stop').onclick = function () {
+    $('sheet').hidden = true;
+    $('stopping').hidden = false;
+    setTimeout(function () { reloadInto(null); }, 600);
+  };
+
+  // --- service worker and cross-origin isolation ----------------------------------
+  // Wasm threads need SharedArrayBuffer, which needs a cross-origin isolated
+  // page. sw.js caches everything for offline use and adds the COOP/COEP
+  // headers to what it serves, so any static HTTPS host will do: the first
+  // visit without them registers it and reloads once.
+  function serviceWorkerReady() {
+    if (!('serviceWorker' in navigator)) return Promise.resolve(false);
+    return navigator.serviceWorker.register('sw.js').then(function (reg) {
+      // A new build on the server: switch to it now, before Android starts
+      // (the waiting worker would otherwise wait until the app is closed).
+      // Offline, update() fails at once and the installed build starts.
+      if (!navigator.serviceWorker.controller) return navigator.serviceWorker.ready;
+      var checked = reg.update().catch(function () {});
+      var timeout = new Promise(function (resolve) { setTimeout(resolve, 4000); });
+      return Promise.race([checked, timeout]).then(function () {
+        var next = reg.installing || reg.waiting;
+        if (!next) return navigator.serviceWorker.ready;
+        emit('PWA: updating to a new build');
+        status('Обновление…', null);
+        return new Promise(function (resolve) {
+          navigator.serviceWorker.addEventListener('controllerchange', function () {
+            location.reload();
+          });
+          function step() {
+            if (next.state === 'installed') next.postMessage('skipWaiting');
+            else if (next.state === 'redundant') resolve(navigator.serviceWorker.ready);
+          }
+          next.addEventListener('statechange', step);
+          step();
+        });
+      });
+    }).then(function () {
+      if (navigator.serviceWorker.controller) return true;
+      // First visit: the worker claims this page once it is active.
+      return new Promise(function (resolve) {
+        navigator.serviceWorker.addEventListener('controllerchange', function () { resolve(true); });
+        setTimeout(function () { resolve(!!navigator.serviceWorker.controller); }, 5000);
+      });
+    }).catch(function (e) { emit('PWA: service worker: ' + e); return false; });
+  }
+
+  function boot() {
+    if (!window.isSecureContext) {
+      fail('Нужно открыть по HTTPS', 'Страница открыта по ' + location.protocol + ', Android не запустится.');
+      return;
+    }
+    var standalone = navigator.standalone === true ||
+                     matchMedia('(display-mode: standalone)').matches;
+    var mobile = /iPhone|iPad|iPod|Android/.test(navigator.userAgent) ||
+                 (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+    status('Подготовка…', null);
+    serviceWorkerReady().then(function (controlled) {
+      emit('PWA: controlled=' + controlled + ' isolated=' + window.crossOriginIsolated +
+           ' standalone=' + standalone);
+      if (!window.crossOriginIsolated) {
+        if (controlled && !sessionStorage.getItem('pwa-reloaded')) {
+          sessionStorage.setItem('pwa-reloaded', '1');
+          location.reload();
+          return;
+        }
+        fail('Браузер не поддерживает нужные функции',
+             'Нужен Safari или Chrome свежей версии (SharedArrayBuffer).');
+        return;
+      }
+      sessionStorage.removeItem('pwa-reloaded');
+      // In Safari on a phone, first ask to install: the home screen app has
+      // its own storage, so a download in the tab would be done twice.
+      if (mobile && !standalone && params.get('run') !== '1') {
+        overlay('install');
+        $('run').onclick = choose;
+        return;
+      }
+      choose();
+    });
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,72 @@
+diff --git a/art/runtime/dex_file.cc b/art/runtime/dex_file.cc
+index 6d1158260..ee23f8c5b 100644
+--- a/art/runtime/dex_file.cc
++++ b/art/runtime/dex_file.cc
+@@ -152,6 +152,13 @@ bool DexFile::EnableWrite() const {
+ }
+ 
+ bool DexFile::DisableWrite() const {
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (topic boot-dex8): a stored dex is mapped read-only from the
++  // start (ZipEntry::MapDirectlyFromFile).
++  if (IsReadOnly()) {
++    return true;
++  }
++#endif
+   CHECK(!IsReadOnly());
+   if (mem_map_.get() == nullptr) {
+     return false;
+diff --git a/art/runtime/verifier/method_verifier.cc b/art/runtime/verifier/method_verifier.cc
+index 6ad074a03..2aacdacb3 100644
+--- a/art/runtime/verifier/method_verifier.cc
++++ b/art/runtime/verifier/method_verifier.cc
+@@ -275,6 +275,11 @@ MethodVerifier::FailureData MethodVerifier::VerifyMethods(Thread* self,
+ }
+ 
+ #if defined(__EMSCRIPTEN__)
++// arc-wasm (topic boot-dex8): posix_translation's readonly_file.cc saves the
++// /system image's bytes before quickening writes a dex mapped from it.
++extern "C" void arc_readonly_image_will_write(const void* addr, size_t length)
++    __attribute__((weak));
++
+ // arc-wasm (art-speed): quickening (see ArcCollectQuickening), as for ART
+ // 6.0.1 (topic art-speed).
+ static thread_local std::vector<MethodVerifier::ArcQuickEdit>* t_arc_quick_edits = nullptr;
+@@ -452,6 +457,9 @@ FailureKind MethodVerifier::VerifyClass(Thread* self,
+   t_arc_has_final_instance_field = saved_has_final_instance_field;
+   if (data1.kind == FailureKind::kNoFailure) {
+     for (const ArcQuickEdit& e : quick_edits) {
++      if (arc_readonly_image_will_write != nullptr) {
++        arc_readonly_image_will_write(e.insn, e.two_units ? 4u : 2u);
++      }
+       if (e.two_units) {
+         e.insn[1] = e.unit1;
+       }
+diff --git a/art/runtime/zip_archive.cc b/art/runtime/zip_archive.cc
+index f3d4d7721..57675bf56 100644
+--- a/art/runtime/zip_archive.cc
++++ b/art/runtime/zip_archive.cc
+@@ -130,10 +130,22 @@ MemMap* ZipEntry::MapDirectlyFromFile(const char* zip_filename, std::string* err
+     LOG(INFO) << "zip_archive: " << "make mmap of " << name << " @ offset = " << offset;
+   }
+ 
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (topic boot-dex8): read-only, so that a stored entry of a file
++  // of the /system image is the image's own pages, not a copy
++  // (posix_translation's readonly_file.cc: a MAP_PRIVATE mapping without
++  // PROT_WRITE). Write protection is not enforced in wasm (mprotect is a
++  // no-op for ART, shim/art8/art_runtime_wasm8.h); the one writer, run-time
++  // quickening, says so first (MethodVerifier::VerifyClass), and
++  // readonly_file.cc keeps the image's bytes for other readers of the file.
++  const int prot = PROT_READ;
++#else
++  const int prot = PROT_READ | PROT_WRITE;
++#endif
+   std::unique_ptr<MemMap> map(
+       MemMap::MapFileAtAddress(nullptr,  // Expected pointer address
+                                GetUncompressedLength(),  // Byte count
+-                               PROT_READ | PROT_WRITE,
++                               prot,
+                                MAP_PRIVATE,
+                                zip_fd,
+                                offset,

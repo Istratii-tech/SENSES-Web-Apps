@@ -1,0 +1,184 @@
+diff --git a/external/freetype/src/autofit/afdummy.c b/external/freetype/src/autofit/afdummy.c
+index 22944559..2d8b9e05 100644
+--- a/external/freetype/src/autofit/afdummy.c
++++ b/external/freetype/src/autofit/afdummy.c
+@@ -33,11 +33,13 @@
+ 
+ 
+   static FT_Error
+-  af_dummy_hints_apply( AF_GlyphHints  hints,
+-                        FT_Outline*    outline )
++  af_dummy_hints_apply( AF_GlyphHints     hints,
++                        FT_Outline*       outline,
++                        AF_ScriptMetrics  metrics )  /* arc-wasm: as the typedef */
+   {
+     FT_UNUSED( hints );
+     FT_UNUSED( outline );
++    FT_UNUSED( metrics );
+ 
+     return FT_Err_Ok;
+   }
+diff --git a/external/freetype/src/autofit/aftypes.h b/external/freetype/src/autofit/aftypes.h
+index 9acd7ad6..cab7950d 100644
+--- a/external/freetype/src/autofit/aftypes.h
++++ b/external/freetype/src/autofit/aftypes.h
+@@ -278,7 +278,9 @@ extern void*  _af_debug_hints;
+   (*AF_Script_InitHintsFunc)( AF_GlyphHints     hints,
+                               AF_ScriptMetrics  metrics );
+ 
+-  typedef void
++  /* arc-wasm: FT_Error, as every implementation returns (wasm traps */
++  /* on an indirect call through a pointer of another type).           */
++  typedef FT_Error
+   (*AF_Script_ApplyHintsFunc)( AF_GlyphHints     hints,
+                                FT_Outline*       outline,
+                                AF_ScriptMetrics  metrics );
+diff --git a/external/harfbuzz_ng/src/hb-private.hh b/external/harfbuzz_ng/src/hb-private.hh
+index ff1e85d8..f1a9c3af 100644
+--- a/external/harfbuzz_ng/src/hb-private.hh
++++ b/external/harfbuzz_ng/src/hb-private.hh
+@@ -517,7 +517,7 @@ static inline uint32_t hb_uint32_swap (const uint32_t v)
+ #define hb_be_uint32_get(v)	(uint32_t) ((v[0] << 24) + (v[1] << 16) + (v[2] << 8) + v[3])
+ #define hb_be_uint32_eq(a,b)	(a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3])
+ 
+-#define hb_be_uint24_put(v,V)	HB_STMT_START { v[0] = (V>>16); v[1] = (V>>8); v[2] (V); } HB_STMT_END
++#define hb_be_uint24_put(v,V)	HB_STMT_START { v[0] = (V>>16); v[1] = (V>>8); v[2] = (V); } HB_STMT_END
+ #define hb_be_uint24_get(v)	(uint32_t) ((v[0] << 16) + (v[1] << 8) + v[2])
+ #define hb_be_uint24_eq(a,b)	(a[0] == b[0] && a[1] == b[1] && a[2] == b[2])
+ 
+diff --git a/external/jpeg/jdphuff.c b/external/jpeg/jdphuff.c
+index 922017ef..f8cfcfaa 100644
+--- a/external/jpeg/jdphuff.c
++++ b/external/jpeg/jdphuff.c
+@@ -631,6 +631,12 @@ undoit:
+   return FALSE;
+ }
+ 
++/* arc-wasm: declared before use (clang rejects the implicit declarations). */
++GLOBAL(void) jpeg_get_huffman_decoder_configuration_progressive(
++        j_decompress_ptr cinfo, huffman_offset_data *offset);
++GLOBAL(void) jpeg_configure_huffman_decoder_progressive(
++        j_decompress_ptr cinfo, huffman_offset_data offset);
++
+ /*
+  * Save the current Huffman deocde position and the DC coefficients
+  * for each component into bitstream_offset and dc_info[], respectively.
+diff --git a/external/skia/include/core/SkUserConfig.h b/external/skia/include/core/SkUserConfig.h
+index afc92ab1..de6c79cb 100644
+--- a/external/skia/include/core/SkUserConfig.h
++++ b/external/skia/include/core/SkUserConfig.h
+@@ -45,7 +45,10 @@
+ // optimizations.
+ #define SK_BUILD_FOR_ANDROID_FRAMEWORK
+ #define SK_FONTHOST_DOES_NOT_USE_FONTMGR
++// arc-wasm: software-only builds pass -DSK_SUPPORT_GPU=0.
++#ifndef SK_SUPPORT_GPU
+ #define SK_SUPPORT_GPU 1
++#endif
+ 
+ // temporary define until we can update the callers to the new convention
+ #define SK_SUPPORT_LEGACY_PIXELREF_CONSTRUCTOR
+diff --git a/frameworks/base/core/jni/android/graphics/TextLayoutCache.cpp b/frameworks/base/core/jni/android/graphics/TextLayoutCache.cpp
+index 144ac399..d283e446 100644
+--- a/frameworks/base/core/jni/android/graphics/TextLayoutCache.cpp
++++ b/frameworks/base/core/jni/android/graphics/TextLayoutCache.cpp
+@@ -143,7 +143,7 @@ sp<TextLayoutValue> TextLayoutCache::getValue(const SkPaint* paint,
+                     "This indicates that the cache already has an entry with the "
+                     "same key but it should not since we checked earlier!"
+                     " - start = %d, count = %d, contextCount = %d - Text = '%s'",
+-                    start, count, contextCount, String8(key.getText() + start, count).string());
++                    start, count, contextCount, String8((const char16_t*) key.getText() + start, count).string());
+ 
+             if (mDebugEnabled) {
+                 nsecs_t totalTime = systemTime(SYSTEM_TIME_MONOTONIC) - startTime;
+@@ -154,7 +154,7 @@ sp<TextLayoutValue> TextLayoutCache::getValue(const SkPaint* paint,
+                         value.get(), start, count, contextCount, size, mMaxSize - mSize,
+                         value->getElapsedTime() * 0.000001f,
+                         (totalTime - value->getElapsedTime()) * 0.000001f,
+-                        String8(key.getText() + start, count).string());
++                        String8((const char16_t*) key.getText() + start, count).string());
+             }
+         } else {
+             if (mDebugEnabled) {
+@@ -164,7 +164,7 @@ sp<TextLayoutValue> TextLayoutCache::getValue(const SkPaint* paint,
+                         " - Compute time %0.6f ms - Text = '%s'",
+                         start, count, contextCount, size, mMaxSize - mSize,
+                         value->getElapsedTime() * 0.000001f,
+-                        String8(key.getText() + start, count).string());
++                        String8((const char16_t*) key.getText() + start, count).string());
+             }
+         }
+     } else {
+@@ -184,7 +184,7 @@ sp<TextLayoutValue> TextLayoutCache::getValue(const SkPaint* paint,
+                         value->getElapsedTime() * 0.000001f,
+                         elapsedTimeThruCacheGet * 0.000001f,
+                         deltaPercent,
+-                        String8(key.getText() + start, count).string());
++                        String8((const char16_t*) key.getText() + start, count).string());
+             }
+             if (mCacheHitCount % DEFAULT_DUMP_STATS_CACHE_HIT_INTERVAL == 0) {
+                 dumpCacheStats();
+@@ -227,7 +227,7 @@ TextLayoutCacheKey::TextLayoutCacheKey(const SkPaint* paint, const UChar* text,
+         size_t start, size_t count, size_t contextCount, int dirFlags) :
+             start(start), count(count), contextCount(contextCount),
+             dirFlags(dirFlags) {
+-    textCopy.setTo(text, contextCount);
++    textCopy.setTo((const char16_t*) text, contextCount);
+     typeface = paint->getTypeface();
+     textSize = paint->getTextSize();
+     textSkewX = paint->getTextSkewX();
+@@ -386,7 +386,7 @@ void TextLayoutShaper::computeValues(const SkPaint* paint, const UChar* chars,
+                 UErrorCode status = U_ZERO_ERROR;
+ #if DEBUG_GLYPHS
+                 ALOGD("******** ComputeValues -- start");
+-                ALOGD("      -- string = '%s'", String8(chars + start, count).string());
++                ALOGD("      -- string = '%s'", String8((const char16_t*) chars + start, count).string());
+                 ALOGD("      -- start = %d", start);
+                 ALOGD("      -- count = %d", count);
+                 ALOGD("      -- contextCount = %d", contextCount);
+@@ -408,7 +408,7 @@ void TextLayoutShaper::computeValues(const SkPaint* paint, const UChar* chars,
+                     } else if (!U_SUCCESS(status) || rc < 1) {
+                         ALOGW("Need to force to single run -- string = '%s',"
+                                 " status = %d, rc = %d",
+-                                String8(chars + start, count).string(), status, int(rc));
++                                String8((const char16_t*) chars + start, count).string(), status, int(rc));
+                         isRTL = (paraDir == 1);
+                         useSingleRun = true;
+                     } else {
+@@ -919,7 +919,7 @@ sp<TextLayoutValue> TextLayoutEngine::getValue(const SkPaint* paint, const jchar
+             contextCount, dirFlags);
+     if (value == NULL) {
+         ALOGE("Cannot get TextLayoutCache value for text = '%s'",
+-                String8(text + start, count).string());
++                String8((const char16_t*) text + start, count).string());
+     }
+ #else
+     value = new TextLayoutValue(count);
+diff --git a/frameworks/base/core/jni/android/graphics/TextLayoutCache.h b/frameworks/base/core/jni/android/graphics/TextLayoutCache.h
+index 54704ec7..6c342d6d 100644
+--- a/frameworks/base/core/jni/android/graphics/TextLayoutCache.h
++++ b/frameworks/base/core/jni/android/graphics/TextLayoutCache.h
+@@ -80,7 +80,7 @@ public:
+ 
+     static int compare(const TextLayoutCacheKey& lhs, const TextLayoutCacheKey& rhs);
+ 
+-    inline const UChar* getText() const { return textCopy.string(); }
++    inline const UChar* getText() const { return (const UChar*) textCopy.string(); }
+ 
+     bool operator==(const TextLayoutCacheKey& other) const {
+         return compare(*this, other) == 0;
+diff --git a/system/core/include/utils/TypeHelpers.h b/system/core/include/utils/TypeHelpers.h
+index 13c90815..c2e9bbe7 100644
+--- a/system/core/include/utils/TypeHelpers.h
++++ b/system/core/include/utils/TypeHelpers.h
+@@ -288,6 +288,10 @@ ANDROID_INT32_HASH(int32_t)
+ ANDROID_INT32_HASH(uint32_t)
+ ANDROID_INT64_HASH(int64_t)
+ ANDROID_INT64_HASH(uint64_t)
++#ifdef __EMSCRIPTEN__
++// arc-wasm: in wasm32 uintptr_t and size_t are unsigned long, a type of its own.
++ANDROID_INT32_HASH(unsigned long)
++#endif
+ ANDROID_REINTERPRET_HASH(float, uint32_t)
+ ANDROID_REINTERPRET_HASH(double, uint64_t)
+ 

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARC GLES1 on WebGL</title>
+<style>
+  :root { --bg: #0e1016; --fg: #d7dbe5; --muted: #8a90a0; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #f4f5f8; --fg: #1d2030; --muted: #5a6072; }
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+               font: 14px/1.4 system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px; }
+  canvas { display: block; width: 100%; max-width: 800px; aspect-ratio: 4 / 3;
+           background: #000; border-radius: 6px; }
+  #status { color: var(--muted); margin-top: 8px; white-space: pre-wrap;
+            font-family: ui-monospace, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <canvas id="canvas" width="800" height="600"></canvas>
+  <div id="status">Loading…</div>
+</main>
+<script src="report.js"></script>
+<script>
+  var lines = [];
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    print: function (t) { lines.push(t); arcReport(t); document.getElementById('status').textContent = lines.join('\n'); },
+    printErr: function (t) { lines.push(t); arcReport(t); console.error(t); document.getElementById('status').textContent = lines.join('\n'); },
+  };
+</script>
+<script src="gles1_demo.js"></script>
+<script>
+  // Report the frame rate every 2 s (only while the page is visible: browsers
+  // stop requestAnimationFrame in background tabs).
+  var lastFrames = 0;
+  setInterval(function () {
+    if (!Module._arc_demo_frame_count) return;
+    var n = Module._arc_demo_frame_count();
+    arcReport('frames=' + n + ' fps=' + ((n - lastFrames) / 2).toFixed(1) +
+              ' visible=' + (document.visibilityState === 'visible'));
+    lastFrames = n;
+  }, 2000);
+</script>
+</body>
+</html>

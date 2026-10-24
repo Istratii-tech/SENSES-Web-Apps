@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Split test</string>
+    <!-- Which part of the app the resources came from: "base" here; the
+         density parts (split_config.mdpi.apk, split_config.xhdpi.apk) have
+         their own. -->
+    <string name="density_tag">base</string>
+    <string name="greeting">Hello</string>
+</resources>

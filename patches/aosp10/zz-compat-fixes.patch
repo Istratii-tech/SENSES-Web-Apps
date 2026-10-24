@@ -1,0 +1,17 @@
+diff --git a/frameworks/base/graphics/java/android/graphics/BaseCanvas.java b/frameworks/base/graphics/java/android/graphics/BaseCanvas.java
+index 6e7f286d1..b18520ef9 100644
+--- a/frameworks/base/graphics/java/android/graphics/BaseCanvas.java
++++ b/frameworks/base/graphics/java/android/graphics/BaseCanvas.java
+@@ -59,7 +59,11 @@ public abstract class BaseCanvas {
+      * @hide
+      */
+     protected int mDensity = Bitmap.DENSITY_NONE;
+-    private boolean mAllowHwBitmapsInSwMode = false;
++    // arc-wasm: hardware bitmaps are memory here (gralloc buffers, topic
++    // fw10-graphics), so a software canvas draws them -- windows draw in
++    // software where hwui has no WebGL2, and image loaders (Coil, Glide)
++    // decode HARDWARE bitmaps for Compose all the same (AniHyou died).
++    private boolean mAllowHwBitmapsInSwMode = true;
+ 
+     protected void throwIfCannotDraw(Bitmap bitmap) {
+         if (bitmap.isRecycled()) {

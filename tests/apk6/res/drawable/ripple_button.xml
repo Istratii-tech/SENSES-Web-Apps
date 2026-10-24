@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- RippleDrawable (API 21) over a rounded accent shape. -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#80ffffff">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/accent" />
+            <corners android:radius="6dp" />
+        </shape>
+    </item>
+</ripple>

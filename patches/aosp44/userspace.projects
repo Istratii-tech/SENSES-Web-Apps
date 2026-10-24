@@ -1,0 +1,3 @@
+# Topic userspace (docs/topics/userspace.md): SQLite for android.database.sqlite
+# (LauncherProvider, DeskClock alarms, Settings).
+external/sqlite

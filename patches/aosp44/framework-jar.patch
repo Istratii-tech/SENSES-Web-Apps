@@ -1,0 +1,172 @@
+diff --git a/frameworks/base/core/java/android/content/pm/PackageCleanItem.java b/frameworks/base/core/java/android/content/pm/PackageCleanItem.java
+index b1896aaa..e1656d6f 100644
+--- a/frameworks/base/core/java/android/content/pm/PackageCleanItem.java
++++ b/frameworks/base/core/java/android/content/pm/PackageCleanItem.java
+@@ -20,7 +20,7 @@ import android.os.Parcel;
+ import android.os.Parcelable;
+ 
+ /** @hide */
+-public class PackageCleanItem {
++public class PackageCleanItem implements Parcelable {
+     public final int userId;
+     public final String packageName;
+     public final boolean andCode;
+diff --git a/frameworks/base/core/java/com/android/internal/util/Predicates.java b/frameworks/base/core/java/com/android/internal/util/Predicates.java
+index f5051e42..c954431d 100644
+--- a/frameworks/base/core/java/com/android/internal/util/Predicates.java
++++ b/frameworks/base/core/java/com/android/internal/util/Predicates.java
+@@ -33,7 +33,7 @@ public class Predicates {
+      * will be "short-circuited" as soon as the answer is determined.
+      */
+     public static <T> Predicate<T> and(Predicate<? super T>... components) {
+-        return and(Arrays.asList(components));
++        return Predicates.<T>and(Arrays.<Predicate<? super T>>asList(components));
+     }
+ 
+     /**
+@@ -54,7 +54,7 @@ public class Predicates {
+      * will be "short-circuited" as soon as the answer is determined.
+      */
+     public static <T> Predicate<T> or(Predicate<? super T>... components) {
+-        return or(Arrays.asList(components));
++        return Predicates.<T>or(Arrays.<Predicate<? super T>>asList(components));
+     }
+ 
+     /**
+diff --git a/frameworks/base/core/jni/android_os_Debug.cpp b/frameworks/base/core/jni/android_os_Debug.cpp
+index 054ee4f6..8c466706 100644
+--- a/frameworks/base/core/jni/android_os_Debug.cpp
++++ b/frameworks/base/core/jni/android_os_Debug.cpp
+@@ -896,7 +896,7 @@ static void android_os_Debug_dumpNativeBacktraceToFile(JNIEnv* env, jobject claz
+     const jchar* str = env->GetStringCritical(fileName, 0);
+     String8 fileName8;
+     if (str) {
+-        fileName8 = String8(str, env->GetStringLength(fileName));
++        fileName8 = String8(reinterpret_cast<const char16_t*>(str), env->GetStringLength(fileName));
+         env->ReleaseStringCritical(fileName, str);
+     }
+ 
+diff --git a/frameworks/base/core/jni/android_util_Process.cpp b/frameworks/base/core/jni/android_util_Process.cpp
+index 8325217c..955b0ff1 100644
+--- a/frameworks/base/core/jni/android_util_Process.cpp
++++ b/frameworks/base/core/jni/android_util_Process.cpp
+@@ -105,7 +105,7 @@ jint android_os_Process_getUidForName(JNIEnv* env, jobject clazz, jstring name)
+     const jchar* str16 = env->GetStringCritical(name, 0);
+     String8 name8;
+     if (str16) {
+-        name8 = String8(str16, env->GetStringLength(name));
++        name8 = String8(reinterpret_cast<const char16_t*>(str16), env->GetStringLength(name));
+         env->ReleaseStringCritical(name, str16);
+     }
+ 
+@@ -136,7 +136,7 @@ jint android_os_Process_getGidForName(JNIEnv* env, jobject clazz, jstring name)
+     const jchar* str16 = env->GetStringCritical(name, 0);
+     String8 name8;
+     if (str16) {
+-        name8 = String8(str16, env->GetStringLength(name));
++        name8 = String8(reinterpret_cast<const char16_t*>(str16), env->GetStringLength(name));
+         env->ReleaseStringCritical(name, str16);
+     }
+ 
+@@ -336,7 +336,12 @@ jint android_os_Process_getThreadPriority(JNIEnv* env, jobject clazz,
+                                               jint pid)
+ {
+     errno = 0;
++#ifdef ARC_WASM
++    // What androidSetThreadPriority recorded: no thread priorities in wasm.
++    jint pri = androidGetThreadPriority(pid);
++#else
+     jint pri = getpriority(PRIO_PROCESS, pid);
++#endif
+     if (errno != 0) {
+         signalExceptionForPriorityError(env, errno);
+     }
+@@ -397,7 +402,7 @@ void android_os_Process_setArgV0(JNIEnv* env, jobject clazz, jstring name)
+     const jchar* str = env->GetStringCritical(name, 0);
+     String8 name8;
+     if (str) {
+-        name8 = String8(str, env->GetStringLength(name));
++        name8 = String8(reinterpret_cast<const char16_t*>(str), env->GetStringLength(name));
+         env->ReleaseStringCritical(name, str);
+     }
+ 
+diff --git a/frameworks/base/core/jni/android_view_GLES20Canvas.cpp b/frameworks/base/core/jni/android_view_GLES20Canvas.cpp
+index b720e737..5b5a926c 100644
+--- a/frameworks/base/core/jni/android_view_GLES20Canvas.cpp
++++ b/frameworks/base/core/jni/android_view_GLES20Canvas.cpp
+@@ -20,16 +20,21 @@
+ #include "GraphicsJNI.h"
+ #include <nativehelper/JNIHelp.h>
+ 
++#ifdef USE_OPENGL_RENDERER  // arc-wasm: the hwui and libgui headers only with hwui
+ #include "android_view_GraphicBuffer.h"
+ 
+ #include <android_runtime/AndroidRuntime.h>
+ #include <android_runtime/android_graphics_SurfaceTexture.h>
+ 
++#endif
++
+ #include <androidfw/ResourceTypes.h>
+ 
++#ifdef USE_OPENGL_RENDERER
+ #include <gui/GLConsumer.h>
+ 
+ #include <private/hwui/DrawGlInfo.h>
++#endif
+ 
+ #include <cutils/properties.h>
+ 
+@@ -42,6 +47,7 @@
+ #include <SkTemplates.h>
+ #include <SkXfermode.h>
+ 
++#ifdef USE_OPENGL_RENDERER
+ #include <DisplayList.h>
+ #include <DisplayListRenderer.h>
+ #include <LayerRenderer.h>
+@@ -50,13 +56,16 @@
+ #include <SkiaColorFilter.h>
+ #include <Stencil.h>
+ #include <Rect.h>
++#endif
+ 
+ #include <TextLayout.h>
+ #include <TextLayoutCache.h>
+ 
+ namespace android {
+ 
++#ifdef USE_OPENGL_RENDERER
+ using namespace uirenderer;
++#endif
+ 
+ /**
+  * Note: OpenGLRenderer JNI layer is generated and compiled only on supported
+diff --git a/frameworks/base/libs/androidfw/BackupHelpers.cpp b/frameworks/base/libs/androidfw/BackupHelpers.cpp
+index b8d3f48e..ed03551e 100644
+--- a/frameworks/base/libs/androidfw/BackupHelpers.cpp
++++ b/frameworks/base/libs/androidfw/BackupHelpers.cpp
+@@ -1336,8 +1336,8 @@ get_mod_time(const char* filename, struct timeval times[2])
+     // If st_atime is a macro then struct stat64 uses struct timespec
+     // to store the access and modif time values and typically
+     // st_*time_nsec is not defined. In glibc, this is controlled by
+-    // __USE_MISC.
+-#ifdef __USE_MISC
++    // __USE_MISC. (So does musl, Emscripten's libc.)
++#if defined(__USE_MISC) || defined(__EMSCRIPTEN__)
+ #if !defined(st_atime) || defined(st_atime_nsec)
+ #error "Check if this __USE_MISC conditional is still needed."
+ #endif
+diff --git a/system/core/include/utils/AndroidThreads.h b/system/core/include/utils/AndroidThreads.h
+index 4eee14d7..c4878dd2 100644
+--- a/system/core/include/utils/AndroidThreads.h
++++ b/system/core/include/utils/AndroidThreads.h
+@@ -76,7 +76,8 @@ extern void androidSetCreateThreadFunc(android_create_thread_fn func);
+ // Get pid for the current thread.
+ extern pid_t androidGetTid();
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)
++// (arc-wasm: shim/framework/thread_priority.cc.)
+ // Change the priority AND scheduling group of a particular thread.  The priority
+ // should be one of the ANDROID_PRIORITY constants.  Returns INVALID_OPERATION
+ // if the priority set failed, else another value if just the group set failed;

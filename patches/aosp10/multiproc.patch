@@ -1,0 +1,457 @@
+diff --git a/art/runtime/jni/java_vm_ext.cc b/art/runtime/jni/java_vm_ext.cc
+index 8be49e06d..cd10d8e74 100644
+--- a/art/runtime/jni/java_vm_ext.cc
++++ b/art/runtime/jni/java_vm_ext.cc
+@@ -59,6 +59,9 @@
+ // libraries from APKs go to the NDK bridge (topics ndk-bridge, ndk-arm64).
+ #include "static_jni_libs.h"
+ #define dlsym arc_wasm_dlsym
++// shim/multiproc (topic multiproc): the NDK bridge loader's namespace of the
++// calling thread's light process (0: the VM's own).
++extern "C" int arc_lproc_native_ns(void);
+ #endif
+ #include "well_known_classes.h"
+ 
+@@ -908,10 +911,19 @@ bool JavaVMExt::LoadNativeLibrary(JNIEnv* env,
+   // inodes). This implementation is fine if everybody is using System.loadLibrary.
+   SharedLibrary* library;
+   Thread* self = Thread::Current();
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm (topic multiproc): a light process (another process of the app
++  // in this VM) loads an app's library for itself, as a process does: its
++  // own copy from the NDK bridge's loader, its own entry here.
++  const int arc_ns = class_loader != nullptr ? arc_lproc_native_ns() : 0;
++  const std::string key = arc_ns != 0 ? path + "@lproc" + std::to_string(arc_ns) : path;
++#else
++  const std::string& key = path;
++#endif
+   {
+     // TODO: move the locking (and more of this logic) into Libraries.
+     MutexLock mu(self, *Locks::jni_libraries_lock_);
+-    library = libraries_->Get(path);
++    library = libraries_->Get(key);
+   }
+   void* class_loader_allocator = nullptr;
+   std::string caller_location;
+@@ -1061,10 +1073,10 @@ bool JavaVMExt::LoadNativeLibrary(JNIEnv* env,
+                           class_loader_allocator));
+ 
+     MutexLock mu(self, *Locks::jni_libraries_lock_);
+-    library = libraries_->Get(path);
++    library = libraries_->Get(key);
+     if (library == nullptr) {  // We won race to get libraries_lock.
+       library = new_library.release();
+-      libraries_->Put(path, library);
++      libraries_->Put(key, library);
+       created_library = true;
+     }
+   }
+diff --git a/frameworks/base/core/java/android/app/ActivityThread.java b/frameworks/base/core/java/android/app/ActivityThread.java
+index 546f00015..a076ed7b4 100644
+--- a/frameworks/base/core/java/android/app/ActivityThread.java
++++ b/frameworks/base/core/java/android/app/ActivityThread.java
+@@ -349,6 +349,15 @@ public final class ActivityThread extends ClientTransactionHandler {
+     /** Reference to singleton {@link ActivityThread} */
+     @UnsupportedAppUsage
+     private static volatile ActivityThread sCurrentActivityThread;
++    // arc-wasm (topic multiproc): the ActivityThreads of light processes (the
++    // app's other processes in this VM), by pid.
++    private static final android.util.SparseArray<ActivityThread> sArcLightThreads =
++            new android.util.SparseArray<>();
++
++    /** Whether the calling thread belongs to a light process (arc-wasm). */
++    private static boolean arcInLightProcess() {
++        return Binder.sArcLight && Process.myPid() != Binder.sArcMainPid;
++    }
+     @UnsupportedAppUsage
+     Instrumentation mInstrumentation;
+     String mInstrumentationPackageName = null;
+@@ -2095,11 +2104,17 @@ public final class ActivityThread extends ClientTransactionHandler {
+ 
+     @UnsupportedAppUsage
+     public static ActivityThread currentActivityThread() {
++        if (arcInLightProcess()) {
++            synchronized (sArcLightThreads) {
++                return sArcLightThreads.get(Process.myPid());
++            }
++        }
+         return sCurrentActivityThread;
+     }
+ 
+     public static boolean isSystem() {
+-        return (sCurrentActivityThread != null) ? sCurrentActivityThread.mSystemThread : false;
++        ActivityThread t = currentActivityThread();
++        return (t != null) ? t.mSystemThread : false;
+     }
+ 
+     public static String currentOpPackageName() {
+@@ -7069,7 +7084,13 @@ public final class ActivityThread extends ClientTransactionHandler {
+ 
+     @UnsupportedAppUsage
+     private void attach(boolean system, long startSeq) {
+-        sCurrentActivityThread = this;
++        if (arcInLightProcess()) {
++            synchronized (sArcLightThreads) {
++                sArcLightThreads.put(Process.myPid(), this);
++            }
++        } else {
++            sCurrentActivityThread = this;
++        }
+         mSystemThread = system;
+         if (!system) {
+             android.ddm.DdmHandleAppName.setAppName("<pre-initialized>",
+diff --git a/frameworks/base/core/java/android/app/ApplicationLoaders.java b/frameworks/base/core/java/android/app/ApplicationLoaders.java
+index 2e59b903f..280341c0a 100644
+--- a/frameworks/base/core/java/android/app/ApplicationLoaders.java
++++ b/frameworks/base/core/java/android/app/ApplicationLoaders.java
+@@ -18,7 +18,9 @@ package android.app;
+ 
+ import android.annotation.UnsupportedAppUsage;
+ import android.content.pm.SharedLibraryInfo;
++import android.os.Binder;
+ import android.os.Build;
++import android.os.Process;
+ import android.os.GraphicsEnvironment;
+ import android.os.Trace;
+ import android.util.ArrayMap;
+@@ -92,6 +94,11 @@ public class ApplicationLoaders {
+          * bootstrap class loader.
+          */
+         ClassLoader baseParent = ClassLoader.getSystemClassLoader().getParent();
++        // arc-wasm (topic multiproc): each light process (another process of
++        // the app in this VM) has its own class loaders, so its own statics.
++        if (cacheKey != null && Binder.sArcLight && Process.myPid() != Binder.sArcMainPid) {
++            cacheKey = cacheKey + "\0lproc" + Process.myPid();
++        }
+ 
+         synchronized (mLoaders) {
+             if (parent == null) {
+diff --git a/frameworks/base/core/java/android/os/Binder.java b/frameworks/base/core/java/android/os/Binder.java
+index 6178b2bf5..2668f9869 100644
+--- a/frameworks/base/core/java/android/os/Binder.java
++++ b/frameworks/base/core/java/android/os/Binder.java
+@@ -39,6 +39,7 @@ import java.io.FileDescriptor;
+ import java.io.FileOutputStream;
+ import java.io.PrintWriter;
+ import java.lang.reflect.Modifier;
++import java.util.ArrayList;
+ 
+ /**
+  * Base class for a remotable object, the core part of a lightweight
+@@ -245,6 +246,24 @@ public class Binder implements IBinder {
+         }
+     }
+ 
++    /**
++     * arc-wasm (topic multiproc, docs/topics/multiproc.md): set by the system
++     * server once a light process (another Android process of the app, in
++     * this VM) exists. Then a Binder belongs to the process whose thread
++     * made it, and another process's thread that holds it as an object (the
++     * in-process system server or a shared static handed it over, not a
++     * transaction) calls it as a remote binder: through the driver to the
++     * owner's binder threads (arcProxyFor), not as a local object.
++     * @hide
++     */
++    public static volatile boolean sArcLight;
++    /** @hide The VM's own pid (its first process: system server, the app's main process). */
++    public static volatile int sArcMainPid;
++    /** The light process this object belongs to; 0: the VM's own. */
++    private final int mArcOwnerPid;
++    /** Death recipients linked through arcProxyFor's proxy (recipient, proxy). */
++    private ArrayList<Object[]> mArcLinks;
++
+     /**
+      * Raw native pointer to JavaBBinderHolder object. Owned by this Java object. Not null.
+      */
+@@ -558,6 +577,7 @@ public class Binder implements IBinder {
+      */
+     public Binder(@Nullable String descriptor)  {
+         mObject = getNativeBBinderHolder();
++        mArcOwnerPid = arcOwnerPid();
+         NoImagePreloadHolder.sRegistry.registerNativeAllocation(this, mObject);
+ 
+         if (FIND_POTENTIAL_LEAKS) {
+@@ -594,6 +614,9 @@ public class Binder implements IBinder {
+      * the object is alive.
+      */
+     public boolean pingBinder() {
++        if (arcForeign()) {
++            return arcProxyAlive();
++        }
+         return true;
+     }
+ 
+@@ -604,6 +627,9 @@ public class Binder implements IBinder {
+      * because your process is alive if you're calling it.
+      */
+     public boolean isBinderAlive() {
++        if (arcForeign()) {
++            return arcProxyAlive();
++        }
+         return true;
+     }
+ 
+@@ -613,6 +639,9 @@ public class Binder implements IBinder {
+      * descriptor.
+      */
+     public @Nullable IInterface queryLocalInterface(@NonNull String descriptor) {
++        if (arcForeign()) {
++            return null;  // another process's object: its Stub.Proxy (arc-wasm)
++        }
+         if (mDescriptor != null && mDescriptor.equals(descriptor)) {
+             return mOwner;
+         }
+@@ -907,6 +936,9 @@ public class Binder implements IBinder {
+     public final boolean transact(int code, @NonNull Parcel data, @Nullable Parcel reply,
+             int flags) throws RemoteException {
+         if (false) Log.v("Binder", "Transact: " + code + " to " + this);
++        if (arcForeign()) {
++            return arcProxy().transact(code, data, reply, flags);
++        }
+ 
+         if (data != null) {
+             data.setDataPosition(0);
+@@ -922,15 +954,92 @@ public class Binder implements IBinder {
+      * Local implementation is a no-op.
+      */
+     public void linkToDeath(@NonNull DeathRecipient recipient, int flags) {
++        if (!arcForeign()) {
++            return;
++        }
++        // Another light process's object (arc-wasm): its death is real.
++        try {
++            IBinder proxy = arcProxy();
++            proxy.linkToDeath(recipient, flags);
++            synchronized (this) {
++                if (mArcLinks == null) {
++                    mArcLinks = new ArrayList<>();
++                }
++                mArcLinks.add(new Object[] {recipient, proxy});
++            }
++        } catch (RemoteException e) {
++            // Dead already: a proxy would throw; this method cannot, so the
++            // notice comes at once, as it would right after.
++            final DeathRecipient r = recipient;
++            new Thread("ArcDeath") {
++                @Override
++                public void run() {
++                    r.binderDied();
++                }
++            }.start();
++        }
+     }
+ 
+     /**
+      * Local implementation is a no-op.
+      */
+     public boolean unlinkToDeath(@NonNull DeathRecipient recipient, int flags) {
++        synchronized (this) {
++            if (mArcLinks != null) {
++                for (int i = 0; i < mArcLinks.size(); i++) {
++                    Object[] link = mArcLinks.get(i);
++                    if (link[0] == recipient) {
++                        mArcLinks.remove(i);
++                        return ((IBinder) link[1]).unlinkToDeath(recipient, flags);
++                    }
++                }
++            }
++        }
+         return true;
+     }
+ 
++    // --- arc-wasm: light processes (topic multiproc) -----------------------------------
++
++    /** The light process whose thread makes this object; 0 for the VM's own. */
++    private int arcOwnerPid() {
++        if (!sArcLight) {
++            return 0;
++        }
++        int pid = Process.myPid();
++        // The in-process system server's objects (records, tokens) are its
++        // own, whichever process's thread called it directly.
++        if (pid == sArcMainPid || getClass().getName().startsWith("arcwasm.server.")) {
++            return 0;
++        }
++        return pid;
++    }
++
++    /** Whether the calling thread is in another process than this object's. */
++    private boolean arcForeign() {
++        if (!sArcLight) {
++            return false;
++        }
++        int owner = mArcOwnerPid == 0 ? sArcMainPid : mArcOwnerPid;
++        return owner != Process.myPid();
++    }
++
++    /** This object as its owner's binder through the driver (DeadObjectException once it died). */
++    private IBinder arcProxy() throws RemoteException {
++        return arcProxyFor(this, mArcOwnerPid == 0 ? sArcMainPid : mArcOwnerPid);
++    }
++
++    private boolean arcProxyAlive() {
++        try {
++            return arcProxy().isBinderAlive();
++        } catch (RemoteException e) {
++            return false;
++        }
++    }
++
++    /** shim/multiproc/lproc_jni.cc. */
++    private static native IBinder arcProxyFor(Binder binder, int ownerPid)
++            throws RemoteException;
++
+     static void checkParcel(IBinder obj, int code, Parcel parcel, String msg) {
+         if (CHECK_PARCEL_SIZE && parcel.dataSize() >= 800*1024) {
+             // Trying to send > 800k, this is way too much
+diff --git a/frameworks/base/core/java/android/os/Looper.java b/frameworks/base/core/java/android/os/Looper.java
+index 3222fc43b..3d4b58b7b 100644
+--- a/frameworks/base/core/java/android/os/Looper.java
++++ b/frameworks/base/core/java/android/os/Looper.java
+@@ -72,6 +72,9 @@ public final class Looper {
+     static final ThreadLocal<Looper> sThreadLocal = new ThreadLocal<Looper>();
+     @UnsupportedAppUsage
+     private static Looper sMainLooper;  // guarded by Looper.class
++    // arc-wasm (topic multiproc): the main Loopers of light processes (the
++    // app's other processes in this VM), by pid; guarded by Looper.class.
++    private static android.util.SparseArray<Looper> sArcMainLoopers;
+     private static Observer sObserver;
+ 
+     @UnsupportedAppUsage
+@@ -119,6 +122,16 @@ public final class Looper {
+     public static void prepareMainLooper() {
+         prepare(false);
+         synchronized (Looper.class) {
++            if (Binder.sArcLight && Process.myPid() != Binder.sArcMainPid) {
++                if (sArcMainLoopers == null) {
++                    sArcMainLoopers = new android.util.SparseArray<>();
++                }
++                if (sArcMainLoopers.get(Process.myPid()) != null) {
++                    throw new IllegalStateException("The main Looper has already been prepared.");
++                }
++                sArcMainLoopers.put(Process.myPid(), myLooper());
++                return;
++            }
+             if (sMainLooper != null) {
+                 throw new IllegalStateException("The main Looper has already been prepared.");
+             }
+@@ -131,6 +144,12 @@ public final class Looper {
+      */
+     public static Looper getMainLooper() {
+         synchronized (Looper.class) {
++            if (sArcMainLoopers != null && Process.myPid() != Binder.sArcMainPid) {
++                Looper l = sArcMainLoopers.get(Process.myPid());
++                if (l != null) {
++                    return l;
++                }
++            }
+             return sMainLooper;
+         }
+     }
+diff --git a/frameworks/base/core/java/android/os/ServiceManager.java b/frameworks/base/core/java/android/os/ServiceManager.java
+index 9a9b03060..a8e49ae2e 100644
+--- a/frameworks/base/core/java/android/os/ServiceManager.java
++++ b/frameworks/base/core/java/android/os/ServiceManager.java
+@@ -239,6 +239,9 @@ public final class ServiceManager {
+      */
+     public static void initServiceCache(Map<String, IBinder> cache) {
+         if (sCache.size() != 0) {
++            if (Binder.sArcLight) {
++                return;  // a light process: the VM's first process filled it (arc-wasm)
++            }
+             throw new IllegalStateException("setServiceCache may only be called once");
+         }
+         sCache.putAll(cache);
+diff --git a/frameworks/base/core/java/android/security/net/config/NetworkSecurityConfigProvider.java b/frameworks/base/core/java/android/security/net/config/NetworkSecurityConfigProvider.java
+index 0f6687341..440843995 100644
+--- a/frameworks/base/core/java/android/security/net/config/NetworkSecurityConfigProvider.java
++++ b/frameworks/base/core/java/android/security/net/config/NetworkSecurityConfigProvider.java
+@@ -36,7 +36,10 @@ public final class NetworkSecurityConfigProvider extends Provider {
+         ApplicationConfig config = new ApplicationConfig(new ManifestConfigSource(context));
+         ApplicationConfig.setDefaultInstance(config);
+         int pos = Security.insertProviderAt(new NetworkSecurityConfigProvider(), 1);
+-        if (pos != 1) {
++        // arc-wasm (topic multiproc): the security providers are the VM's; a
++        // light process (another process of the app in it) finds the main
++        // process's (same app, same configuration) installed already.
++        if (pos != 1 && !(pos == -1 && android.os.Binder.sArcLight)) {
+             throw new RuntimeException("Failed to install provider as highest priority provider."
+                     + " Provider was installed at position " + pos);
+         }
+diff --git a/frameworks/base/core/jni/android_util_Binder.cpp b/frameworks/base/core/jni/android_util_Binder.cpp
+index df98cdc9f..c4eb2d12c 100644
+--- a/frameworks/base/core/jni/android_util_Binder.cpp
++++ b/frameworks/base/core/jni/android_util_Binder.cpp
+@@ -74,9 +74,15 @@ static struct bindernative_offsets_t
+ 
+     // Object state.
+     jfieldID mObject;
+-
++    // arc-wasm (topic multiproc): Binder.mArcOwnerPid.
++    jfieldID mArcOwnerPid;
+ } gBinderOffsets;
+ 
++// shim/binder/dev_binder.cc: a node first sent by another light process's
++// thread still belongs to the process that made the object.
++extern "C" void arc_binder_note_owner(void* cookie, int pid);
++extern "C" void arc_binder_forget_owner(void* cookie);
++
+ // ----------------------------------------------------------------------------
+ 
+ static struct binderinternal_offsets_t
+@@ -307,6 +313,12 @@ public:
+         ALOGV("Creating JavaBBinder %p\n", this);
+         gNumLocalRefsCreated.fetch_add(1, std::memory_order_relaxed);
+         gcIfManyNewRefs(env);
++        if (gBinderOffsets.mArcOwnerPid != NULL) {
++            const jint owner = env->GetIntField(object, gBinderOffsets.mArcOwnerPid);
++            if (owner != 0) {
++                arc_binder_note_owner(this, owner);
++            }
++        }
+     }
+ 
+     bool    checkSubclass(const void* subclassID) const
+@@ -323,6 +335,7 @@ protected:
+     virtual ~JavaBBinder()
+     {
+         ALOGV("Destroying JavaBBinder %p\n", this);
++        arc_binder_forget_owner(this);
+         gNumLocalRefsDeleted.fetch_add(1, memory_order_relaxed);
+         JNIEnv* env = javavm_to_jnienv(mVM);
+         env->DeleteGlobalRef(mObject);
+@@ -997,6 +1010,10 @@ static int int_register_android_os_Binder(JNIEnv* env)
+     gBinderOffsets.mGetInterfaceDescriptor = GetMethodIDOrDie(env, clazz, "getInterfaceDescriptor",
+         "()Ljava/lang/String;");
+     gBinderOffsets.mObject = GetFieldIDOrDie(env, clazz, "mObject", "J");
++    gBinderOffsets.mArcOwnerPid = env->GetFieldID(clazz, "mArcOwnerPid", "I");
++    if (gBinderOffsets.mArcOwnerPid == NULL) {
++        env->ExceptionClear();
++    }
+ 
+     return RegisterMethodsOrDie(
+         env, kBinderPathName,
+diff --git a/libcore/ojluni/src/main/java/java/lang/Runtime.java b/libcore/ojluni/src/main/java/java/lang/Runtime.java
+index bb0bcb4d1..abdd815da 100644
+--- a/libcore/ojluni/src/main/java/java/lang/Runtime.java
++++ b/libcore/ojluni/src/main/java/java/lang/Runtime.java
+@@ -139,7 +139,19 @@ public class Runtime {
+      * @see #runFinalizersOnExit
+      * @see #halt(int)
+      */
++    /**
++     * arc-wasm (topic multiproc): asked first by exit(); true (it does not
++     * return then) when the calling thread's process is a light process of
++     * the VM, which ends alone: no shutdown hooks, they are the VM's.
++     * @hide
++     */
++    public static volatile java.util.function.IntPredicate arcExitHook;
++
+     public void exit(int status) {
++        java.util.function.IntPredicate arcHook = arcExitHook;
++        if (arcHook != null && arcHook.test(status)) {
++            return;
++        }
+         // Make sure we don't try this several times
+         synchronized(this) {
+             if (!shuttingDown) {

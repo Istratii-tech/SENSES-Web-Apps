@@ -1,0 +1,28 @@
+diff --git a/art/runtime/native/java_lang_Runtime.cc b/art/runtime/native/java_lang_Runtime.cc
+index abac8153..ad938899 100644
+--- a/art/runtime/native/java_lang_Runtime.cc
++++ b/art/runtime/native/java_lang_Runtime.cc
+@@ -52,7 +52,23 @@ NO_RETURN static void Runtime_nativeExit(JNIEnv*, jclass, jint status) {
+   exit(status);
+ }
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm: bionic's linker is the NDK bridge's (shim/ndk, topic fw6-system):
++// it searches these directories for the DT_NEEDED of ARM libraries. Weak:
++// artvm builds without the bridge.
++extern "C" void ndk_update_ld_library_path(const char* path) __attribute__((weak));
++#endif
++
+ static void SetLdLibraryPath(JNIEnv* env, jstring javaLdLibraryPathJstr) {
++#if defined(__EMSCRIPTEN__)
++  if (ndk_update_ld_library_path != nullptr && javaLdLibraryPathJstr != nullptr) {
++    ScopedUtfChars ldLibraryPath(env, javaLdLibraryPathJstr);
++    if (ldLibraryPath.c_str() != nullptr) {
++      ndk_update_ld_library_path(ldLibraryPath.c_str());
++    }
++    return;
++  }
++#endif
+ #ifdef HAVE_ANDROID_OS
+   if (javaLdLibraryPathJstr != nullptr) {
+     ScopedUtfChars ldLibraryPath(env, javaLdLibraryPathJstr);

@@ -1,0 +1,1014 @@
+diff --git a/art/runtime/arch/context.cc b/art/runtime/arch/context.cc
+index bf40a3f8..8a07568e 100644
+--- a/art/runtime/arch/context.cc
++++ b/art/runtime/arch/context.cc
+@@ -34,6 +34,10 @@
+ 
+ namespace art {
+ 
++#if defined(__EMSCRIPTEN__)
++Context* CreateWasmContext();
++#endif
++
+ Context* Context::Create() {
+ #if defined(__arm__)
+   return new arm::ArmContext();
+@@ -47,6 +51,8 @@ Context* Context::Create() {
+   return new x86::X86Context();
+ #elif defined(__x86_64__)
+   return new x86_64::X86_64Context();
++#elif defined(__EMSCRIPTEN__)
++  return CreateWasmContext();  // arc-wasm: shim/art/arch_wasm.cc
+ #else
+   UNIMPLEMENTED(FATAL);
+   return nullptr;
+diff --git a/art/runtime/arch/instruction_set.h b/art/runtime/arch/instruction_set.h
+index 9cfd2eb2..22f7b744 100644
+--- a/art/runtime/arch/instruction_set.h
++++ b/art/runtime/arch/instruction_set.h
+@@ -48,6 +48,10 @@ static constexpr InstructionSet kRuntimeISA = kMips64;
+ static constexpr InstructionSet kRuntimeISA = kX86;
+ #elif defined(__x86_64__)
+ static constexpr InstructionSet kRuntimeISA = kX86_64;
++#elif defined(__EMSCRIPTEN__)
++// arc-wasm: there is no wasm ISA in ART; wasm32 has the layout of 32-bit
++// x86 (4-byte pointers, little endian), and nothing is compiled for it.
++static constexpr InstructionSet kRuntimeISA = kX86;
+ #else
+ static constexpr InstructionSet kRuntimeISA = kNone;
+ #endif
+@@ -210,7 +214,7 @@ size_t GetStackOverflowReservedBytes(InstructionSet isa);
+ //            when the garbage collector can move objects concurrently. Ensure that required locks
+ //            are held when using!
+ 
+-#if defined(__i386__) || defined(__arm__) || (defined(__mips__) && !defined(__LP64__))
++#if defined(__i386__) || defined(__arm__) || (defined(__mips__) && !defined(__LP64__)) || defined(__wasm32__)
+ typedef uint64_t TwoWordReturn;
+ 
+ // Encodes method_ptr==nullptr and code_ptr==nullptr
+diff --git a/art/runtime/art_method.cc b/art/runtime/art_method.cc
+index 8619503f..1e725869 100644
+--- a/art/runtime/art_method.cc
++++ b/art/runtime/art_method.cc
+@@ -383,10 +383,29 @@ void ArtMethod::Invoke(Thread* self, uint32_t* args, uint32_t args_size, JValue*
+   self->PushManagedStackFragment(&fragment);
+ 
+   Runtime* runtime = Runtime::Current();
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: there is no compiled code (and no invoke stub): everything,
++  // natives included, goes through the interpreter.
++  UNUSED(runtime, args_size);
++  if (true) {
++    // (Of a proxy class, only the interface methods go to the invocation
++    // handler; its constructor is Proxy's, which runs as usual.)
++    if (UNLIKELY(GetEntryPointFromQuickCompiledCode() == GetQuickProxyInvokeHandler())) {
++      interpreter::ArtWasmInvokeProxy(self, this, args, result, shorty);
++    } else if (IsStatic()) {
++      art::interpreter::EnterInterpreterFromInvoke(self, this, nullptr, args, result);
++    } else {
++      mirror::Object* receiver =
++          reinterpret_cast<StackReference<mirror::Object>*>(&args[0])->AsMirrorPtr();
++      art::interpreter::EnterInterpreterFromInvoke(self, this, receiver, args + 1, result);
++    }
++  } else if (false) {
++#else
+   // Call the invoke stub, passing everything as arguments.
+   // If the runtime is not yet started or it is required by the debugger, then perform the
+   // Invocation by the interpreter.
+   if (UNLIKELY(!runtime->IsStarted() || Dbg::IsForcedInterpreterNeededForCalling(self, this))) {
++#endif
+     if (IsStatic()) {
+       art::interpreter::EnterInterpreterFromInvoke(self, this, nullptr, args, result);
+     } else {
+diff --git a/art/runtime/base/allocator.h b/art/runtime/base/allocator.h
+index 07daa7e0..d0fbd376 100644
+--- a/art/runtime/base/allocator.h
++++ b/art/runtime/base/allocator.h
+@@ -155,11 +155,21 @@ template<class T, AllocatorTag kTag>
+ class TrackingAllocator : public TypeStaticIf<kEnableTrackingAllocator,
+                                               TrackingAllocatorImpl<T, kTag>,
+                                               std::allocator<T>>::type {
++ public:
++  // arc-wasm: newer libc++ rebinds through allocator_traits, which cannot
++  // deduce a template with a non-type parameter; rebind to the same template.
++  template <class U>
++  struct rebind {
++    typedef TrackingAllocator<U, kTag> other;
++  };
++  TrackingAllocator() noexcept = default;
++  template <class U>
++  TrackingAllocator(const TrackingAllocator<U, kTag>&) noexcept {}
+ };
+ 
+ template<class Key, class T, AllocatorTag kTag, class Compare = std::less<Key>>
+ class AllocationTrackingMultiMap : public std::multimap<
+-    Key, T, Compare, TrackingAllocator<std::pair<Key, T>, kTag>> {
++    Key, T, Compare, TrackingAllocator<std::pair<const Key, T>, kTag>> {
+ };
+ 
+ template<class Key, AllocatorTag kTag, class Compare = std::less<Key>>
+diff --git a/art/runtime/base/mutex.h b/art/runtime/base/mutex.h
+index 678d55bd..bbc4b769 100644
+--- a/art/runtime/base/mutex.h
++++ b/art/runtime/base/mutex.h
+@@ -28,7 +28,7 @@
+ #include "base/macros.h"
+ #include "globals.h"
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__EMSCRIPTEN__)
+ #define ART_USE_FUTEXES 0
+ #else
+ #define ART_USE_FUTEXES 1
+diff --git a/art/runtime/base/time_utils.cc b/art/runtime/base/time_utils.cc
+index 48b0a090..fc190956 100644
+--- a/art/runtime/base/time_utils.cc
++++ b/art/runtime/base/time_utils.cc
+@@ -22,7 +22,7 @@
+ #include "base/logging.h"
+ #include "base/stringprintf.h"
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__EMSCRIPTEN__)
+ #include <sys/time.h>
+ #endif
+ 
+@@ -120,7 +120,7 @@ std::string GetIsoDate() {
+ }
+ 
+ uint64_t MilliTime() {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__EMSCRIPTEN__)  // arc-wasm: POSIX clocks
+   timespec now;
+   clock_gettime(CLOCK_MONOTONIC, &now);
+   return static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000) + now.tv_nsec / UINT64_C(1000000);
+@@ -132,7 +132,7 @@ uint64_t MilliTime() {
+ }
+ 
+ uint64_t MicroTime() {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__EMSCRIPTEN__)  // arc-wasm: POSIX clocks
+   timespec now;
+   clock_gettime(CLOCK_MONOTONIC, &now);
+   return static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000000) + now.tv_nsec / UINT64_C(1000);
+@@ -144,7 +144,7 @@ uint64_t MicroTime() {
+ }
+ 
+ uint64_t NanoTime() {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__EMSCRIPTEN__)  // arc-wasm: POSIX clocks
+   timespec now;
+   clock_gettime(CLOCK_MONOTONIC, &now);
+   return static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000000000) + now.tv_nsec;
+@@ -156,7 +156,7 @@ uint64_t NanoTime() {
+ }
+ 
+ uint64_t ThreadCpuNanoTime() {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__EMSCRIPTEN__)  // arc-wasm: POSIX clocks
+   timespec now;
+   clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now);
+   return static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000000000) + now.tv_nsec;
+diff --git a/art/runtime/dex_instruction_utils.h b/art/runtime/dex_instruction_utils.h
+index f892f980..1ae2b1b1 100644
+--- a/art/runtime/dex_instruction_utils.h
++++ b/art/runtime/dex_instruction_utils.h
+@@ -144,49 +144,49 @@ constexpr DexInvokeType InvokeInstructionType(Instruction::Code opcode) {
+ 
+ constexpr DexMemAccessType IGetMemAccessType(Instruction::Code code) {
+ #if __cplusplus >= 201402  // C++14 allows the DCHECK() in constexpr functions.
+-  DCHECK(IsInstructionIGet(opcode));
++  DCHECK(IsInstructionIGet(code));
+ #endif
+   return static_cast<DexMemAccessType>(code - Instruction::IGET);
+ }
+ 
+ constexpr DexMemAccessType IPutMemAccessType(Instruction::Code code) {
+ #if __cplusplus >= 201402  // C++14 allows the DCHECK() in constexpr functions.
+-  DCHECK(IsInstructionIPut(opcode));
++  DCHECK(IsInstructionIPut(code));
+ #endif
+   return static_cast<DexMemAccessType>(code - Instruction::IPUT);
+ }
+ 
+ constexpr DexMemAccessType SGetMemAccessType(Instruction::Code code) {
+ #if __cplusplus >= 201402  // C++14 allows the DCHECK() in constexpr functions.
+-  DCHECK(IsInstructionSGet(opcode));
++  DCHECK(IsInstructionSGet(code));
+ #endif
+   return static_cast<DexMemAccessType>(code - Instruction::SGET);
+ }
+ 
+ constexpr DexMemAccessType SPutMemAccessType(Instruction::Code code) {
+ #if __cplusplus >= 201402  // C++14 allows the DCHECK() in constexpr functions.
+-  DCHECK(IsInstructionSPut(opcode));
++  DCHECK(IsInstructionSPut(code));
+ #endif
+   return static_cast<DexMemAccessType>(code - Instruction::SPUT);
+ }
+ 
+ constexpr DexMemAccessType AGetMemAccessType(Instruction::Code code) {
+ #if __cplusplus >= 201402  // C++14 allows the DCHECK() in constexpr functions.
+-  DCHECK(IsInstructionAGet(opcode));
++  DCHECK(IsInstructionAGet(code));
+ #endif
+   return static_cast<DexMemAccessType>(code - Instruction::AGET);
+ }
+ 
+ constexpr DexMemAccessType APutMemAccessType(Instruction::Code code) {
+ #if __cplusplus >= 201402  // C++14 allows the DCHECK() in constexpr functions.
+-  DCHECK(IsInstructionAPut(opcode));
++  DCHECK(IsInstructionAPut(code));
+ #endif
+   return static_cast<DexMemAccessType>(code - Instruction::APUT);
+ }
+ 
+ constexpr DexMemAccessType IGetOrIPutMemAccessType(Instruction::Code code) {
+ #if __cplusplus >= 201402  // C++14 allows the DCHECK() in constexpr functions.
+-  DCHECK(IsInstructionIGetOrIPut(opcode));
++  DCHECK(IsInstructionIGetOrIPut(code));
+ #endif
+   return (code >= Instruction::IPUT) ? IPutMemAccessType(code) : IGetMemAccessType(code);
+ }
+@@ -216,14 +216,14 @@ static inline DexMemAccessType IGetQuickOrIPutQuickMemAccessType(Instruction::Co
+ 
+ constexpr DexMemAccessType SGetOrSPutMemAccessType(Instruction::Code code) {
+ #if __cplusplus >= 201402  // C++14 allows the DCHECK() in constexpr functions.
+-  DCHECK(IsInstructionSGetOrSPut(opcode));
++  DCHECK(IsInstructionSGetOrSPut(code));
+ #endif
+   return (code >= Instruction::SPUT) ? SPutMemAccessType(code) : SGetMemAccessType(code);
+ }
+ 
+ constexpr DexMemAccessType AGetOrAPutMemAccessType(Instruction::Code code) {
+ #if __cplusplus >= 201402  // C++14 allows the DCHECK() in constexpr functions.
+-  DCHECK(IsInstructionAGetOrAPut(opcode));
++  DCHECK(IsInstructionAGetOrAPut(code));
+ #endif
+   return (code >= Instruction::APUT) ? APutMemAccessType(code) : AGetMemAccessType(code);
+ }
+diff --git a/art/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc b/art/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
+index 2ea5cb0c..0676a236 100644
+--- a/art/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
++++ b/art/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
+@@ -188,7 +188,7 @@ class QuickArgumentVisitor {
+   static size_t GprIndexToGprOffset(uint32_t gpr_index) {
+     return gpr_index * GetBytesPerGprSpillLocation(kRuntimeISA);
+   }
+-#elif defined(__i386__)
++#elif defined(__i386__) || defined(__wasm32__)  // arc-wasm: never runs (no quick code)
+   // The callee save frame is pointed to by SP.
+   // | argN        |  |
+   // | ...         |  |
+@@ -1101,7 +1101,7 @@ template<class T> class BuildNativeCallFrameStateMachine {
+   static constexpr bool kMultiGPRegistersWidened = true;
+   static constexpr bool kAlignLongOnStack = false;
+   static constexpr bool kAlignDoubleOnStack = false;
+-#elif defined(__i386__)
++#elif defined(__i386__) || defined(__wasm32__)  // arc-wasm: never runs (no quick code)
+   // TODO: Check these!
+   static constexpr bool kNativeSoftFloatAbi = false;  // Not using int registers for fp
+   static constexpr size_t kNumNativeGprArgs = 0;  // 6 arguments passed in GPRs.
+diff --git a/art/runtime/gc/accounting/card_table.cc b/art/runtime/gc/accounting/card_table.cc
+index 1a7b1a37..f62682e8 100644
+--- a/art/runtime/gc/accounting/card_table.cc
++++ b/art/runtime/gc/accounting/card_table.cc
+@@ -109,7 +109,9 @@ void CardTable::ClearCardTable() {
+ 
+ void CardTable::ClearCardRange(uint8_t* start, uint8_t* end) {
+   if (!kMadviseZeroes) {
+-    memset(start, 0, end - start);
++    // arc-wasm: clear the cards of [start, end), not the heap itself (AOSP
++    // cleared the heap range here; only hosts without kMadviseZeroes get here).
++    memset(CardFromAddr(start), 0, CardFromAddr(end) - CardFromAddr(start));
+     return;
+   }
+   CHECK_ALIGNED(reinterpret_cast<uintptr_t>(start), kCardSize);
+diff --git a/art/runtime/interpreter/interpreter.cc b/art/runtime/interpreter/interpreter.cc
+index 26860e71..c371a56a 100644
+--- a/art/runtime/interpreter/interpreter.cc
++++ b/art/runtime/interpreter/interpreter.cc
+@@ -29,6 +29,12 @@ namespace interpreter {
+ static void InterpreterJni(Thread* self, ArtMethod* method, const StringPiece& shorty,
+                            Object* receiver, uint32_t* args, JValue* result)
+     SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: any shorty, through JavaScript (shim/art/jni_call_wasm.cc).
++  UNUSED(shorty);
++  ArtWasmInterpreterJni(self, method, receiver, args, result);
++  return;
++#endif
+   // TODO: The following enters JNI code using a typedef-ed function rather than the JNI compiler,
+   //       it should be removed and JNI compiled stubs used instead.
+   ScopedObjectAccessUnchecked soa(self);
+diff --git a/art/runtime/interpreter/interpreter.h b/art/runtime/interpreter/interpreter.h
+index 446c5bb4..75d73639 100644
+--- a/art/runtime/interpreter/interpreter.h
++++ b/art/runtime/interpreter/interpreter.h
+@@ -32,6 +32,17 @@ class Thread;
+ 
+ namespace interpreter {
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm (shim/art/jni_call_wasm.cc): a native method with any signature,
++// and a method of a proxy class.
++void ArtWasmInterpreterJni(Thread* self, ArtMethod* method, mirror::Object* receiver,
++                           uint32_t* args, JValue* result)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_);
++void ArtWasmInvokeProxy(Thread* self, ArtMethod* proxy_method, uint32_t* args, JValue* result,
++                        const char* shorty)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_);
++#endif
++
+ // Called by ArtMethod::Invoke, shadow frames arguments are taken from the args array.
+ extern void EnterInterpreterFromInvoke(Thread* self, ArtMethod* method,
+                                        mirror::Object* receiver, uint32_t* args, JValue* result)
+diff --git a/art/runtime/interpreter/interpreter_common.cc b/art/runtime/interpreter/interpreter_common.cc
+index a245890a..e5ed7033 100644
+--- a/art/runtime/interpreter/interpreter_common.cc
++++ b/art/runtime/interpreter/interpreter_common.cc
+@@ -477,6 +477,23 @@ void AbortTransactionV(Thread* self, const char* fmt, va_list args) {
+   Runtime::Current()->AbortTransactionAndThrowAbortError(self, abort_msg);
+ }
+ 
++#if defined(ART_WASM_FLAT_CALLS)
++// Whether a call to |m| from the interpreter can be flat: |m| runs in the
++// interpreter without access checks (as the flat caller does), outside a
++// transaction, and nobody listens to method entry or exit.
++static inline bool ArtWasmCanCallFlat(Thread* self, ArtMethod* m)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++  Runtime* const runtime = Runtime::Current();
++  if (!m->IsPreverified() || !runtime->IsStarted() || runtime->IsActiveTransaction() ||
++      m->GetEntryPointFromInterpreter() != artInterpreterToInterpreterBridge ||
++      Dbg::IsForcedInterpreterNeededForCalling(self, m)) {
++    return false;
++  }
++  const instrumentation::Instrumentation* const instrumentation = runtime->GetInstrumentation();
++  return !instrumentation->HasMethodEntryListeners() && !instrumentation->HasMethodExitListeners();
++}
++#endif
++
+ template<bool is_range, bool do_assignability_check>
+ bool DoCall(ArtMethod* called_method, Thread* self, ShadowFrame& shadow_frame,
+             const Instruction* inst, uint16_t inst_data, JValue* result) {
+@@ -507,7 +524,26 @@ bool DoCall(ArtMethod* called_method, Thread* self, ShadowFrame& shadow_frame,
+ 
+   // Allocate shadow frame on the stack.
+   const char* old_cause = self->StartAssertNoThreadSuspension("DoCall");
++#if defined(ART_WASM_FLAT_CALLS)
++  // A flat call's frame comes from the thread's frame stack; the caller's
++  // interpreter loop runs it (see interpreter_switch_impl.cc).
++  ShadowFrame** flat_out = nullptr;
++  if (t_art_flat_out != nullptr && t_art_flat_caller == &shadow_frame && !string_init &&
++      code_item != nullptr && !do_assignability_check && ArtWasmCanCallFlat(self, called_method)) {
++    flat_out = t_art_flat_out;
++    t_art_flat_out = nullptr;
++  }
++  void* memory = flat_out != nullptr ? ArtWasmFlatFrameAlloc(ShadowFrame::ComputeSize(num_regs))
++                                     : alloca(ShadowFrame::ComputeSize(num_regs));
++  if (UNLIKELY(memory == nullptr)) {
++    // The frame stack is full.
++    self->EndAssertNoThreadSuspension(old_cause);
++    ThrowStackOverflowError(self);
++    return false;
++  }
++#else
+   void* memory = alloca(ShadowFrame::ComputeSize(num_regs));
++#endif
+   ShadowFrame* new_shadow_frame(ShadowFrame::Create(num_regs, &shadow_frame, called_method, 0,
+                                                     memory));
+ 
+@@ -627,6 +663,13 @@ bool DoCall(ArtMethod* called_method, Thread* self, ShadowFrame& shadow_frame,
+     self->EndAssertNoThreadSuspension(old_cause);
+   }
+ 
++#if defined(ART_WASM_FLAT_CALLS)
++  if (flat_out != nullptr) {
++    *flat_out = new_shadow_frame;
++    return true;
++  }
++#endif
++
+   // Do the call now.
+   if (LIKELY(Runtime::Current()->IsStarted())) {
+     if (kIsDebugBuild && new_shadow_frame->GetMethod()->GetEntryPointFromInterpreter() == nullptr) {
+diff --git a/art/runtime/interpreter/interpreter_common.h b/art/runtime/interpreter/interpreter_common.h
+index 0124d903..17ecca01 100644
+--- a/art/runtime/interpreter/interpreter_common.h
++++ b/art/runtime/interpreter/interpreter_common.h
+@@ -59,6 +59,19 @@ using ::art::mirror::Throwable;
+ namespace art {
+ namespace interpreter {
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm: calls between interpreted methods do not nest C++ frames
++// (shim/art/interpreter_frames_wasm.cc). ExecuteSwitchImpl sets
++// t_art_flat_out/t_art_flat_caller around DoInvoke; DoCall then builds the
++// callee's frame on the thread's frame stack and returns it through
++// t_art_flat_out instead of running it.
++#define ART_WASM_FLAT_CALLS 1
++extern thread_local ShadowFrame** t_art_flat_out;
++extern thread_local ShadowFrame* t_art_flat_caller;
++void* ArtWasmFlatFrameAlloc(size_t bytes);
++void ArtWasmFlatFrameFree(void* frame);
++#endif
++
+ // External references to both interpreter implementations.
+ 
+ template<bool do_access_check, bool transaction_active>
+diff --git a/art/runtime/interpreter/interpreter_switch_impl.cc b/art/runtime/interpreter/interpreter_switch_impl.cc
+index dd7aa403..e5cce89c 100644
+--- a/art/runtime/interpreter/interpreter_switch_impl.cc
++++ b/art/runtime/interpreter/interpreter_switch_impl.cc
+@@ -28,7 +28,7 @@ namespace interpreter {
+                                                                   inst->GetDexPc(insns),        \
+                                                                   instrumentation);             \
+     if (found_dex_pc == DexFile::kDexNoIndex) {                                                 \
+-      return JValue(); /* Handled in caller. */                                                 \
++      ART_WASM_FLAT_UNWIND(); /* Handled in caller. */                                          \
+     } else {                                                                                    \
+       int32_t displacement = static_cast<int32_t>(found_dex_pc) - static_cast<int32_t>(dex_pc); \
+       inst = inst->RelativeAt(displacement);                                                    \
+@@ -44,6 +44,82 @@ namespace interpreter {
+     }                                                                             \
+   } while (false)
+ 
++#if defined(ART_WASM_FLAT_CALLS)
++// arc-wasm: flat calls (see interpreter_common.h). A frame entered by a flat
++// call returns or unwinds into its caller's frame in this same loop.
++#define ART_WASM_FLAT_UNWIND()  \
++  do {                          \
++    if (flat_depth == 0) {      \
++      return JValue();          \
++    }                           \
++    goto flat_unwind;           \
++  } while (false)
++
++#define ART_WASM_FLAT_RETURN(_result) \
++  do {                                \
++    if (flat_depth == 0) {            \
++      return _result;                 \
++    }                                 \
++    flat_result = _result;            \
++    goto flat_return;                 \
++  } while (false)
++
++#define ART_WASM_FLAT_INVOKE(...)                                       \
++  do {                                                                  \
++    ShadowFrame* flat_callee = nullptr;                                 \
++    if (kFlatCalls) {                                                   \
++      t_art_flat_out = &flat_callee;                                    \
++      t_art_flat_caller = flat_sf;                                      \
++    }                                                                   \
++    bool success = __VA_ARGS__;                                         \
++    t_art_flat_out = nullptr;                                           \
++    if (flat_callee == nullptr) {                                       \
++      POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);            \
++    } else if (UNLIKELY(!ArtWasmFlatEnter(self, flat_callee))) {        \
++      HANDLE_PENDING_EXCEPTION();                                       \
++    } else {                                                            \
++      flat_sf = flat_callee;                                            \
++      code_item = flat_sf->GetMethod()->GetCodeItem();                  \
++      insns = code_item->insns_;                                        \
++      inst = Instruction::At(insns);                                    \
++      result_register = JValue();                                       \
++      ++flat_depth;                                                     \
++    }                                                                   \
++  } while (false)
++
++// What artInterpreterToInterpreterBridge does before running a method:
++// push its frame, initialize the class of a static method. On failure the
++// frame is gone and an exception is pending.
++static inline bool ArtWasmFlatEnter(Thread* self, ShadowFrame* callee)
++    SHARED_LOCKS_REQUIRED(Locks::mutator_lock_) {
++  self->PushShadowFrame(callee);
++  ArtMethod* const method = callee->GetMethod();
++  if (method->IsStatic()) {
++    mirror::Class* declaring_class = method->GetDeclaringClass();
++    if (UNLIKELY(!declaring_class->IsInitialized())) {
++      StackHandleScope<1> hs(self);
++      HandleWrapper<Class> h_declaring_class(hs.NewHandleWrapper(&declaring_class));
++      if (UNLIKELY(!Runtime::Current()->GetClassLinker()->EnsureInitialized(
++          self, h_declaring_class, true, true))) {
++        DCHECK(self->IsExceptionPending());
++        self->PopShadowFrame();
++        ArtWasmFlatFrameFree(callee);
++        return false;
++      }
++    }
++  }
++  return true;
++}
++#else
++#define ART_WASM_FLAT_UNWIND() return JValue()
++#define ART_WASM_FLAT_RETURN(_result) return _result
++#define ART_WASM_FLAT_INVOKE(...)                            \
++  do {                                                       \
++    bool success = __VA_ARGS__;                              \
++    POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);   \
++  } while (false)
++#endif
++
+ // Code to run before each dex instruction.
+ #define PREAMBLE()                                                                              \
+   do {                                                                                          \
+@@ -61,6 +137,15 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+     LOG(FATAL) << "Invalid shadow frame for interpreter use";
+     return JValue();
+   }
++#if defined(ART_WASM_FLAT_CALLS)
++  // "shadow_frame" below is the current frame: this method's, or one entered
++  // by a flat call (flat_depth of them are on top of this method's).
++  constexpr bool kFlatCalls = !do_access_check && !transaction_active;
++  size_t flat_depth = 0;
++  JValue flat_result;
++  ShadowFrame* flat_sf = &shadow_frame;
++#define shadow_frame (*flat_sf)
++#endif
+   self->VerifyStack();
+ 
+   uint32_t dex_pc = shadow_frame.GetDexPC();
+@@ -74,7 +159,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+                                         shadow_frame.GetMethod(), 0);
+     }
+   }
+-  const uint16_t* const insns = code_item->insns_;
++  const uint16_t* insns = code_item->insns_;  // arc-wasm: changes with flat calls
+   const Instruction* inst = Instruction::At(insns + dex_pc);
+   uint16_t inst_data;
+   while (true) {
+@@ -174,7 +259,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+                                            shadow_frame.GetMethod(), inst->GetDexPc(insns),
+                                            result);
+         }
+-        return result;
++        ART_WASM_FLAT_RETURN(result);
+       }
+       case Instruction::RETURN_VOID: {
+         PREAMBLE();
+@@ -186,7 +271,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+                                            shadow_frame.GetMethod(), inst->GetDexPc(insns),
+                                            result);
+         }
+-        return result;
++        ART_WASM_FLAT_RETURN(result);
+       }
+       case Instruction::RETURN: {
+         PREAMBLE();
+@@ -199,7 +284,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+                                            shadow_frame.GetMethod(), inst->GetDexPc(insns),
+                                            result);
+         }
+-        return result;
++        ART_WASM_FLAT_RETURN(result);
+       }
+       case Instruction::RETURN_WIDE: {
+         PREAMBLE();
+@@ -211,7 +296,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+                                            shadow_frame.GetMethod(), inst->GetDexPc(insns),
+                                            result);
+         }
+-        return result;
++        ART_WASM_FLAT_RETURN(result);
+       }
+       case Instruction::RETURN_OBJECT: {
+         PREAMBLE();
+@@ -243,7 +328,7 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+                                            shadow_frame.GetMethod(), inst->GetDexPc(insns),
+                                            result);
+         }
+-        return result;
++        ART_WASM_FLAT_RETURN(result);
+       }
+       case Instruction::CONST_4: {
+         PREAMBLE();
+@@ -1359,86 +1444,74 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+       }
+       case Instruction::INVOKE_VIRTUAL: {
+         PREAMBLE();
+-        bool success = DoInvoke<kVirtual, false, do_access_check>(
+-            self, shadow_frame, inst, inst_data, &result_register);
+-        POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);
++        ART_WASM_FLAT_INVOKE(DoInvoke<kVirtual, false, do_access_check>(
++            self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_VIRTUAL_RANGE: {
+         PREAMBLE();
+-        bool success = DoInvoke<kVirtual, true, do_access_check>(
+-            self, shadow_frame, inst, inst_data, &result_register);
+-        POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);
++        ART_WASM_FLAT_INVOKE(DoInvoke<kVirtual, true, do_access_check>(
++            self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_SUPER: {
+         PREAMBLE();
+-        bool success = DoInvoke<kSuper, false, do_access_check>(
+-            self, shadow_frame, inst, inst_data, &result_register);
+-        POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);
++        ART_WASM_FLAT_INVOKE(DoInvoke<kSuper, false, do_access_check>(
++            self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_SUPER_RANGE: {
+         PREAMBLE();
+-        bool success = DoInvoke<kSuper, true, do_access_check>(
+-            self, shadow_frame, inst, inst_data, &result_register);
+-        POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);
++        ART_WASM_FLAT_INVOKE(DoInvoke<kSuper, true, do_access_check>(
++            self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_DIRECT: {
+         PREAMBLE();
+-        bool success = DoInvoke<kDirect, false, do_access_check>(
+-            self, shadow_frame, inst, inst_data, &result_register);
+-        POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);
++        ART_WASM_FLAT_INVOKE(DoInvoke<kDirect, false, do_access_check>(
++            self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_DIRECT_RANGE: {
+         PREAMBLE();
+-        bool success = DoInvoke<kDirect, true, do_access_check>(
+-            self, shadow_frame, inst, inst_data, &result_register);
+-        POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);
++        ART_WASM_FLAT_INVOKE(DoInvoke<kDirect, true, do_access_check>(
++            self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_INTERFACE: {
+         PREAMBLE();
+-        bool success = DoInvoke<kInterface, false, do_access_check>(
+-            self, shadow_frame, inst, inst_data, &result_register);
+-        POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);
++        ART_WASM_FLAT_INVOKE(DoInvoke<kInterface, false, do_access_check>(
++            self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_INTERFACE_RANGE: {
+         PREAMBLE();
+-        bool success = DoInvoke<kInterface, true, do_access_check>(
+-            self, shadow_frame, inst, inst_data, &result_register);
+-        POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);
++        ART_WASM_FLAT_INVOKE(DoInvoke<kInterface, true, do_access_check>(
++            self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_STATIC: {
+         PREAMBLE();
+-        bool success = DoInvoke<kStatic, false, do_access_check>(
+-            self, shadow_frame, inst, inst_data, &result_register);
+-        POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);
++        ART_WASM_FLAT_INVOKE(DoInvoke<kStatic, false, do_access_check>(
++            self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_STATIC_RANGE: {
+         PREAMBLE();
+-        bool success = DoInvoke<kStatic, true, do_access_check>(
+-            self, shadow_frame, inst, inst_data, &result_register);
+-        POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);
++        ART_WASM_FLAT_INVOKE(DoInvoke<kStatic, true, do_access_check>(
++            self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_VIRTUAL_QUICK: {
+         PREAMBLE();
+-        bool success = DoInvokeVirtualQuick<false>(
+-            self, shadow_frame, inst, inst_data, &result_register);
+-        POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);
++        ART_WASM_FLAT_INVOKE(DoInvokeVirtualQuick<false>(
++            self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::INVOKE_VIRTUAL_RANGE_QUICK: {
+         PREAMBLE();
+-        bool success = DoInvokeVirtualQuick<true>(
+-            self, shadow_frame, inst, inst_data, &result_register);
+-        POSSIBLY_HANDLE_PENDING_EXCEPTION(!success, Next_3xx);
++        ART_WASM_FLAT_INVOKE(DoInvokeVirtualQuick<true>(
++            self, shadow_frame, inst, inst_data, &result_register));
+         break;
+       }
+       case Instruction::NEG_INT:
+@@ -2223,7 +2296,43 @@ JValue ExecuteSwitchImpl(Thread* self, const DexFile::CodeItem* code_item,
+       case Instruction::UNUSED_7A:
+         UnexpectedOpcode(inst, shadow_frame);
+     }
++#if defined(ART_WASM_FLAT_CALLS)
++    continue;
++  flat_return:
++    // The method of a flat call returned: continue its caller after the
++    // invoke (all invoke formats are 3 code units).
++    {
++      ShadowFrame* const callee = flat_sf;
++      flat_sf = callee->GetLink();
++      self->PopShadowFrame();
++      ArtWasmFlatFrameFree(callee);
++      --flat_depth;
++      code_item = flat_sf->GetMethod()->GetCodeItem();
++      insns = code_item->insns_;
++      result_register = flat_result;
++      inst = Instruction::At(insns + flat_sf->GetDexPC())->Next_3xx();
++    }
++    continue;
++  flat_unwind:
++    // The method of a flat call has no handler for the pending exception:
++    // look for one at the caller's invoke.
++    {
++      ShadowFrame* const callee = flat_sf;
++      flat_sf = callee->GetLink();
++      self->PopShadowFrame();
++      ArtWasmFlatFrameFree(callee);
++      --flat_depth;
++      code_item = flat_sf->GetMethod()->GetCodeItem();
++      insns = code_item->insns_;
++      dex_pc = flat_sf->GetDexPC();
++      inst = Instruction::At(insns + dex_pc);
++    }
++    HANDLE_PENDING_EXCEPTION();
++#endif
+   }
++#if defined(ART_WASM_FLAT_CALLS)
++#undef shadow_frame
++#endif
+ }  // NOLINT(readability/fn_size)
+ 
+ // Explicit definitions of ExecuteSwitchImpl.
+diff --git a/art/runtime/java_vm_ext.cc b/art/runtime/java_vm_ext.cc
+index f1deacf3..1eb8ee08 100644
+--- a/art/runtime/java_vm_ext.cc
++++ b/art/runtime/java_vm_ext.cc
+@@ -40,6 +40,16 @@
+ #include "thread-inl.h"
+ #include "thread_list.h"
+ 
++#if defined(__EMSCRIPTEN__)
++// arc-wasm: there is no dynamic loading. Libraries linked into artvm are
++// found by name (shim/art/static_jni_libs_art.cc); ARM libraries from APKs
++// go to the NDK bridge.
++#include "static_jni_libs.h"
++#define dlopen arc_wasm_dlopen
++#define dlsym arc_wasm_dlsym
++#define dlerror arc_wasm_dlerror
++#endif
++
+ namespace art {
+ 
+ static size_t gGlobalsInitial = 512;  // Arbitrary.
+@@ -708,7 +718,13 @@ bool JavaVMExt::LoadNativeLibrary(JNIEnv* env, const std::string& path, jobject
+     VLOG(jni) << "[Calling JNI_OnLoad in \"" << path << "\"]";
+     typedef int (*JNI_OnLoadFn)(JavaVM*, void*);
+     JNI_OnLoadFn jni_on_load = reinterpret_cast<JNI_OnLoadFn>(sym);
++#if defined(__EMSCRIPTEN__)
++    // A guest (ARM) JNI_OnLoad runs on the NDK bridge's CPU.
++    int version = arc_wasm_call_jni_onload(handle, sym, this);
++    UNUSED(jni_on_load);
++#else
+     int version = (*jni_on_load)(this, nullptr);
++#endif
+ 
+     if (runtime_->GetTargetSdkVersion() != 0 && runtime_->GetTargetSdkVersion() <= 21) {
+       fault_manager.EnsureArtActionInFrontOfSignalChain();
+diff --git a/art/runtime/mem_map.cc b/art/runtime/mem_map.cc
+index 65660609..5efd8cb2 100644
+--- a/art/runtime/mem_map.cc
++++ b/art/runtime/mem_map.cc
+@@ -37,7 +37,9 @@
+ #include "thread-inl.h"
+ #include "utils.h"
+ 
++#if !defined(__EMSCRIPTEN__)  // arc-wasm: plain anonymous memory (shim/wasm_mm)
+ #define USE_ASHMEM 1
++#endif
+ 
+ #ifdef USE_ASHMEM
+ #include <cutils/ashmem.h>
+@@ -140,6 +142,12 @@ uintptr_t MemMap::next_mem_pos_ = GenerateNextMemPos();
+ // Return true if the address range is contained in a single /proc/self/map entry.
+ static bool ContainedWithinExistingMap(uint8_t* ptr, size_t size,
+                                        std::string* error_msg) {
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: there is no /proc/self/maps; the wasm mmap layer
++  // (shim/wasm_mm) refuses MAP_FIXED outside its own mappings itself.
++  UNUSED(ptr, size, error_msg);
++  return true;
++#endif
+   uintptr_t begin = reinterpret_cast<uintptr_t>(ptr);
+   uintptr_t end = begin + size;
+   std::unique_ptr<BacktraceMap> map(BacktraceMap::Create(getpid(), true));
+@@ -163,6 +171,10 @@ static bool ContainedWithinExistingMap(uint8_t* ptr, size_t size,
+ static bool CheckNonOverlapping(uintptr_t begin,
+                                 uintptr_t end,
+                                 std::string* error_msg) {
++#if defined(__EMSCRIPTEN__)
++  UNUSED(begin, end, error_msg);  // arc-wasm: no /proc/self/maps (see above).
++  return true;
++#endif
+   std::unique_ptr<BacktraceMap> map(BacktraceMap::Create(getpid(), true));
+   if (map.get() == nullptr) {
+     *error_msg = StringPrintf("Failed to build process map");
+diff --git a/art/runtime/mem_map.h b/art/runtime/mem_map.h
+index 14387eed..48ed7f45 100644
+--- a/art/runtime/mem_map.h
++++ b/art/runtime/mem_map.h
+@@ -37,7 +37,8 @@ namespace art {
+ #define USE_ART_LOW_4G_ALLOCATOR 0
+ #endif
+ 
+-#ifdef __linux__
++#if defined(__linux__) || defined(__EMSCRIPTEN__)
++// arc-wasm: madvise(MADV_DONTNEED) zeroes on wasm too (shim/art/art_runtime_wasm.h).
+ static constexpr bool kMadviseZeroes = true;
+ #else
+ static constexpr bool kMadviseZeroes = false;
+diff --git a/art/runtime/native/scoped_fast_native_object_access.h b/art/runtime/native/scoped_fast_native_object_access.h
+index 57b873bc..65841197 100644
+--- a/art/runtime/native/scoped_fast_native_object_access.h
++++ b/art/runtime/native/scoped_fast_native_object_access.h
+@@ -31,7 +31,13 @@ class ScopedFastNativeObjectAccess : public ScopedObjectAccessAlreadyRunnable {
+     SHARED_LOCK_FUNCTION(Locks::mutator_lock_) ALWAYS_INLINE
+      : ScopedObjectAccessAlreadyRunnable(env) {
+     Locks::mutator_lock_->AssertSharedHeld(Self());
++#if defined(__EMSCRIPTEN__)
++    // arc-wasm: natives are called from the interpreter (no quick frame);
++    // the native method is in the top shadow frame.
++    DCHECK(Self()->GetManagedStack()->GetTopShadowFrame()->GetMethod()->IsFastNative());
++#else
+     DCHECK((*Self()->GetManagedStack()->GetTopQuickFrame())->IsFastNative());
++#endif
+     // Don't work with raw objects in non-runnable states.
+     DCHECK_EQ(Self()->GetState(), kRunnable);
+   }
+diff --git a/art/runtime/oat_file.cc b/art/runtime/oat_file.cc
+index ad5741e4..dbcf76da 100644
+--- a/art/runtime/oat_file.cc
++++ b/art/runtime/oat_file.cc
+@@ -610,7 +610,7 @@ OatFile::OatDexFile::OatDexFile(const OatFile* oat_file,
+       dex_file_pointer_(dex_file_pointer),
+       oat_class_offsets_pointer_(oat_class_offsets_pointer) {}
+ 
+-OatFile::OatDexFile::~OatDexFile() {}
++OatDexFile::~OatDexFile() {}
+ 
+ size_t OatFile::OatDexFile::FileSize() const {
+   return reinterpret_cast<const DexFile::Header*>(dex_file_pointer_)->file_size_;
+diff --git a/art/runtime/oat_file_assistant.cc b/art/runtime/oat_file_assistant.cc
+index b28adf9c..90165c56 100644
+--- a/art/runtime/oat_file_assistant.cc
++++ b/art/runtime/oat_file_assistant.cc
+@@ -17,7 +17,7 @@
+ #include "oat_file_assistant.h"
+ 
+ #include <fcntl.h>
+-#ifdef __linux__
++#if defined(__linux__) || defined(__EMSCRIPTEN__)
+ #include <sys/sendfile.h>
+ #else
+ #include <sys/socket.h>
+@@ -581,7 +581,7 @@ void OatFileAssistant::CopyProfileFile() {
+     return;
+   }
+ 
+-#ifdef __linux__
++#if defined(__linux__) || defined(__EMSCRIPTEN__)
+   if (sendfile(dst.get(), src.get(), nullptr, stat_src.st_size) == -1) {
+ #else
+   off_t len;
+diff --git a/art/runtime/runtime.cc b/art/runtime/runtime.cc
+index 93f66ec3..fd8f9a2d 100644
+--- a/art/runtime/runtime.cc
++++ b/art/runtime/runtime.cc
+@@ -21,6 +21,9 @@
+ #ifdef __linux__
+ #include <linux/fs.h>
+ #endif
++#if defined(__EMSCRIPTEN__)
++#include <emscripten/emscripten.h>
++#endif
+ 
+ #define ATRACE_TAG ATRACE_TAG_DALVIK
+ #include <cutils/trace.h>
+@@ -360,6 +363,12 @@ void Runtime::Abort() {
+   // Get any pending output out of the way.
+   fflush(nullptr);
+ 
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: the native (wasm) stack, before the thread dumps below, which
++  // can block on locks the aborting thread holds.
++  emscripten_log(EM_LOG_CONSOLE | EM_LOG_ERROR | EM_LOG_C_STACK, "art: Runtime::Abort, native stack:");
++#endif
++
+   // Many people have difficulty distinguish aborts from crashes,
+   // so be explicit.
+   AbortState state;
+@@ -665,6 +674,11 @@ void Runtime::DidForkFromZygote(JNIEnv* env, NativeBridgeAction action, const ch
+ }
+ 
+ void Runtime::StartSignalCatcher() {
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: the signal catcher waits for SIGQUIT/SIGUSR1 with sigwait(),
++  // and a browser delivers no signals.
++  return;
++#endif
+   if (!is_zygote_) {
+     signal_catcher_ = new SignalCatcher(stack_trace_file_);
+   }
+@@ -781,7 +795,13 @@ static size_t OpenDexFiles(const std::vector<std::string>& dex_filenames,
+ 
+ bool Runtime::Init(const RuntimeOptions& raw_options, bool ignore_unrecognized) {
+   ATRACE_BEGIN("Runtime::Init");
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: wasm pages are 64 KB; ART keeps its 4 KB pages within them
++  // (shim/art/art_runtime_wasm.h).
++  CHECK_EQ(sysconf(_SC_PAGE_SIZE) % kPageSize, 0);
++#else
+   CHECK_EQ(sysconf(_SC_PAGE_SIZE), kPageSize);
++#endif
+ 
+   MemMap::Init();
+ 
+@@ -917,6 +937,10 @@ bool Runtime::Init(const RuntimeOptions& raw_options, bool ignore_unrecognized)
+   InitPlatformSignalHandlers();
+ 
+   // Change the implicit checks flags based on runtime architecture.
++#if defined(__EMSCRIPTEN__)
++  // arc-wasm: no compiled code and no signals; every check is explicit.
++  if (false)
++#endif
+   switch (kRuntimeISA) {
+     case kArm:
+     case kThumb2:
+diff --git a/art/runtime/safe_map.h b/art/runtime/safe_map.h
+index 402c7e9c..cdaba11c 100644
+--- a/art/runtime/safe_map.h
++++ b/art/runtime/safe_map.h
+@@ -134,7 +134,7 @@ bool operator!=(const SafeMap<K, V, Comparator, Allocator>& lhs,
+ 
+ template<class Key, class T, AllocatorTag kTag, class Compare = std::less<Key>>
+ class AllocationTrackingSafeMap : public SafeMap<
+-    Key, T, Compare, TrackingAllocator<std::pair<Key, T>, kTag>> {
++    Key, T, Compare, TrackingAllocator<std::pair<const Key, T>, kTag>> {
+ };
+ 
+ }  // namespace art
+diff --git a/art/runtime/utils.cc b/art/runtime/utils.cc
+index 80938cea..38f04a5c 100644
+--- a/art/runtime/utils.cc
++++ b/art/runtime/utils.cc
+@@ -61,7 +61,7 @@ pid_t GetTid() {
+   uint64_t owner;
+   CHECK_PTHREAD_CALL(pthread_threadid_np, (nullptr, &owner), __FUNCTION__);  // Requires Mac OS 10.6
+   return owner;
+-#elif defined(__BIONIC__)
++#elif defined(__BIONIC__) || defined(__EMSCRIPTEN__)
+   return gettid();
+ #else
+   return syscall(__NR_gettid);
+@@ -966,7 +966,7 @@ void SetThreadName(const char* thread_name) {
+   } else {
+     s = thread_name + len - 15;
+   }
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__EMSCRIPTEN__)
+   // pthread_setname_np fails rather than truncating long strings.
+   char buf[16];       // MAX_TASK_COMM_LEN=16 is hard-coded in the kernel.
+   strncpy(buf, s, sizeof(buf)-1);
+diff --git a/libcore/luni/src/main/native/java_lang_System.cpp b/libcore/luni/src/main/native/java_lang_System.cpp
+index 306adab9..904641f1 100644
+--- a/libcore/luni/src/main/native/java_lang_System.cpp
++++ b/libcore/luni/src/main/native/java_lang_System.cpp
+@@ -113,7 +113,7 @@ static jlong System_currentTimeMillis(JNIEnv*, jclass) {
+ }
+ 
+ static jlong System_nanoTime(JNIEnv*, jclass) {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__EMSCRIPTEN__)  // arc-wasm: CLOCK_MONOTONIC (gettimeofday is 1 ms)
+     timespec now;
+     clock_gettime(CLOCK_MONOTONIC, &now);
+     return now.tv_sec * 1000000000LL + now.tv_nsec;
+diff --git a/libcore/luni/src/main/native/libcore_io_Posix.cpp b/libcore/luni/src/main/native/libcore_io_Posix.cpp
+index 99b76f98..7cbb16b7 100644
+--- a/libcore/luni/src/main/native/libcore_io_Posix.cpp
++++ b/libcore/luni/src/main/native/libcore_io_Posix.cpp
+@@ -586,6 +586,9 @@ class Passwd {
+ public:
+     Passwd(JNIEnv* env) : mEnv(env), mResult(NULL) {
+         mBufferSize = sysconf(_SC_GETPW_R_SIZE_MAX);
++        if ((ssize_t) mBufferSize < 0) {
++            mBufferSize = 1024;  // arc-wasm: musl returns -1 ("no limit").
++        }
+         mBuffer.reset(new char[mBufferSize]);
+     }
+ 
+@@ -1051,7 +1054,7 @@ static jint Posix_gettid(JNIEnv* env __unused, jobject) {
+     return 0;
+   }
+   return static_cast<jint>(owner);
+-#elif defined(__BIONIC__)
++#elif defined(__BIONIC__) || defined(__EMSCRIPTEN__)  // arc-wasm: musl has gettid()
+   return TEMP_FAILURE_RETRY(gettid());
+ #else
+   return syscall(__NR_gettid);

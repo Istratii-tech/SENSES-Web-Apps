@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The feature part of tests/apk-split (split_feature.apk): code only
+     (classes.dex), on the app's class loader. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.arcwasm.splittest"
+    split="feature"
+    android:versionCode="1"
+    android:isFeatureSplit="true">
+    <application android:hasCode="true" />
+</manifest>

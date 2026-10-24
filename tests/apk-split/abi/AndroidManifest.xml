@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The ABI part of tests/apk-split (split_config.armeabi_v7a.apk), as
+     bundletool makes it: no code, lib/armeabi-v7a/ added by
+     tools/build_split_test_apks.sh. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.arcwasm.splittest"
+    split="config.armeabi_v7a"
+    android:versionCode="1">
+    <application android:hasCode="false" />
+</manifest>

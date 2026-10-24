@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The test APK of arcwasm.Ndk8Test (tests/java8/arcwasm/Ndk8Test.java):
+     org.arcwasm.ndk8test.Native8 and lib/armeabi-v7a/libndk8test.so
+     (tests/ndk8, added by mk/topic-fw8-system.mk), an ARM library that uses
+     what Android 7.0-8.1 (API 24-27) gave NDK code and links libsync,
+     libmediandk and libnativewindow as Firefox's libxul does. No activities. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.arcwasm.ndk8test"
+    android:versionCode="1"
+    android:versionName="1.0">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="27" />
+    <application android:label="@string/app_name" android:hasCode="true" />
+</manifest>

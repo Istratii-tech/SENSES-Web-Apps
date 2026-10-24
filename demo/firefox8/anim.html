@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Animation</title>
+<!-- A page that changes every frame, to measure how fast Firefox on arc-wasm
+     composites (topic firefox8-gl): a CSS animation (moving and rotating
+     boxes, composited by WebRender) and a requestAnimationFrame counter whose
+     rate is shown on the page and in the title. -->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #f4f1ff;
+               font: 20px/1.4 sans-serif; color: #1d1b2e; }
+  #fps { position: absolute; left: 12px; top: 8px; font-weight: bold; }
+  .box { position: absolute; width: 80px; height: 80px; border-radius: 12px;
+         animation: move 2s ease-in-out infinite alternate; }
+  @keyframes move { from { transform: translateX(0) rotate(0); }
+                    to { transform: translateX(240px) rotate(180deg); } }
+</style>
+<div id="fps">rAF: …</div>
+<div class="box" style="top:60px; background:#ff0000"></div>
+<div class="box" style="top:170px; background:#00ff00; animation-delay:-0.5s"></div>
+<div class="box" style="top:280px; background:#0000ff; animation-delay:-1s"></div>
+<div class="box" style="top:390px; background:#ff8000; animation-delay:-1.5s"></div>
+<script>
+  var el = document.getElementById('fps'), n = 0, t0 = performance.now();
+  function tick(now) {
+    n++;
+    if (now - t0 >= 2000) {
+      var fps = (1000 * n / (now - t0)).toFixed(1);
+      el.textContent = 'rAF: ' + fps + ' fps';
+      document.title = 'rAF ' + fps;
+      n = 0;
+      t0 = now;
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+</script>

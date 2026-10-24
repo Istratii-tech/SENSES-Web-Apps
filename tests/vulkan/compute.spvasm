@@ -1,0 +1,48 @@
+; data[gl_GlobalInvocationID.x] = data[...] * 2 + pc.add: a storage buffer
+; as glslang wrote them for SPIR-V 1.0 (Uniform + BufferBlock) and push
+; constants (the driver turns them into a storage buffer).
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %gid
+               OpExecutionMode %main LocalSize 64 1 1
+               OpDecorate %gid BuiltIn GlobalInvocationId
+               OpDecorate %rta ArrayStride 4
+               OpMemberDecorate %B 0 Offset 0
+               OpDecorate %B BufferBlock
+               OpDecorate %buf DescriptorSet 0
+               OpDecorate %buf Binding 0
+               OpMemberDecorate %PC 0 Offset 0
+               OpDecorate %PC Block
+       %void = OpTypeVoid
+         %fn = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+        %int = OpTypeInt 32 1
+     %v3uint = OpTypeVector %uint 3
+  %ptr_in_v3 = OpTypePointer Input %v3uint
+        %gid = OpVariable %ptr_in_v3 Input
+   %ptr_in_u = OpTypePointer Input %uint
+     %uint_0 = OpConstant %uint 0
+      %int_0 = OpConstant %int 0
+     %uint_2 = OpConstant %uint 2
+        %rta = OpTypeRuntimeArray %uint
+          %B = OpTypeStruct %rta
+      %ptr_B = OpTypePointer Uniform %B
+        %buf = OpVariable %ptr_B Uniform
+    %ptr_u_u = OpTypePointer Uniform %uint
+         %PC = OpTypeStruct %uint
+     %ptr_PC = OpTypePointer PushConstant %PC
+         %pc = OpVariable %ptr_PC PushConstant
+   %ptr_pc_u = OpTypePointer PushConstant %uint
+       %main = OpFunction %void None %fn
+      %entry = OpLabel
+         %gx = OpAccessChain %ptr_in_u %gid %uint_0
+          %i = OpLoad %uint %gx
+          %p = OpAccessChain %ptr_u_u %buf %int_0 %i
+          %v = OpLoad %uint %p
+         %v2 = OpIMul %uint %v %uint_2
+         %ap = OpAccessChain %ptr_pc_u %pc %int_0
+          %a = OpLoad %uint %ap
+         %v3 = OpIAdd %uint %v2 %a
+               OpStore %p %v3
+               OpReturn
+               OpFunctionEnd

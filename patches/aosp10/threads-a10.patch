@@ -1,0 +1,86 @@
+diff --git a/art/runtime/runtime.cc b/art/runtime/runtime.cc
+index 5a50ae5ce..aa7a0c573 100644
+--- a/art/runtime/runtime.cc
++++ b/art/runtime/runtime.cc
+@@ -1052,6 +1052,10 @@ void Runtime::InitNonZygoteOrPostFork(
+ 
+   // Create the thread pools.
+   heap_->CreateThreadPool();
++  // arc-wasm (topic threads-a10): no "Runtime" pool. It only loads app images
++  // in parallel (ImageSpace, which works without it), and its up to 4 workers
++  // are browser workers that wait for good (~5 MB each of an iPhone's tab).
++#if !defined(__EMSCRIPTEN__)
+   {
+     ScopedTrace timing("CreateThreadPool");
+     constexpr size_t kStackSize = 64 * KB;
+@@ -1063,6 +1067,7 @@ void Runtime::InitNonZygoteOrPostFork(
+     thread_pool_.reset(new ThreadPool("Runtime", num_workers, /*create_peers=*/false, kStackSize));
+     thread_pool_->StartWorkers(Thread::Current());
+   }
++#endif
+ 
+   // Reset the gc performance data at zygote fork so that the GCs
+   // before fork aren't attributed to an app.
+diff --git a/frameworks/base/core/java/android/app/ActivityThread.java b/frameworks/base/core/java/android/app/ActivityThread.java
+index a076ed7b4..1f95f5e49 100644
+--- a/frameworks/base/core/java/android/app/ActivityThread.java
++++ b/frameworks/base/core/java/android/app/ActivityThread.java
+@@ -3412,8 +3412,13 @@ public final class ActivityThread extends ClientTransactionHandler {
+             TAG, "Handling launch of " + r);
+ 
+         // Initialize before creating the activity
++        // arc-wasm (topic threads-a10): only where hwui draws (ThreadedRenderer
++        // .isAvailable(); views draw in software otherwise): the preload starts
++        // the RenderThread, its vsync thread and an EGL thread, each a browser
++        // worker (~5 MB of an iPhone's tab) that would never draw.
+         if (!ThreadedRenderer.sRendererDisabled
+-                && (r.activityInfo.flags & ActivityInfo.FLAG_HARDWARE_ACCELERATED) != 0) {
++                && (r.activityInfo.flags & ActivityInfo.FLAG_HARDWARE_ACCELERATED) != 0
++                && ThreadedRenderer.isAvailable()) {
+             HardwareRenderer.preload();
+         }
+         WindowManagerGlobal.initialize();
+diff --git a/frameworks/base/core/java/android/widget/Magnifier.java b/frameworks/base/core/java/android/widget/Magnifier.java
+index ccafa6408..64fa591ec 100644
+--- a/frameworks/base/core/java/android/widget/Magnifier.java
++++ b/frameworks/base/core/java/android/widget/Magnifier.java
+@@ -215,8 +215,19 @@ public final class Magnifier {
+         mViewCoordinatesInSurface = new int[2];
+     }
+ 
+-    static {
+-        sPixelCopyHandlerThread.start();
++    // arc-wasm (topic threads-a10): the thread starts with the first pixel copy,
++    // not when the class loads (Editor loads it for every EditText): each thread
++    // is a browser worker (~5 MB of an iPhone's tab).
++    private static boolean sPixelCopyHandlerThreadStarted;
++
++    private static android.os.Handler pixelCopyHandler() {
++        synchronized (sPixelCopyHandlerThread) {
++            if (!sPixelCopyHandlerThreadStarted) {
++                sPixelCopyHandlerThread.start();
++                sPixelCopyHandlerThreadStarted = true;
++            }
++        }
++        return sPixelCopyHandlerThread.getThreadHandler();
+     }
+ 
+     /**
+@@ -285,7 +296,7 @@ public final class Magnifier {
+                 || magnifierCenterY != mPrevShowWindowCoords.y) {
+             final Point windowCoords = getCurrentClampedWindowCoordinates();
+             final InternalPopupWindow currentWindowInstance = mWindow;
+-            sPixelCopyHandlerThread.getThreadHandler().post(() -> {
++            pixelCopyHandler().post(() -> {
+                 synchronized (mLock) {
+                     if (mWindow != currentWindowInstance) {
+                         // The magnifier was dismissed (and maybe shown again) in the meantime.
+@@ -700,7 +711,7 @@ public final class Magnifier {
+                         mWindow.updateContent(bitmap);
+                     }
+                 },
+-                sPixelCopyHandlerThread.getThreadHandler());
++                pixelCopyHandler());
+         mPrevStartCoordsInSurface.x = startXInSurface;
+         mPrevStartCoordsInSurface.y = startYInSurface;
+         mDirtyState = false;

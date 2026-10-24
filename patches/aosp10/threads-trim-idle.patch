@@ -1,0 +1,27 @@
+diff --git a/libcore/ojluni/src/main/java/java/util/concurrent/ThreadPoolExecutor.java b/libcore/ojluni/src/main/java/java/util/concurrent/ThreadPoolExecutor.java
+index 7af77a856..bc9bb1a10 100644
+--- a/libcore/ojluni/src/main/java/java/util/concurrent/ThreadPoolExecutor.java
++++ b/libcore/ojluni/src/main/java/java/util/concurrent/ThreadPoolExecutor.java
+@@ -1130,12 +1130,18 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
+             // (arcwasm.pool.core_idle_ms) idle core threads time out too; the
+             // last one stays while tasks are queued, and new tasks start
+             // threads again, as for allowCoreThreadTimeOut.
++            // (topic heavy-apps-mem) And no idle thread waits longer than
++            // that: cached pools (Executors.newCachedThreadPool, OkHttp,
++            // Firebase Blocking) kept theirs 60 s, and most threads of a big
++            // app at its peak (T-Mobile: ~45 of 85) were idle in a pool.
+             long wait = keepAliveTime;
+-            if (!timed) {
+-                long idle = arcCoreIdleNanos();
+-                if (idle > 0) {
++            long idle = arcCoreIdleNanos();
++            if (idle > 0) {
++                if (!timed) {
+                     timed = true;
+-                    wait = Math.max(keepAliveTime, idle);
++                    wait = keepAliveTime > 0 ? Math.min(keepAliveTime, idle) : idle;
++                } else if (keepAliveTime > idle) {
++                    wait = idle;
+                 }
+             }
+ 

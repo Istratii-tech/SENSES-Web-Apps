@@ -1,0 +1,17 @@
+# Topic fw8-graphics: Skia (oc-mr1), its codecs and font libraries, minikin,
+# the fonts, and the HAL headers (gralloc, hwcomposer) for libui/libgui 8.1.
+# frameworks/native (libui, libgui, libinput, libnativewindow), frameworks/base
+# (hwui, core/jni) and hardware/interfaces (graphics HIDL) are base/fw8-core
+# projects; expat is art8's.
+external/skia
+external/freetype
+external/harfbuzz_ng
+external/libpng
+external/libjpeg-turbo
+external/giflib
+external/webp
+external/piex
+hardware/libhardware
+frameworks/minikin
+external/roboto-fonts
+external/noto-fonts

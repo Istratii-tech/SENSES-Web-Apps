@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The NDK test APK for arcwasm.NdkTest (tests/java/arcwasm/NdkTest.java):
+     Java code (org.arcwasm.ndktest.NativeLib) and ARM native libraries in
+     lib/armeabi/ (tests/ndk, added by mk/topic-ndk-bridge.mk), installed by
+     the "package" service like an app: the libraries are copied to
+     /data/app-lib/org.arcwasm.ndktest. No activities. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.arcwasm.ndktest"
+    android:versionCode="1"
+    android:versionName="1.0">
+    <uses-sdk android:minSdkVersion="9" android:targetSdkVersion="19" />
+    <application android:label="@string/app_name" android:hasCode="true" />
+</manifest>

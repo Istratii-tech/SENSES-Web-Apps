@@ -1,0 +1,1127 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="SENSES Apps">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<title>SENSES Web Apps</title>
+<link rel="stylesheet" href="senses.css">
+<style>
+  /* SENSES Web Apps: the library of installed Android apps (topic
+     senses-shell, docs/topics/senses-shell.md). Always dark, as SENSES. */
+  html, body { height: 100%; }
+  body { overflow: hidden; }
+  #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+  header { flex: none; display: flex; align-items: center; gap: 10px;
+           padding: calc(10px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) 10px
+                    calc(16px + env(safe-area-inset-left)); }
+  header .logo { height: 22px; width: auto; display: block; }
+  header .sub { color: var(--muted); font-size: 15px; letter-spacing: .02em; flex: 1; }
+  header button { flex: none; width: 40px; height: 40px; margin-right: -8px; border: 0; border-radius: 20px;
+                  background: none; color: var(--muted); font-size: 22px; line-height: 1; }
+  header button:active { background: var(--press); }
+  main { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+         padding: 4px calc(12px + env(safe-area-inset-right)) 24px calc(12px + env(safe-area-inset-left)); }
+
+  #banner { margin: 0 4px 14px; padding: 12px 14px; border-radius: 14px; background: var(--card);
+            display: flex; gap: 12px; align-items: flex-start; font-size: 14px; color: var(--fg2); }
+  #banner[hidden] { display: none; }
+  #banner p { margin: 0; flex: 1; }
+  #banner b { color: var(--fg); font-weight: 600; }
+  #banner button { flex: none; border: 0; background: none; color: var(--muted); font-size: 20px;
+                   line-height: 1; padding: 0 2px; }
+  .share { display: inline-block; vertical-align: -3px; width: 17px; height: 17px; }
+
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 18px 6px; }
+  .tile { position: relative; display: flex; flex-direction: column; align-items: center; gap: 7px;
+          padding: 8px 2px 2px; border-radius: 16px; -webkit-tap-highlight-color: transparent;
+          -webkit-touch-callout: none; cursor: pointer; }
+  .tile.pressed { background: var(--press); }
+  .tile img { width: 60px; height: 60px; border-radius: 14px; display: block; background: #1a1a1a;
+              -webkit-user-drag: none; pointer-events: none; }
+  .tile .ram { font-size: 10.5px; color: var(--muted); margin-top: -4px; }
+  .tile .name { width: 100%; text-align: center; font-size: 12.5px; line-height: 1.25; color: var(--fg);
+                display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+                word-break: break-word; }
+  /* The system badge on the icon's top-left corner (the ⋮ button takes the
+     tile's top-right corner, also on the narrowest tiles). */
+  .tile .os { position: absolute; top: 2px; left: 50%; margin-left: -38px; padding: 0 5px; border-radius: 7px;
+              box-shadow: 0 0 0 2px #000;
+              background: #2a2a2a; color: #bdbdbd; font-size: 10px; line-height: 15px;
+              font-variant-numeric: tabular-nums; }
+  .tile .more { position: absolute; top: 0; right: 0; width: 26px; height: 26px; border: 0; padding: 0;
+                background: none; color: #6f6f6f; font-size: 17px; line-height: 26px; border-radius: 13px; }
+  .tile .more:active { background: var(--press); }
+  .tile.busy img { opacity: .35; }
+
+  #empty { display: flex; flex-direction: column; align-items: center; text-align: center;
+           padding: 56px 24px 0; color: var(--muted); }
+  #empty[hidden] { display: none; }
+  #empty .glyph { width: 76px; height: 76px; border-radius: 20px; background: var(--card);
+                  display: grid; place-items: center; margin-bottom: 18px; }
+  #empty h2 { margin: 0 0 8px; color: var(--fg); font-size: 19px; font-weight: 600; }
+  #empty p { margin: 0 0 6px; max-width: 300px; }
+
+  footer { flex: none; padding: 10px calc(16px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom))
+                                calc(16px + env(safe-area-inset-left));
+           display: flex; flex-direction: column; align-items: center; gap: 8px;
+           background: linear-gradient(transparent, #000 30%); }
+  #add { width: 100%; max-width: 420px; }
+  #storage { color: #6f6f6f; font-size: 12px; min-height: 1.3em; font-variant-numeric: tabular-nums;
+             text-align: center; }
+
+  /* The app card and the install sheet. */
+  .facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 4px 2px 2px; font-size: 14px; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; color: var(--fg); overflow-wrap: anywhere; }
+  .head { display: flex; gap: 14px; align-items: center; margin: 2px 2px 6px; }
+  .head img { width: 60px; height: 60px; border-radius: 14px; flex: none; background: #1a1a1a; }
+  .head h2 { margin: 0; font-size: 19px; font-weight: 600; line-height: 1.25; }
+  #memoffer h2 { margin: 2px 2px 0; font-size: 19px; font-weight: 600; }
+  #memoffer p { margin: 0 2px 4px; color: var(--muted); font-size: 14px; line-height: 1.4; }
+  .head .pkg { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+  .label { color: var(--muted); font-size: 13px; margin: 8px 2px 0; }
+  .seg { display: flex; gap: 6px; }
+  .seg button { flex: 1; height: auto; min-height: 52px; padding: 6px 4px; text-align: center; display: flex;
+                flex-direction: column; align-items: center; justify-content: center; gap: 1px; }
+  .seg button b { font-size: 17px; font-weight: 600; }
+  .seg button small { font-size: 11px; color: var(--muted); }
+  .seg button.on { background: #e3e3e3; color: #000; }
+  .seg button.on small { color: #444; }
+  .seg button:disabled { opacity: .35; }
+  /* The app's network (topic app-network): the closed addresses, a field
+     as SENSES' sheets have them. 16px: iOS zooms into smaller fields. */
+  .sheet textarea { box-sizing: border-box; width: 100%; min-height: 48px; margin: 0; border: 0; border-radius: 12px;
+                    padding: 12px 16px; background: var(--btn); color: var(--fg); font-family: inherit;
+                    font-size: 16px; line-height: 1.4; resize: vertical; outline: none; -webkit-appearance: none;
+                    -webkit-user-select: text; user-select: text; }
+  .sheet textarea:focus { box-shadow: 0 0 0 1px #969696; }
+  .sheet textarea::placeholder { color: #6f6f6f; }
+  .hint { margin: 0 2px; color: var(--muted); font-size: 12.5px; line-height: 1.4; }
+  .sheet .hint button { min-height: 0; padding: 0; background: none; color: var(--fg2); font-size: 12.5px;
+                        text-decoration: underline; text-underline-offset: 2px; }
+  .warn { margin: 2px; padding: 10px 12px; border-radius: 12px; font-size: 13.5px; line-height: 1.4;
+          background: #2a2410; color: #f0d68a; }
+  .warn.bad { background: #2c1414; color: #ff9b94; }
+  .warn.info { background: #1c1c1e; color: #b8b8bd; }
+  .row { display: flex; gap: 8px; }
+  .row button { flex: 1; }
+  #inststatus { margin: 4px 2px; font-size: 15px; color: var(--fg); }
+  #insthint { margin: 0 2px; font-size: 13px; color: var(--muted); min-height: 1.2em; overflow-wrap: anywhere; }
+  .error { color: var(--bad) !important; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <!-- SENSES: the mask of its menu logo (art: logo_menu) filled with the
+         metal gradient of art/logo_menu.svg (the PWA of Web Systems draws it
+         the same way). -->
+    <linearGradient id="shine" gradientUnits="userSpaceOnUse" x1="627.699" y1="388.132" x2="627.699" y2="396.504"
+                    gradientTransform="matrix(0.696811 -0.717255 3.030674 2.944293 -996.241235 -312.990331)">
+      <stop offset="0" stop-color="#141414"/>
+      <stop offset="0.44" stop-color="#d3d1d1"/>
+      <stop offset="1" stop-color="#141414"/>
+    </linearGradient>
+    <mask id="ink" style="mask-type: alpha" maskUnits="userSpaceOnUse" x="612.487" y="387.966" width="30.4297" height="8.5">
+      <image href="senses-mask.png" x="612.487" y="387.966" width="30.4297" height="8.5" preserveAspectRatio="none"/>
+    </mask>
+  </defs>
+</svg>
+<div id="app">
+  <header>
+    <svg class="logo" viewBox="612.487 387.966 30.4297 8.5" aria-label="SENSES">
+      <rect x="612.487" y="387.966" width="30.4297" height="8.5" fill="url(#shine)" mask="url(#ink)"/>
+    </svg>
+    <span class="sub">Web Apps</span>
+    <button id="menu" aria-label="Меню">&#8942;</button>
+  </header>
+  <main>
+    <div id="banner" hidden>
+      <p><b>На экран «Домой».</b> Нажмите
+        <svg class="share" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-label="«Поделиться»">
+          <path d="M12 15V3M8 7l4-4 4 4M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/></svg>
+        «Поделиться» → «На экран „Домой“»: так приложения работают без интернета и на весь экран.
+        У значка на экране «Домой» своя библиотека.</p>
+      <button id="bannerclose" aria-label="Скрыть">&times;</button>
+    </div>
+    <div id="grid"></div>
+    <div id="empty" hidden>
+      <div class="glyph">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#969696" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="2"/>
+          <rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/>
+          <path d="M17.5 14v7M14 17.5h7"/></svg>
+      </div>
+      <h2>Здесь будут ваши приложения</h2>
+      <p>Установите Android-приложение (файл .apk, .apks, .xapk или .apkm) из «Файлов» — оно запустится прямо здесь, на весь экран.</p>
+    </div>
+  </main>
+  <footer>
+    <button id="add" class="primary">Установить приложение</button>
+    <div id="storage"></div>
+  </footer>
+</div>
+<input id="file" type="file" hidden>
+
+<!-- The app's card (long press or ⋮). -->
+<div id="card" class="sheet" hidden>
+  <div class="box">
+    <div class="head"><img id="cicon" alt=""><div><h2 id="cname"></h2><div class="pkg" id="cpkg"></div></div></div>
+    <button id="copen" class="primary">Открыть</button>
+    <div class="label">Система</div>
+    <div class="seg" id="cstack"></div>
+    <div class="label">JIT</div>
+    <div class="seg" id="cjit"></div>
+    <div class="label">Сеть</div>
+    <div class="seg" id="cnet"></div>
+    <div class="label">Сервисы Google</div>
+    <div class="seg" id="cgms"></div>
+    <div class="warn info" id="cgmshint" hidden></div>
+    <div id="cwarn"></div>
+    <dl class="facts" id="cfacts"></dl>
+    <button id="cmove" hidden>Перенести в отдельное хранилище</button>
+    <div class="row"><button id="cclear">Очистить данные</button><button id="cremove" class="danger">Удалить</button></div>
+    <button class="close" data-close>Закрыть</button>
+  </div>
+</div>
+
+<!-- Installing: progress, the result, errors. -->
+<div id="inst" class="sheet" hidden>
+  <div class="box">
+    <div class="head" id="ihead" hidden><img id="iicon" alt=""><div><h2 id="iname"></h2><div class="pkg" id="ipkg"></div></div></div>
+    <div id="inststatus"></div>
+    <div class="bar" id="ibar"><div></div></div>
+    <p id="insthint"></p>
+    <div id="iwarn"></div>
+    <div class="row" id="iask" hidden><button id="iyes" class="primary">Обновить</button><button id="ino">Отмена</button></div>
+    <button id="iopen" class="primary" hidden>Открыть</button>
+    <button id="iagain" hidden>Выбрать другой файл</button>
+    <button id="idone" class="close" hidden>Готово</button>
+  </div>
+</div>
+
+<!-- Before a heavy app's first start on a phone not measured: the memory test, once. -->
+<div id="memoffer" class="sheet" hidden>
+  <div class="box">
+    <h2>Память устройства</h2>
+    <p id="memoffertext"></p>
+    <button id="memofferyes" class="primary">Пройти тест (около 2 минут)</button>
+    <button id="memofferno">Открыть без теста</button>
+  </div>
+</div>
+
+<!-- The menu: storage, the log, about. -->
+<div id="more" class="sheet" hidden>
+  <div class="box">
+    <svg class="sheetlogo" viewBox="612.487 387.966 30.4297 8.5" aria-label="SENSES">
+      <rect x="612.487" y="387.966" width="30.4297" height="8.5" fill="url(#shine)" mask="url(#ink)"/>
+    </svg>
+    <dl class="facts" id="mfacts"></dl>
+    <button id="mmove" hidden>Перенести приложения в отдельные хранилища</button>
+    <button id="mmode" hidden></button>
+    <button id="mgms">Сервисы Google</button>
+    <button id="mmemtest">Тест памяти устройства</button>
+    <button id="mlog">Журнал</button>
+    <button class="close" data-close>Закрыть</button>
+  </div>
+</div>
+<div id="logbox" hidden>
+  <div id="logbar"><button id="logback">&#8249; Назад</button><span>Журнал</span></div>
+  <pre id="log"></pre>
+</div>
+
+<script src="report.js"></script>
+<script src="mem_plan.js"></script>
+<script src="apk.js"></script>
+<script src="install.js"></script>
+<script src="icon.js"></script>
+<script src="store.js"></script>
+<script src="origins.js"></script>
+<script src="senses.js"></script>
+<script src="google.js"></script>
+<script>
+(function () {
+  'use strict';
+  var S = Senses, $ = S.$, params = new URLSearchParams(location.search);
+  var store = SensesStore;
+  var STACKS = S.STACKS;   // a10, a81, a60, a44: names, API levels
+  var apps = [];            // [{meta, iconUrl, remote}]
+  // Apps on origins of their own (topic per-app-origin, origins.js): the
+  // slots (origins.json), whether new apps go there (useOrigins: ?origins=,
+  // else Safari 16 in a tab).
+  var O = SensesOrigins, ocfg = null, omode = O.mode(params), useOrigins = false;
+  var available = {};       // stacks in this build (stacks.json)
+  var libraryNote = '';     // apps that could not be read this time
+
+  function locales() {
+    var out = [];
+    (navigator.languages || [navigator.language || 'en']).forEach(function (l) {
+      var c = String(l).slice(0, 2).toLowerCase();
+      if (out.indexOf(c) < 0) out.push(c);
+    });
+    if (out.indexOf('en') < 0) out.push('en');
+    return out;
+  }
+
+  // --- the grid -------------------------------------------------------------
+  function iconUrl(bytes) {
+    return bytes ? URL.createObjectURL(new Blob([bytes], {type: 'image/png'})) : 'icon-192.png';
+  }
+  function render() {
+    var grid = $('grid');
+    grid.textContent = '';
+    apps.sort(function (a, b) { return a.meta.label.localeCompare(b.meta.label, 'ru'); });
+    apps.forEach(function (app) {
+      var t = document.createElement('div');
+      t.className = 'tile';
+      t.setAttribute('role', 'button');
+      var img = document.createElement('img');
+      img.src = app.iconUrl;
+      img.alt = '';
+      img.draggable = false;
+      var name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = app.meta.label;
+      t.appendChild(img);
+      t.appendChild(name);
+      // Memory the app took last time (run.html keeps its peak): a hint for
+      // phones where the browser closes a tab past ~1.5 GB.
+      var peak = 0;
+      try { peak = +localStorage.getItem('senses-ram-peak:' + app.meta.package) || 0; } catch (e) {}
+      if (peak) {
+        var ram = document.createElement('div');
+        ram.className = 'ram';
+        ram.textContent = 'ОЗУ до ' + peak + ' МБ';
+        t.appendChild(ram);
+      }
+      if (app.meta.stack && app.meta.stack !== S.DEFAULT_STACK) {
+        var os = document.createElement('span');
+        os.className = 'os';
+        os.textContent = STACKS[app.meta.stack] ? STACKS[app.meta.stack].short : app.meta.stack;
+        t.appendChild(os);
+      }
+      var more = document.createElement('button');
+      more.className = 'more';
+      more.innerHTML = '&#8942;';
+      more.setAttribute('aria-label', 'О приложении');
+      t.appendChild(more);
+      S.press(t, function (e) {
+        if (more.contains(e.target)) openCard(app); else launch(app);
+      }, function () { openCard(app); });
+      grid.appendChild(t);
+    });
+    $('empty').hidden = apps.length > 0;
+  }
+  function refresh() {
+    return store.list().then(function (list) {
+      apps.forEach(function (a) { if (a.iconUrl.indexOf('blob:') === 0) URL.revokeObjectURL(a.iconUrl); });
+      apps = list.apps.map(function (x) { return {meta: x.meta, iconUrl: iconUrl(x.icon), remote: x.remote || null}; });
+      list.skipped.forEach(function (t) { S.log('Library: ' + t); });
+      // Apps installed on a system older than they want before this build had
+      // Android 10 (Opera GX on 8.1): onto 10.
+      apps.forEach(function (a) {
+        var m = a.meta, s = STACKS[m.stack];
+        if (!s || m.minSdk <= s.api || SensesApk.defaultStack(m, available) !== 'a10') return;
+        a.meta = Object.assign({}, m, {stack: 'a10'});
+        S.log('Library: ' + m.package + ' (minSdk ' + m.minSdk + ') ' + m.stack + ' -> a10');
+        store.setMeta(a.meta).catch(function (e) { S.log('Library: ' + m.package + ': ' + e); });
+      });
+      libraryNote = list.skipped.some(function (t) { return /unreadable/.test(t); }) ?
+          'часть приложений не прочиталась — откройте библиотеку позже' : '';
+      S.log('Library: ' + apps.length + ' apps (' + store.backend + ')');
+      render();
+      updateStorage();
+    }, function (e) {
+      S.log('Library: list failed: ' + e);
+      $('storage').textContent = 'Хранилище недоступно: ' + e.message;
+      $('storage').classList.add('error');
+    });
+  }
+
+  // Test switches go on to the app's page (?canvas2d=1 &memdata=1 &remotegl=1 &log=1).
+  // An app of this origin is moved to one of its own first where apps go
+  // there (from a tap: |still| when not, as from the address).
+  function launch(app, still) {
+    if (!still && offerMemtest(app)) return;
+    if (!still && moveWanted(app)) {
+      moveApp(app, {open: true});
+      return;
+    }
+    var q = new URLSearchParams();
+    q.set('pkg', app.meta.package);
+    ['canvas2d', 'memdata', 'remotegl', 'log', 'run', 'jit', 'net', 'gms', 'leaveafter', 'loops'].forEach(function (k) {
+      if (params.get(k)) q.set(k, params.get(k));
+    });
+    if (app.meta.origin && !app.remote) {
+      // Its own origin: the system and JIT chosen here, the way back, the
+      // memory test's result (that origin has its own storage).
+      q.set('appstack', app.meta.stack);
+      if (app.meta.jit === false && !params.get('jit')) q.set('jit', '0');
+      // (and the network: that origin's copy of meta.json is from the move)
+      if (app.meta.net === false && !params.get('net')) q.set('net', '0');
+      if (app.meta.gms === false && !params.get('gms')) q.set('gms', '0');
+      q.set('home', O.library());
+      try { if (localStorage.getItem('senses-mem-limit')) q.set('memlimit', localStorage.getItem('senses-mem-limit')); } catch (e) {}
+      S.log('Library: open ' + app.meta.package + ' on ' + app.meta.stack + ' at ' + app.meta.origin);
+      location.href = app.meta.origin + 'run.html?' + q.toString();
+      return;
+    }
+    S.log('Library: open ' + app.meta.package + ' on ' + app.meta.stack);
+    location.href = 'run.html?' + q.toString();
+  }
+
+  // --- the device's memory test (topic device-mem-budget) ----------------------------
+  // The test's result (memtest.html: senses-mem-limit) sets the apps' memory
+  // budget and wasm memory (shim/membudget/mem_plan.js); without it a phone
+  // gets what fits the iPhones of iOS 16 (1024/1536 MB), which a newer one
+  // may well exceed. So a phone not measured is offered the test once, before
+  // a heavy app's first start: one that took HEAVY_MB last time (its tile's
+  // "ОЗУ до"), or an install of HEAVY_SIZE (games: their native code and
+  // assets). Either answer is final (the menu keeps the test); after the test
+  // the app opens (memtest.html?open=PKG). run.html offers it too on its
+  // "Мало памяти" (back here with ?memtest=PKG).
+  var HEAVY_MB = 800, HEAVY_SIZE = 100 * 1048576, MEMOFFER = 'senses-memtest-offered', memOffered = false;
+  function measured() {
+    try { return !!ArcMemPlan.limit(localStorage.getItem('senses-mem-limit')); } catch (e) { return false; }
+  }
+  function offerMemtest(app) {
+    var pkg = app.meta.package, peak = 0, offered = false;
+    try {
+      peak = +localStorage.getItem('senses-ram-peak:' + pkg) || 0;
+      offered = !!localStorage.getItem(MEMOFFER);
+    } catch (e) { return false; }
+    if (!S.mobile || offered || memOffered || measured() || !(peak >= HEAVY_MB || (app.meta.size || 0) >= HEAVY_SIZE)) return false;
+    S.log('Library: ' + pkg + ' is heavy (' + (peak ? peak + ' MB last time' : S.size(app.meta.size)) +
+          '), the device not measured: offering the memory test');
+    $('memoffertext').textContent = '«' + (app.meta.label || pkg) + '» берёт много памяти. Тест узнает, сколько памяти ' +
+        'браузер даёт вкладке на этом устройстве, и SENSES даст приложениям столько, сколько оно выдержит. ' +
+        'Тест проходит один раз; браузер дважды сам перезапустит страницу. Потом откроется приложение.';
+    var answer = function (yes) {
+      memOffered = true;
+      try { localStorage.setItem(MEMOFFER, yes ? 'test' : 'no'); } catch (e) {}
+      S.close('memoffer');
+      S.log('Library: memory test offer: ' + (yes ? 'taken' : 'declined'));
+      if (yes) location.href = 'memtest.html?open=' + encodeURIComponent(pkg);
+      else launch(app);
+    };
+    $('memofferyes').onclick = function () { answer(true); };
+    $('memofferno').onclick = function () { answer(false); };
+    S.open('memoffer', true);
+    return true;
+  }
+
+  // --- apps on origins of their own (topic per-app-origin) ---------------------------
+  // An app of this origin to move: a new version of one that has its own
+  // (app.remote), or any where apps go to their own and a slot is free.
+  function moveWanted(app) {
+    if (app.remote) return true;
+    return !app.meta.origin && useOrigins && !!O.freeSlot(ocfg, apps.map(function (a) { return a.meta; }));
+  }
+  // By hand (the card, the menu) also where new apps stay here (Safari 17+,
+  // Chrome: no need), but not in a Home Screen web app unless ?origins=1:
+  // another origin opens outside it there.
+  function canMove() { return !!ocfg && (useOrigins || !S.standalone); }
+  function originName(url) {
+    try { return new URL(url).host; } catch (e) { return url; }
+  }
+  // The space an app's origin had when its page came back here (run.html's ?home).
+  function spaceOf(pkg) {
+    try { return JSON.parse(localStorage.getItem('senses-space:' + pkg) || 'null'); } catch (e) { return null; }
+  }
+  // The app's files to its origin (a window of it: origins.js connect/send),
+  // then its record here and the library's copy gone. A new version of an app
+  // that has one (app.remote): only the APKs, into the same origin, its data
+  // kept. |o.open|: then open it there. A failure leaves the app here.
+  // |agent|: a window already open (moveAll). -> Promise<bool>
+  function moveApp(app, o, agent) {
+    o = o || {};
+    var m = app.meta, update = !!app.remote;
+    var base = update ? app.remote.origin : O.freeSlot(ocfg, apps.map(function (a) { return a.meta; }));
+    if (!base) return Promise.resolve(false);
+    var own = !agent;
+    if (own) agent = O.connect(base);
+    $('ihead').hidden = false;
+    $('iicon').src = app.iconUrl;
+    $('iname').textContent = m.label;
+    $('ipkg').textContent = m.package;
+    $('iwarn').textContent = '';
+    ibuttons([]);
+    S.open('inst', true);
+    istatus(update ? 'Обновляю в отдельном хранилище…' : 'Переношу в отдельное хранилище…', null,
+            originName(base) + ': своё место (до ~1000 МБ) и свой процесс у каждого приложения.');
+    S.log('Library: move ' + m.package + ' to ' + base + (update ? ' (new version)' : ''));
+    var ready = own ? agent.ready : Promise.resolve();
+    return ready.then(function () {
+      return O.send(agent, store, m, function (done, total) {
+        istatus(update ? 'Обновляю в отдельном хранилище…' : 'Переношу в отдельное хранилище…', total ? done / total : null,
+                S.size(done) + ' из ' + S.size(total) + ' · ' + originName(base));
+      }, {update: update});
+    }).then(function (r) {
+      S.log('Library: moved ' + m.package + ': ' + r.files + ' files, ' + Math.round(r.bytes / 1048576) + ' MB in ' +
+            r.ms + ' ms; its origin ' + Math.round(r.storage.usage / 1048576) + ' of ' +
+            Math.round(r.storage.quota / 1048576) + ' MB');
+      try {
+        localStorage.setItem('senses-space:' + m.package, JSON.stringify({used: r.storage.usage, quota: r.storage.quota,
+                                                                          guessed: r.storage.guessed, at: Date.now()}));
+      } catch (e) {}
+      var meta = Object.assign({}, m, {origin: base, movedAt: Date.now()});
+      return store.readIcon(m.package).then(function (url) {
+        return url ? fetch(url).then(function (res) { return res.arrayBuffer(); }).then(function (b) {
+          URL.revokeObjectURL(url);
+          return new Uint8Array(b);
+        }) : null;
+      }).then(function (icon) {
+        return store.remotePut({meta: meta, icon: icon});
+      }).then(function () {
+        // The library's copy: the APKs, and its data on every system here.
+        return store.uninstall(m.package);
+      }).then(function () {
+        if (own) agent.close();
+        return refresh();
+      }).then(function () {
+        if (o.open) {
+          var moved = apps.filter(function (a) { return a.meta.package === m.package; })[0];
+          // (a moment for the log to reach tools/serve.py: report.js sends it in batches)
+          if (moved) { istatus('Открываю…', 1); setTimeout(function () { launch(moved, true); }, 500); return true; }
+        }
+        if (own) S.close('inst');
+        return true;
+      });
+    }).catch(function (e) {
+      if (own) agent.close();
+      S.log('Library: move of ' + m.package + ' failed: ' + e);
+      $('inststatus').textContent = 'Не удалось перенести в отдельное хранилище';
+      $('inststatus').classList.add('error');
+      $('ibar').hidden = true;
+      $('insthint').textContent = String(e && e.message || e) + '. Приложение осталось в общем хранилище.';
+      if (o.open) {
+        ibuttons(['iopen', 'idone']);
+        $('iopen').onclick = function () { S.close('inst'); launch(app, true); };
+      } else {
+        ibuttons(['idone']);
+      }
+      return false;
+    });
+  }
+  // Every app of this origin to its own, one window going from origin to origin.
+  function moveAll() {
+    var list = apps.filter(function (a) { return !a.meta.origin || a.remote; });
+    var free = ocfg ? ocfg.slots.length - apps.filter(function (a) { return a.meta.origin && !a.remote; }).length : 0;
+    if (!list.length) return;
+    var first = list[0], agent = O.connect(first.remote ? first.remote.origin :
+        O.freeSlot(ocfg, apps.map(function (a) { return a.meta; })));
+    var moved = 0;
+    S.log('Library: move all: ' + list.length + ' apps, ' + free + ' free origins');
+    var chain = agent.ready;
+    list.forEach(function (a, i) {
+      chain = chain.then(function () {
+        var app = apps.filter(function (x) { return x.meta.package === a.meta.package; })[0];
+        if (!app || !moveWanted(app)) return true;
+        var base = app.remote ? app.remote.origin : O.freeSlot(ocfg, apps.map(function (x) { return x.meta; }));
+        return (i === 0 ? Promise.resolve() : agent.go(base)).then(function () {
+          return moveApp(app, {}, agent);
+        }).then(function (ok) {
+          if (!ok) throw new Error('stop');
+          moved++;
+        });
+      });
+    });
+    chain.catch(function (e) {
+      if (String(e && e.message) !== 'stop') {
+        S.log('Library: move all: ' + e);
+        $('inststatus').textContent = 'Перенос прерван: ' + (e && e.message || e);
+        $('inststatus').classList.add('error');
+        ibuttons(['idone']);
+      }
+    }).then(function () {
+      agent.close();
+      S.log('Library: move all: ' + moved + ' of ' + list.length + ' moved');
+      if (moved === list.length) S.close('inst');
+    });
+  }
+  // A job on an app's own origin (clear its data, remove it): its window does it.
+  function onOrigin(app, op, text) {
+    var agent = O.connect(app.meta.origin);
+    $('ihead').hidden = true;
+    $('iwarn').textContent = '';
+    ibuttons([]);
+    S.open('inst', true);
+    istatus(text, null, originName(app.meta.origin));
+    return agent.ready.then(function () {
+      return op(agent);
+    }).then(function (r) {
+      agent.close();
+      S.close('inst');
+      return r;
+    }, function (e) {
+      agent.close();
+      S.close('inst');
+      throw e;
+    });
+  }
+  // What an app's page said coming back (run.html leaveNow/freshStart):
+  // ?from=PKG&ram=MB&used=BYTES&quota=BYTES, kept and taken off the address.
+  function fromApp() {
+    var pkg = params.get('from');
+    if (!pkg) return;
+    try {
+      if (+params.get('ram') > 0) localStorage.setItem('senses-ram-peak:' + pkg, String(+params.get('ram')));
+      if (+params.get('used') > 0)
+        localStorage.setItem('senses-space:' + pkg, JSON.stringify({used: +params.get('used'), quota: +params.get('quota') || 0,
+                                                                    guessed: params.get('guessed') === '1', at: Date.now()}));
+    } catch (e) {}
+    S.log('Library: back from ' + pkg + ': RAM up to ' + (params.get('ram') || '?') + ' MB, its origin ' +
+          Math.round(+params.get('used') / 1048576) + ' of ' + Math.round(+params.get('quota') / 1048576) + ' MB');
+    ['from', 'ram', 'used', 'quota', 'guessed'].forEach(function (k) { params.delete(k); });
+    try { history.replaceState(null, '', location.pathname + (String(params) ? '?' + params : '')); } catch (e) {}
+  }
+
+  // --- the card ---------------------------------------------------------------
+  var cardApp = null;
+  function fact(dl, k, v) {
+    var dt = document.createElement('dt'), dd = document.createElement('dd');
+    dt.textContent = k;
+    dd.textContent = v;
+    dl.appendChild(dt);
+    dl.appendChild(dd);
+  }
+  function warningsInto(box, meta) {
+    box.textContent = '';
+    SensesApk.warnings(meta).concat(stackWarnings(meta)).forEach(function (w) {
+      var d = document.createElement('div');
+      d.className = 'warn' + (w.level === 'bad' ? ' bad' : '');
+      d.textContent = w.text;
+      box.appendChild(d);
+    });
+  }
+  function stackWarnings(meta) {
+    var s = STACKS[meta.stack];
+    if (!s || meta.minSdk <= s.api) return [];
+    return [{level: 'bad', text: 'Приложению нужен Android ' + SensesApk.sdkName(meta.minSdk) +
+             ' или новее, а выбрана ' + s.name + ': выберите систему новее.'}];
+  }
+  function openCard(app) {
+    cardApp = app;
+    var m = app.meta;
+    $('cicon').src = app.iconUrl;
+    $('cname').textContent = m.label;
+    $('cpkg').textContent = m.package;
+    var seg = $('cstack');
+    seg.textContent = '';
+    S.STACK_ORDER.forEach(function (id) {
+      var s = STACKS[id], b = document.createElement('button');
+      b.innerHTML = '<b></b><small></small>';
+      b.firstChild.textContent = s.short;
+      var problem = SensesApk.stackProblem(m, id);
+      b.lastChild.textContent = !available[id] ? 'нет в сборке' : m.minSdk > s.api || problem ? 'не подойдёт' : s.vm;
+      // (split APKs on 4.4, arm64 code before 8.1: the VM would not even install it)
+      b.disabled = !available[id] || (!!problem && m.stack !== id);
+      b.className = m.stack === id ? 'on' : '';
+      b.onclick = function () { setStack(app, id); };
+      seg.appendChild(b);
+    });
+    // JIT (meta.jit, on when absent): code generated at run time -- native
+    // code translated to wasm, the app's own JITs, ART's -- or only
+    // interpreters (docs/topics/guest-jit.md).
+    var jseg = $('cjit');
+    jseg.textContent = '';
+    [[true, 'Вкл', 'быстрее'], [false, 'Выкл', 'только интерпретатор']].forEach(function (o) {
+      var b = document.createElement('button');
+      b.innerHTML = '<b></b><small></small>';
+      b.firstChild.textContent = o[1];
+      b.lastChild.textContent = o[2];
+      b.className = (m.jit !== false) === o[0] ? 'on' : '';
+      b.onclick = function () { setJit(app, o[0]); };
+      jseg.appendChild(b);
+    });
+    netInto(app);
+    gmsInto(app);
+    warningsInto($('cwarn'), m);
+    var dl = $('cfacts');
+    dl.textContent = '';
+    fact(dl, 'Версия', (m.versionName || '—') + ' (' + m.versionCode + ')');
+    fact(dl, 'Android', 'от ' + SensesApk.sdkName(m.minSdk) + ' (API ' + m.minSdk + ') · цель ' +
+         SensesApk.sdkName(m.targetSdk) + ' (API ' + m.targetSdk + ')');
+    fact(dl, 'ABI', m.abis && m.abis.length ? m.abis.join(', ') : 'только Java');
+    if (m.parts && m.parts.length > 1)
+      fact(dl, 'Части', SensesApk.partsText(m) + (m.bundle && m.bundle.parts > m.parts.length ?
+           ' (' + m.parts.length + ' из ' + m.bundle.parts + ' в ' + m.bundle.kind.toUpperCase() + ')' : ''));
+    if (m.obb && m.obb.length)
+      fact(dl, 'OBB', m.obb.map(function (o) { return o.file; }).join(', ') + ' · ' +
+           S.size(m.obb.reduce(function (n, o) { return n + o.size; }, 0)));
+    fact(dl, 'Размер', S.size(m.size));
+    if (m.installedAt) fact(dl, 'Установлено', new Date(m.installedAt).toLocaleString('ru'));
+    if (m.origin && !app.remote) {
+      var sp = spaceOf(m.package);
+      fact(dl, 'Хранилище', 'отдельное, ' + originName(m.origin) + (sp && sp.used ? ' · занято ' + S.size(sp.used) +
+           (sp.quota ? ' из ' + (sp.guessed ? '~' : '') + S.size(sp.quota) : '') : ''));
+    } else if (app.remote) {
+      fact(dl, 'Хранилище', 'новая версия перейдёт в ' + originName(app.remote.origin) + ' при открытии');
+    }
+    $('cmove').hidden = !(!m.origin && !app.remote && canMove() && O.freeSlot(ocfg, apps.map(function (a) { return a.meta; })));
+    S.open('card');
+  }
+  function setStack(app, id) {
+    if (app.meta.stack === id) return;
+    var meta = Object.assign({}, app.meta, {stack: id});
+    store.setMeta(meta).then(function () {
+      app.meta = meta;
+      S.log('Library: ' + meta.package + ' -> ' + id);
+      openCard(app);
+      render();
+    }, function (e) { alert('Не удалось сохранить: ' + e.message); });
+  }
+  // The app's network (topic app-network, docs/topics/app-network.md):
+  // meta.net, on when absent; false is the VM's ARC_NET=0. run.html hands it
+  // to the VM.
+  function netInto(app) {
+    var m = app.meta, nseg = $('cnet');
+    nseg.textContent = '';
+    [[true, 'Вкл', 'разрешена'], [false, 'Выкл', 'запрещена']].forEach(function (o) {
+      var b = document.createElement('button');
+      b.innerHTML = '<b></b><small></small>';
+      b.firstChild.textContent = o[1];
+      b.lastChild.textContent = o[2];
+      b.className = (m.net !== false) === o[0] ? 'on' : '';
+      b.onclick = function () { saveMeta(app, {net: o[0]}, 'network ' + (o[0] ? 'on' : 'off')); };
+      nseg.appendChild(b);
+    });
+  }
+  // Google's services for the app (docs/topics/gms.md): meta.gms, on when
+  // absent; false is the VM's ARC_GMS=0 -- the Google packages the user
+  // added for the app's system (menu ⋮ → «Сервисы Google», 8.1 and 10) are
+  // left out for this app. One switch for every app, as the network.
+  function gmsInto(app) {
+    var m = app.meta, gseg = $('cgms'), hint = $('cgmshint');
+    var has = m.stack === 'a81' || m.stack === 'a10';
+    gseg.textContent = '';
+    hint.hidden = true;
+    var on = null;
+    [[true, 'Вкл', has ? 'если добавлены' : 'нет на этой системе'], [false, 'Выкл', 'без них']].forEach(function (o) {
+      var b = document.createElement('button');
+      b.innerHTML = '<b></b><small></small>';
+      b.firstChild.textContent = o[1];
+      b.lastChild.textContent = o[2];
+      b.className = (m.gms !== false) === o[0] ? 'on' : '';
+      b.disabled = !has;
+      b.onclick = function () { saveMeta(app, {gms: o[0]}, 'Google services ' + (o[0] ? 'on' : 'off')); };
+      if (o[0]) on = b;
+      gseg.appendChild(b);
+    });
+    if (!has) return;
+    // What is added for the system: «Вкл · microG», or a word where to add them.
+    SensesGoogle.list().then(function (list) {
+      if (cardApp !== app || app.meta.stack !== m.stack) return;
+      var mine = list.filter(function (x) { return x.stack === m.stack; });
+      var kinds = mine.map(function (x) { return SensesGoogle.kind(x.meta); })
+          .filter(function (k, i, all) { return all.indexOf(k) === i; });
+      on.lastChild.textContent = kinds.length ? kinds.join(', ') : 'не добавлены';
+      if (!kinds.length && m.gms !== false) {
+        hint.textContent = 'Для ' + S.STACKS[m.stack].name + ' сервисы Google не добавлены: меню ⋮ → «Сервисы Google».';
+        hint.hidden = false;
+      }
+    }, function () {});
+  }
+  // Saves changed fields of the app's meta.json (at once in memory: "Открыть"
+  // right after waits for the write, metaSaved) and shows the card again if
+  // it is still open (a field's change comes on blur, also from "Закрыть").
+  var metaSaved = null;
+  function saveMeta(app, change, what) {
+    var old = app.meta, meta = Object.assign({}, old, change);
+    Object.keys(change).forEach(function (k) { if (change[k] === undefined) delete meta[k]; });
+    if (JSON.stringify(meta) === JSON.stringify(old)) return;
+    app.meta = meta;
+    var saved = metaSaved = store.setMeta(meta).then(function () {
+      if (metaSaved === saved) metaSaved = null;
+      S.log('Library: ' + meta.package + ' ' + what);
+      if (cardApp === app && !$('card').hidden) openCard(app);
+    }, function (e) {
+      if (metaSaved === saved) metaSaved = null;
+      if (app.meta === meta) app.meta = old;
+      alert('Не удалось сохранить: ' + e.message);
+    });
+  }
+  function setJit(app, on) {
+    if ((app.meta.jit !== false) === on) return;
+    var meta = Object.assign({}, app.meta, {jit: on});
+    store.setMeta(meta).then(function () {
+      app.meta = meta;
+      S.log('Library: ' + meta.package + ' JIT ' + (on ? 'on' : 'off'));
+      openCard(app);
+    }, function (e) { alert('Не удалось сохранить: ' + e.message); });
+  }
+  $('copen').onclick = function () {
+    var app = cardApp;
+    if (!app) return;
+    // (at once when nothing is being written: a move to the app's own origin
+    // opens a window, which needs this tap)
+    if (metaSaved) metaSaved.then(function () { launch(app); });
+    else launch(app);
+  };
+  $('cmove').onclick = function () {
+    var app = cardApp;
+    if (!app) return;
+    S.close('card');
+    moveApp(app, {});
+  };
+  $('cclear').onclick = function () {
+    var app = cardApp;
+    if (!app || !confirm('Очистить данные «' + app.meta.label + '»? Настройки, вход и файлы приложения будут удалены во всех системах.')) return;
+    if (app.meta.origin && !app.remote) {
+      S.close('card');
+      onOrigin(app, function (agent) {
+        return agent.call('clearData', {pkg: app.meta.package}).then(function () { return agent.call('storage'); });
+      }, 'Очищаю данные в отдельном хранилище…').then(function (st) {
+        S.log('Library: cleared data of ' + app.meta.package + ' at ' + app.meta.origin);
+        try { localStorage.setItem('senses-space:' + app.meta.package, JSON.stringify({used: st.usage, quota: st.quota, guessed: st.guessed, at: Date.now()})); } catch (e) {}
+      }, function (e) { alert('Не удалось очистить: ' + e.message); });
+      return;
+    }
+    store.clearData(app.meta.package).then(function () {
+      S.log('Library: cleared data of ' + app.meta.package);
+      S.close('card');
+      updateStorage();
+    }, function (e) { alert('Не удалось очистить: ' + e.message); });
+  };
+  $('cremove').onclick = function () {
+    var app = cardApp;
+    if (!app || !confirm('Удалить «' + app.meta.label + '» вместе с его данными?')) return;
+    if (app.meta.origin || app.remote) {
+      // Its origin cleared whole (its systems' copies too), then the record;
+      // that origin is free for the next app. Not reachable: the record only
+      // (a slot is cleared again before it is given to another app).
+      var target = app.remote ? {meta: {origin: app.remote.origin}} : app;
+      S.close('card');
+      onOrigin(target, function (agent) { return agent.call('wipe'); }, 'Удаляю из отдельного хранилища…').catch(function (e) {
+        S.log('Library: wipe of ' + target.meta.origin + ' failed: ' + e);
+        if (!confirm('Хранилище приложения не ответило (' + e.message + '). Всё равно убрать его из библиотеки? ' +
+                     'Место освободится, когда этот адрес получит другое приложение.')) throw e;
+      }).then(function () {
+        return store.remoteRemove(app.meta.package);
+      }).then(function () {
+        return app.remote ? store.uninstall(app.meta.package) : null;
+      }).then(function () {
+        try { localStorage.removeItem('senses-space:' + app.meta.package); } catch (e) {}
+        S.log('Library: removed ' + app.meta.package + ' and its origin ' + target.meta.origin);
+        return refresh();
+      }).catch(function (e) { S.log('Library: remove: ' + e); });
+      return;
+    }
+    store.uninstall(app.meta.package).then(function () {
+      S.log('Library: removed ' + app.meta.package);
+      S.close('card');
+      return refresh();
+    }, function (e) { alert('Не удалось удалить: ' + e.message); });
+  };
+
+  // --- installing -------------------------------------------------------------
+  function istatus(text, fraction, hint) {
+    $('inststatus').textContent = text;
+    $('inststatus').classList.remove('error');
+    S.bar($('ibar'), fraction);
+    $('insthint').textContent = hint || '';
+  }
+  function ibuttons(which) {
+    ['iask', 'iopen', 'iagain', 'idone'].forEach(function (id) { $(id).hidden = which.indexOf(id) < 0; });
+  }
+  function ifail(text, hint) {
+    S.log('Install: failed: ' + text + (hint ? ' (' + hint + ')' : ''));
+    $('inststatus').textContent = text;
+    $('inststatus').classList.add('error');
+    $('ibar').hidden = true;
+    $('insthint').textContent = hint || '';
+    ibuttons(['iagain', 'idone']);
+  }
+  var installing = false;
+  function pickFile() {
+    if (installing) return;
+    $('file').value = '';
+    $('file').click();
+  }
+  $('add').onclick = pickFile;
+  $('iagain').onclick = function () { S.close('inst'); pickFile(); };
+  $('idone').onclick = function () { S.close('inst'); };
+  // No accept= on the input: iOS's Files greys out .apk files for a type it
+  // does not know. The content is checked instead (a ZIP with a manifest).
+  $('file').onchange = function () {
+    var file = this.files && this.files[0];
+    if (file) install(file);
+  };
+  // The VM's screen density (run.html: Android's display at 160 dpi): the
+  // density part an app of split APKs gets.
+  var VM_DPI = 160;
+  function install(file) {
+    installing = true;
+    $('ihead').hidden = true;
+    $('iwarn').textContent = '';
+    ibuttons([]);
+    S.open('inst', true);
+    istatus('Читаю ' + file.name + '…', null, S.size(file.size));
+    S.log('Install: ' + file.name + ' ' + file.size + ' bytes, ' + (file.type || 'no type'));
+    var prep = null, info, old, iconPng;
+    SensesInstall.prepare(file, {
+      store: store, apps: apps.map(function (a) { return a.meta; }), locales: locales(), dpi: VM_DPI, log: S.log,
+      status: istatus,
+    }).then(function (p) {
+      prep = p;
+      info = p.info;
+      S.log('Install: ' + JSON.stringify(Object.assign({}, info, {icon: info.icon && info.icon.kind})));
+      return SensesIcon.render(info.icon, info.label).catch(function () { return null; });
+    }).then(function (png) {
+      iconPng = png;
+      $('iicon').src = iconUrl(png);
+      $('iname').textContent = info.label;
+      $('ipkg').textContent = info.package + ' · ' + (info.versionName || info.versionCode);
+      $('ihead').hidden = false;
+      old = apps.filter(function (a) { return a.meta.package === info.package; })[0];
+      var meta = Object.assign({
+        package: info.package, label: info.label, versionName: info.versionName,
+        versionCode: info.versionCode, minSdk: info.minSdk, targetSdk: info.targetSdk,
+        abis: info.abis, launcher: info.launcher, orientation: info.orientation,
+        stack: old ? old.meta.stack : (S.STACKS[params.get('teststack')] ? params.get('teststack') : null),
+        jit: old ? old.meta.jit : undefined,
+        net: old ? old.meta.net : undefined,
+        gms: old ? old.meta.gms : undefined,
+        installedAt: Date.now(), size: file.size,
+      }, prep.meta);
+      // A new app: Android 10 (8.1 in a build without it; SensesApk.defaultStack).
+      if (!meta.stack) meta.stack = SensesApk.defaultStack(meta, available);
+      // A system it cannot run on (split APKs on 4.4, arm64 code before 8.1): the default one.
+      var fallback = SensesApk.defaultStack(meta, available);
+      if (SensesApk.stackProblem(meta, meta.stack) && !SensesApk.stackProblem(meta, fallback)) {
+        S.log('Install: ' + meta.package + ' cannot run on ' + meta.stack + ' (' +
+              SensesApk.stackProblem(meta, meta.stack) + '): ' + fallback);
+        meta.stack = fallback;
+      }
+      warningsInto($('iwarn'), meta);
+      if (!meta.parts && info.warnings.indexOf('split') >= 0) S.warnInto($('iwarn'), 'warn', 'Приложение собрано из частей (split APK): в этом файле может не быть всех частей.');
+      if (info.warnings.indexOf('nolauncher') >= 0) S.warnInto($('iwarn'), 'warn', 'У приложения нет значка запуска (MAIN/LAUNCHER): открыть его может не получиться.');
+      (prep.notes || []).forEach(function (n) {
+        S.warnInto($('iwarn'), n.level, n.text);
+        if (n.level === 'info') $('iwarn').lastChild.classList.add('info');
+      });
+      if (!old) return meta;
+      // Already installed: ask, saying which way the version goes.
+      var from = old.meta.versionName || old.meta.versionCode, to = info.versionName || info.versionCode;
+      var down = info.versionCode < old.meta.versionCode;
+      istatus(old.meta.versionCode === info.versionCode ? 'Эта версия уже установлена. Установить заново?' :
+              (down ? 'Установить старую версию ' : 'Обновить ') + from + ' → ' + to + '?', 0,
+              down ? 'Новые данные приложения могут не открыться в старой версии.' : 'Данные приложения сохранятся.');
+      $('ibar').hidden = true;
+      $('iyes').textContent = old.meta.versionCode === info.versionCode ? 'Установить' : down ? 'Установить' : 'Обновить';
+      ibuttons(['iask']);
+      return new Promise(function (resolve) {
+        $('iyes').onclick = function () { ibuttons([]); resolve(meta); };
+        $('ino').onclick = function () { resolve(null); };
+      });
+    }).then(function (meta) {
+      if (!meta) { installing = false; prep.cancel(); S.close('inst'); return; }
+      istatus('Копирую в хранилище…', meta.parts ? null : 0, S.size(meta.size));
+      store.persist().then(function (p) { S.log('Storage: persistent ' + p); });
+      return prep.commit(meta, iconPng, old, function (done, total) {
+        istatus('Копирую в хранилище…', done / total, S.size(done) + ' из ' + S.size(total));
+      }).then(function () {
+        installing = false;
+        S.log('Install: done ' + meta.package + ' ' + meta.versionName + ' on ' + meta.stack +
+              (meta.parts ? ' (' + meta.parts.map(function (x) { return x.file; }).join(' ') + ')' : ''));
+        istatus(old && old.meta.versionCode !== meta.versionCode ? 'Обновлено' : 'Установлено', 1, available[meta.stack] ? '' :
+                'Система ' + STACKS[meta.stack].name + ' не входит в эту сборку.');
+        ibuttons(['iopen', 'idone']);
+        $('iopen').onclick = function () {
+          var app = apps.filter(function (a) { return a.meta.package === meta.package; })[0];
+          launch(app || {meta: meta, iconUrl: iconUrl(iconPng)});
+        };
+        return refresh().then(function () {
+          var app = apps.filter(function (a) { return a.meta.package === meta.package; })[0];
+          if (app && moveWanted(app))
+            $('insthint').textContent = [$('insthint').textContent, app.remote ?
+                'При открытии новая версия перейдёт в отдельное хранилище приложения.' :
+                'При первом открытии приложение переедет в отдельное хранилище: своё место и свой процесс.'].filter(Boolean).join(' ');
+        });
+      });
+    }).catch(function (e) {
+      installing = false;
+      if (prep) prep.cancel();
+      else store.clearStaging().catch(function () {});
+      if (e && e.name === 'QuotaExceededError')
+        ifail('Не хватает места', 'Освободите место на устройстве или удалите ненужные приложения.');
+      else if (e && e.code)
+        ifail(e.message, e.code === 'corrupt' ? 'Файл повреждён или скачан не полностью.' : '');
+      else
+        ifail('Не удалось установить', String(e && e.message || e));
+    });
+  }
+  // --- storage line, menu -------------------------------------------------------
+  // The origin's storage: what the shell counts (OPFS and Cache Storage) and
+  // the quota (estimate(), else Safari 16's 1000 MB). Short of it, a VM stops
+  // on its next file write (docs/topics/opfs-after-kill.md): said here.
+  var LOW_SPACE = 200 * 1048576;
+  function updateStorage() {
+    store.storage().then(function (st) {
+      var text = 'Хранилище ' + S.size(st.usage) + ' из ' + (st.guessed ? '~' : '') + S.size(st.quota);
+      var own = apps.filter(function (a) { return a.meta.origin && !a.remote; }).length;
+      if (own) text += ' · отдельно: ' + own;
+      var low = st.free < LOW_SPACE;
+      if (low) text += ' — мало места: удалите ненужные приложения';
+      $('storage').textContent = [text, libraryNote].filter(Boolean).join(' · ');
+      $('storage').classList.toggle('error', low);
+    }, function () {});
+  }
+  $('menu').onclick = function () {
+    var dl = $('mfacts');
+    dl.textContent = '';
+    fact(dl, 'Приложений', String(apps.length));
+    fact(dl, 'Библиотека', store.backend === 'idb' ? 'IndexedDB (OPFS не пишет)' : store.backend === 'opfs' ? 'OPFS' : '—');
+    var lim = null;
+    try { lim = ArcMemPlan.limit(localStorage.getItem('senses-mem-limit')); } catch (e) {}
+    var plan = lim && ArcMemPlan({limitMb: lim.mb, threadMb: lim.threadMb,
+                                  ios: ArcMemPlan.isIOS(navigator.userAgent, navigator.maxTouchPoints)});
+    fact(dl, 'Предел памяти вкладки', lim ? lim.mb + ' МБ' + (lim.threadMb ? ', поток ≈ ' + lim.threadMb.toFixed(1) + ' МБ' : '') +
+         ' · приложению до ' + plan.budget + ' МБ' : 'не измерен (тест ниже)');
+    fact(dl, 'Системы', S.STACK_ORDER.filter(function (s) { return available[s]; }).map(function (s) {
+      return STACKS[s].name;
+    }).join(', ') || '—');
+    var own = apps.filter(function (a) { return a.meta.origin && !a.remote; }).length;
+    var here = apps.length - own;
+    if (ocfg) fact(dl, 'Отдельные хранилища', own + ' из ' + ocfg.slots.length + ' занято' +
+         (useOrigins ? '' : ' · новые приложения — в общем (?origins=1 — в отдельных)'));
+    $('mmove').hidden = !(canMove() && here > 0 && O.freeSlot(ocfg, apps.map(function (a) { return a.meta; })));
+    // (A Home Screen web app has no address bar for ?origins=: the same switch here.)
+    $('mmode').hidden = !ocfg;
+    $('mmode').textContent = useOrigins ? 'Новые приложения — в общее хранилище' : 'Новые приложения — в отдельные хранилища';
+    store.storage().then(function (st) {
+      fact(dl, 'Хранилище', S.size(st.usage) + ' из ' + (st.guessed ? '~' : '') + S.size(st.quota) +
+           ' (приложения ' + S.size(st.apps) + ', системы ' + S.size(st.cachesTotal) + ')');
+      return navigator.storage && navigator.storage.persisted ? navigator.storage.persisted() : null;
+    }).then(function (p) {
+      if (p != null) fact(dl, 'Не стирается', p ? 'да' : 'нет (браузер может очистить при нехватке места)');
+    }).catch(function () {});
+    S.open('more');
+  };
+  $('mlog').onclick = function () { S.close('more'); S.showLog(); };
+  $('mmove').onclick = function () { S.close('more'); moveAll(); };
+  $('mmode').onclick = function () {
+    O.mode(new URLSearchParams('origins=' + (useOrigins ? '0' : '1')));
+    S.log('Library: apps\' origins switched ' + (useOrigins ? 'off' : 'on') + ' in the menu');
+    location.reload();
+  };
+  $('mmemtest').onclick = function () { S.close('more'); location.href = 'memtest.html'; };
+  // Google's services the user installs per system (topic gms, google.js).
+  $('mgms').onclick = function () { S.close('more'); SensesGoogle.open({locales: locales, dpi: VM_DPI}); };
+  $('bannerclose').onclick = function () {
+    $('banner').hidden = true;
+    try { localStorage.setItem('senses-banner', '1'); } catch (e) {}
+  };
+
+  // --- start ---------------------------------------------------------------------
+  function start() {
+    if (S.mobile && !S.standalone) {
+      var hidden = false;
+      try { hidden = localStorage.getItem('senses-banner') === '1'; } catch (e) {}
+      $('banner').hidden = hidden;
+    }
+    fromApp();
+    // From an app's "Мало памяти" (run.html): the memory test, then the app.
+    if (params.get('memtest')) {
+      S.log('Library: to the memory test for ' + params.get('memtest'));
+      location.replace('memtest.html?open=' + encodeURIComponent(params.get('memtest')));
+      return;
+    }
+    O.config().then(function (cfg) {
+      // An app's origin opened at its library page: the library it belongs to.
+      var home = O.home();
+      if (home && home !== O.library() && O.trusted(O.originOf(home), cfg)) {
+        S.log('Library: this is an app\'s origin: to ' + home);
+        location.replace(home + location.search);
+        return new Promise(function () {});
+      }
+      ocfg = cfg;
+      useOrigins = O.wanted(cfg, omode);
+      S.log('Library: apps\' origins: ' + (cfg ? cfg.slots.length + ' (' + omode + ', ' + (useOrigins ? 'in use' : 'not used') + ')' : 'none'));
+    }).then(function () {
+      return fetch('stacks.json');
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      (j.stacks || []).forEach(function (s) { available[s] = true; });
+    }).catch(function () {
+      available = {a10: true, a81: true, a60: true, a44: true};
+    }).then(function () {
+      return store.init();
+    }).then(function (b) {
+      S.log('Library: storage ' + b + ' · ' + navigator.userAgent);
+      return refresh().then(testInstall).then(testReopen);
+    }).catch(function (e) {
+      S.log('Library: no storage: ' + e);
+      $('storage').textContent = 'Хранилище недоступно: ' + e.message;
+      $('storage').classList.add('error');
+      $('empty').hidden = false;
+    });
+  }
+  // Tests in browsers that cannot pick a file or be scripted (Safari):
+  // ?testinstall=NAME installs tools/serve.py's /__test/NAME (a test APK the
+  // tester put there; never cached), &teststack=a44|a60|a81|a10 on that system,
+  // &testopen=1 then opens it.
+  function testInstall() {
+    var name = params.get('testinstall');
+    if (!name || !/^[\w.+-]+$/.test(name)) return;
+    // A big test APK takes a while over Wi-Fi: the install dialog shows the download.
+    $('ihead').hidden = true;
+    ibuttons([]);
+    S.open('inst', true);
+    istatus('Загружаю ' + name + '…', null);
+    fetch('/__test/' + name).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      var total = +r.headers.get('Content-Length') || 0;
+      if (!r.body || !r.body.getReader) return r.blob();
+      var reader = r.body.getReader(), parts = [], got = 0;
+      return (function next() {
+        return reader.read().then(function (c) {
+          if (c.done) return new Blob(parts);
+          parts.push(c.value);
+          got += c.value.length;
+          istatus('Загружаю ' + name + '…', total ? got / total : null,
+                  S.size(got) + (total ? ' из ' + S.size(total) : ''));
+          return next();
+        });
+      })();
+    }).then(function (b) {
+      var file = new File([b], name);
+      install(file);
+      if (params.get('testopen') !== '1') return;
+      var timer = setInterval(function () {
+        if (!$('iopen').hidden) { clearInterval(timer); $('iopen').click(); }
+      }, 500);
+    }).catch(function (e) {
+      S.log('Install: test file ' + name + ': ' + e);
+      ifail('Не удалось загрузить ' + name + ': ' + e.message);
+    });
+  }
+  // Opening an app from the URL: ?open=PKG&loops=1 is how an app's page
+  // restarts it for memory (run.html freshStart: this page swaps the process).
+  // Tests of leaving and opening again: &loops=N&leaveafter=S -- the app's
+  // page comes back here S s after the app is on screen, one loop less.
+  function testReopen() {
+    var pkg = params.get('open'), loops = +params.get('loops') || 0;
+    if (!pkg || loops <= 0) return;
+    var app = apps.filter(function (a) { return a.meta.package === pkg; })[0];
+    if (!app) { S.log('Library: open from the address: no ' + pkg); return; }
+    params.set('loops', String(loops - 1));
+    S.log('Library: open ' + pkg + ' from the address (' + loops + ' to go)');
+    launch(app, true);
+  }
+  // For tests (a browser that cannot pick a file): SensesLibrary.install(file).
+  window.SensesLibrary = {install: install, refresh: refresh, apps: function () { return apps; }};
+  S.serviceWorker();
+  start();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+/* libndkhelper.so in the relocs32 build (mk/topic-relocs32.mk): every export
+   of a version named like the library itself, as GNU ld's --default-symver
+   (Firefox's libraries) -- the VER_FLG_BASE entry has that name too. */
+libndkhelper.so {
+  global:
+    *;
+};

@@ -1,0 +1,128 @@
+diff --git a/frameworks/base/core/jni/android_view_KeyCharacterMap.cpp b/frameworks/base/core/jni/android_view_KeyCharacterMap.cpp
+index ffe2deab..c876a37a 100644
+--- a/frameworks/base/core/jni/android_view_KeyCharacterMap.cpp
++++ b/frameworks/base/core/jni/android_view_KeyCharacterMap.cpp
+@@ -148,7 +148,7 @@ static jchar nativeGetMatch(JNIEnv *env, jobject clazz, jint ptr, jint keyCode,
+         return 0;
+     }
+ 
+-    char16_t result = map->getMap()->getMatch(keyCode, chars, size_t(numChars), metaState);
++    char16_t result = map->getMap()->getMatch(keyCode, reinterpret_cast<const char16_t*>(chars), size_t(numChars), metaState);
+ 
+     env->ReleasePrimitiveArrayCritical(charsArray, chars, JNI_ABORT);
+     return result;
+@@ -176,7 +176,7 @@ static jobjectArray nativeGetEvents(JNIEnv *env, jobject clazz, jint ptr,
+ 
+     Vector<KeyEvent> events;
+     jobjectArray result = NULL;
+-    if (map->getMap()->getEvents(map->getDeviceId(), chars, size_t(numChars), events)) {
++    if (map->getMap()->getEvents(map->getDeviceId(), reinterpret_cast<const char16_t*>(chars), size_t(numChars), events)) {
+         result = env->NewObjectArray(jsize(events.size()), gKeyEventClassInfo.clazz, NULL);
+         if (result) {
+             for (size_t i = 0; i < events.size(); i++) {
+diff --git a/frameworks/native/include/input/Input.h b/frameworks/native/include/input/Input.h
+index e7780763..4683e3e6 100644
+--- a/frameworks/native/include/input/Input.h
++++ b/frameworks/native/include/input/Input.h
+@@ -105,7 +105,7 @@ struct AInputDevice {
+ 
+ namespace android {
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)
+ class Parcel;
+ #endif
+ 
+@@ -193,7 +193,7 @@ struct PointerCoords {
+         return getAxisValue(AMOTION_EVENT_AXIS_Y);
+     }
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)
+     status_t readFromParcel(Parcel* parcel);
+     status_t writeToParcel(Parcel* parcel) const;
+ #endif
+@@ -529,7 +529,7 @@ public:
+     // Matrix is in row-major form and compatible with SkMatrix.
+     void transform(const float matrix[9]);
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)
+     status_t readFromParcel(Parcel* parcel);
+     status_t writeToParcel(Parcel* parcel) const;
+ #endif
+diff --git a/frameworks/native/include/input/KeyCharacterMap.h b/frameworks/native/include/input/KeyCharacterMap.h
+index e70666ab..0dc33f95 100644
+--- a/frameworks/native/include/input/KeyCharacterMap.h
++++ b/frameworks/native/include/input/KeyCharacterMap.h
+@@ -19,7 +19,7 @@
+ 
+ #include <stdint.h>
+ 
+-#if HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)
+ #include <binder/IBinder.h>
+ #endif
+ 
+@@ -124,7 +124,7 @@ public:
+      * the mapping in some way. */
+     status_t mapKey(int32_t scanCode, int32_t usageCode, int32_t* outKeyCode) const;
+ 
+-#if HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)
+     /* Reads a key map from a parcel. */
+     static sp<KeyCharacterMap> readFromParcel(Parcel* parcel);
+ 
+diff --git a/frameworks/native/libs/input/Input.cpp b/frameworks/native/libs/input/Input.cpp
+index 6f53996b..f0d765d0 100644
+--- a/frameworks/native/libs/input/Input.cpp
++++ b/frameworks/native/libs/input/Input.cpp
+@@ -22,7 +22,7 @@
+ 
+ #include <input/Input.h>
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)
+ #include <binder/Parcel.h>
+ #endif
+ 
+@@ -213,7 +213,7 @@ void PointerCoords::scale(float scaleFactor) {
+     scaleAxisValue(*this, AMOTION_EVENT_AXIS_TOOL_MINOR, scaleFactor);
+ }
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)
+ status_t PointerCoords::readFromParcel(Parcel* parcel) {
+     bits = parcel->readInt64();
+ 
+@@ -486,7 +486,7 @@ void MotionEvent::transform(const float matrix[9]) {
+     }
+ }
+ 
+-#ifdef HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)
+ status_t MotionEvent::readFromParcel(Parcel* parcel) {
+     size_t pointerCount = parcel->readInt32();
+     size_t sampleCount = parcel->readInt32();
+diff --git a/frameworks/native/libs/input/KeyCharacterMap.cpp b/frameworks/native/libs/input/KeyCharacterMap.cpp
+index 15a87744..995ec7fb 100644
+--- a/frameworks/native/libs/input/KeyCharacterMap.cpp
++++ b/frameworks/native/libs/input/KeyCharacterMap.cpp
+@@ -19,7 +19,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
+-#if HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)
+ #include <binder/Parcel.h>
+ #endif
+ 
+@@ -556,7 +556,7 @@ void KeyCharacterMap::addLockedMetaKey(Vector<KeyEvent>& outEvents,
+     }
+ }
+ 
+-#if HAVE_ANDROID_OS
++#if defined(HAVE_ANDROID_OS) || defined(ARC_WASM)
+ sp<KeyCharacterMap> KeyCharacterMap::readFromParcel(Parcel* parcel) {
+     sp<KeyCharacterMap> map = new KeyCharacterMap();
+     map->mType = parcel->readInt32();

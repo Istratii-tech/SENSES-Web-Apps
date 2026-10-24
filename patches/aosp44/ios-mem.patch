@@ -1,0 +1,59 @@
+diff --git a/dalvik/vm/alloc/HeapBitmap.cpp b/dalvik/vm/alloc/HeapBitmap.cpp
+index d6a737b2..2d460047 100644
+--- a/dalvik/vm/alloc/HeapBitmap.cpp
++++ b/dalvik/vm/alloc/HeapBitmap.cpp
+@@ -69,7 +69,18 @@ void dvmHeapBitmapZero(HeapBitmap *hb)
+         /* This returns the memory to the system.
+          * Successive page faults will return zeroed memory.
+          */
++#ifdef __EMSCRIPTEN__
++        // arc-wasm (topic ios-mem): madvise zeroes every page on wasm
++        // (shim/wasm_mm) and gives nothing back: the bitmap of the whole
++        // -Xmx (4 MB for 256 MB) became the tab's memory after each GC.
++        // No bit above max is set: zero the words up to it.
++        if (hb->max >= hb->base) {
++            memset(hb->bits, 0, MIN(HB_OFFSET_TO_BYTE_INDEX(hb->max - hb->base) +
++                                    sizeof(*hb->bits), hb->bitsLen));
++        }
++#else
+         madvise(hb->bits, hb->bitsLen, MADV_DONTNEED);
++#endif
+         hb->max = hb->base - 1;
+     }
+ }
+diff --git a/dalvik/vm/alloc/HeapSource.cpp b/dalvik/vm/alloc/HeapSource.cpp
+index 82c2b9e9..b31ab27f 100644
+--- a/dalvik/vm/alloc/HeapSource.cpp
++++ b/dalvik/vm/alloc/HeapSource.cpp
+@@ -573,7 +573,13 @@ static bool allocMarkStack(GcMarkStack *stack, size_t maximumSize)
+     stack->base = (const Object **)addr;
+     stack->limit = (const Object **)((char *)addr + stack->length);
+     stack->top = NULL;
++#ifndef __EMSCRIPTEN__
++    // arc-wasm (topic ios-mem): not on wasm. The mapping is fresh, so zero,
++    // and madvise there zeroes every page (shim/wasm_mm): the whole mark
++    // stack, a third of -Xmx (85 MB of a 256 MB heap on an iPhone), became
++    // the tab's memory at startup (docs/topics/ios-mem.md).
+     madvise(stack->base, stack->length, MADV_DONTNEED);
++#endif
+     return true;
+ }
+ 
+diff --git a/dalvik/vm/alloc/MarkSweep.cpp b/dalvik/vm/alloc/MarkSweep.cpp
+index 2781a7cf..48493216 100644
+--- a/dalvik/vm/alloc/MarkSweep.cpp
++++ b/dalvik/vm/alloc/MarkSweep.cpp
+@@ -57,7 +57,13 @@ static bool createMarkStack(GcMarkStack *stack)
+ static void destroyMarkStack(GcMarkStack *stack)
+ {
+     assert(stack != NULL);
++#ifndef __EMSCRIPTEN__
++    // arc-wasm (topic ios-mem): not on wasm, where madvise gives nothing
++    // back and zeroes every page (shim/wasm_mm) -- after each GC, the whole
++    // mark stack (a third of -Xmx) became the tab's memory. Nothing reads
++    // the stack above its top.
+     madvise(stack->base, stack->length, MADV_DONTNEED);
++#endif
+     stack->top = NULL;
+ }
+ 

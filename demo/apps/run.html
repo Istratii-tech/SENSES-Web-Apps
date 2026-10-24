@@ -1,0 +1,1417 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<title>SENSES Web Apps</title>
+<link rel="stylesheet" href="senses.css">
+<style>
+  /* SENSES Web Apps: one installed app on its system, full screen (topic
+     senses-shell, docs/topics/senses-shell.md, "Running"). Android's display
+     and SENSES's key panel under it, as the Web Systems PWA and SENSES lay
+     them out (KeyPanel.plan). */
+  html, body { height: 100%; overflow: hidden; }
+  #app { position: fixed; inset: 0; display: flex; flex-direction: column;
+         padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  #screen { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center;
+            justify-content: center; overflow: hidden; background: #000; }
+  #phone { display: flex; flex-direction: column; flex: none; }
+  canvas { display: block; background: #000; touch-action: none; outline: none; }
+  /* SENSES's key panel (art/KeyPanel.kt): 72 units high for 511 of width;
+     "back" and "home" outlined in grey, the SENSES plate between them, the
+     status line in the strip between the frame and the keys. */
+  #panel { position: relative; flex: none; background: #000; touch-action: none;
+           -webkit-tap-highlight-color: transparent; }
+  #panel svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #mem { position: absolute; left: 0; right: 0; top: 0; text-align: center; color: #6f6f6f;
+         white-space: nowrap; overflow: hidden; pointer-events: none; font-variant-numeric: tabular-nums; }
+
+  #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+             padding: 24px; background: #000; z-index: 5; }
+  #overlay[hidden] { display: none; }
+  .card { width: 100%; max-width: 340px; text-align: center; }
+  .card img { width: 84px; height: 84px; border-radius: 20px; background: #1a1a1a; }
+  .card h1 { margin: 14px 0 2px; font-size: 21px; font-weight: 600; }
+  .card .os { color: var(--muted); font-size: 14px; margin: 0 0 14px; }
+  #status { margin: 10px 0 0; min-height: 1.45em; }
+  #hint { margin: 4px 0 0; color: var(--muted); font-size: 13px; min-height: 1.3em; overflow-wrap: anywhere; }
+  .error { color: var(--bad) !important; }
+  .actions { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; }
+  .actions button { height: 46px; border: 0; border-radius: 12px; background: var(--btn); }
+  .actions button[hidden] { display: none; }
+  .actions button.primary { background: #e3e3e3; color: #000; }
+  #stopping { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+              background: #000c; color: #d0d0d0; font-size: 17px; z-index: 30; }
+  #stopping[hidden] { display: none; }
+  /* Over the running app: a file did not get space (storage budget). */
+  #notice { position: fixed; left: 12px; right: 12px; top: calc(env(safe-area-inset-top) + 12px); z-index: 20;
+            max-width: 420px; margin: 0 auto; padding: 12px 14px; border-radius: 12px; background: #2b1717ee;
+            color: #f0d6d6; font-size: 14px; line-height: 1.35; }
+  #notice b { display: block; font-size: 15px; margin-bottom: 2px; }
+  #notice[hidden] { display: none; }
+  /* Over the running app: memory runs low (the memory budget, threads on an iPhone). */
+  #memwarn { position: fixed; left: 12px; right: 12px; top: calc(env(safe-area-inset-top) + 12px); z-index: 21;
+             max-width: 420px; margin: 0 auto; padding: 12px 14px; border-radius: 12px; background: #2b2417f2;
+             color: #f0e6d0; font-size: 14px; line-height: 1.35; }
+  #memwarn b { display: block; font-size: 15px; margin-bottom: 2px; }
+  #memwarn .row { display: flex; gap: 8px; margin-top: 10px; }
+  #memwarn button { flex: 1; padding: 9px 0; border: 0; border-radius: 9px; font: inherit; font-weight: 600;
+                    background: #f0e6d0; color: #2b2417; }
+  #memwarn button.later { background: transparent; color: #f0e6d0; border: 1px solid #f0e6d066; font-weight: 400; }
+  #memwarn button.test { display: block; width: 100%; margin-top: 8px; padding: 4px 0; background: transparent;
+                         color: #f0e6d0; font-weight: 400; text-decoration: underline; }
+  #memwarn button[hidden], #memwarn[hidden] { display: none; }
+  /* Memory in use, always over the app (taps go through). */
+  #ram { position: fixed; right: 8px; bottom: calc(env(safe-area-inset-bottom) + 8px); z-index: 15;
+         padding: 3px 8px; border-radius: 9px; background: #000a; color: #e8e8e8; font-size: 11.5px;
+         font-variant-numeric: tabular-nums; pointer-events: none; }
+  #ram.warn { background: #6b4a10e0; }
+  #ram[hidden] { display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="screen">
+    <div id="phone">
+      <!-- Android's display: the VM takes this canvas over with the size it
+           has at startup, so the page sets it before loading the system. -->
+      <canvas id="canvas" width="360" height="640" tabindex="0"></canvas>
+      <div id="panel">
+        <svg viewBox="0 0 511 72" preserveAspectRatio="none" aria-hidden="true">
+          <g fill="none" stroke="#969696" stroke-width="2.9" stroke-linecap="butt" stroke-linejoin="miter">
+            <polyline points="106.1,21.3 92.9,32 106.1,42.7"/>
+            <polygon points="398.6,41.7 398.6,29.6 407.23,22.6 415.85,29.6 415.85,41.7"/>
+          </g>
+          <!-- SENSES: placed by KeyPanel.logoBox. -->
+          <svg x="190.65" y="14.15" width="126.9" height="35.44" viewBox="612.487 387.966 30.4297 8.5"
+               preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="shine" gradientUnits="userSpaceOnUse" x1="627.699" y1="388.132"
+                              x2="627.699" y2="396.504"
+                              gradientTransform="matrix(0.696811 -0.717255 3.030674 2.944293 -996.241235 -312.990331)">
+                <stop offset="0" stop-color="#141414"/>
+                <stop offset="0.44" stop-color="#d3d1d1"/>
+                <stop offset="1" stop-color="#141414"/>
+              </linearGradient>
+              <mask id="ink" style="mask-type: alpha" maskUnits="userSpaceOnUse"
+                    x="612.487" y="387.966" width="30.4297" height="8.5">
+                <image href="senses-mask.png" x="612.487" y="387.966" width="30.4297" height="8.5"
+                       preserveAspectRatio="none"/>
+              </mask>
+            </defs>
+            <rect x="612.487" y="387.966" width="30.4297" height="8.5" fill="url(#shine)" mask="url(#ink)"/>
+          </svg>
+          <rect id="glow" rx="16" fill="#ffffff" fill-opacity="0.12" visibility="hidden"/>
+        </svg>
+        <div id="mem"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="overlay">
+  <div class="card">
+    <img id="icon" src="icon-192.png" alt="">
+    <h1 id="title">SENSES Web Apps</h1>
+    <p class="os" id="os"></p>
+    <div class="bar" id="bar"><div></div></div>
+    <p id="status"></p>
+    <p id="hint"></p>
+    <div class="actions">
+      <button id="retry" class="primary" hidden>Попробовать снова</button>
+      <button id="library" hidden>В библиотеку</button>
+      <button id="showlog" hidden>Журнал</button>
+    </div>
+  </div>
+</div>
+
+<!-- The SENSES plate's menu. -->
+<div id="menu" class="sheet" hidden>
+  <div class="box">
+    <svg class="sheetlogo" viewBox="612.487 387.966 30.4297 8.5" aria-label="SENSES">
+      <rect x="612.487" y="387.966" width="30.4297" height="8.5" fill="url(#shine)" mask="url(#ink)"/>
+    </svg>
+    <button id="mlibrary">В библиотеку</button>
+    <button id="mrestart">Перезапустить приложение</button>
+    <button id="mlog">Журнал</button>
+    <button class="close" data-close>Закрыть</button>
+  </div>
+</div>
+<div id="stopping" hidden>Приложение закрывается…</div>
+<div id="notice" hidden><b>Хранилище заполнено</b><span id="noticetext"></span></div>
+<div id="ram" hidden></div>
+<div id="memwarn" hidden><b id="memtitle">Мало памяти</b><span id="memtext"></span>
+  <div class="row"><button id="memreload">Перезагрузить</button><button id="memlater" class="later">Позже</button></div>
+  <button id="memtest" class="test" hidden>Узнать, сколько памяти даёт это устройство (тест, 2 мин)</button>
+</div>
+<div id="logbox" hidden>
+  <div id="logbar"><button id="logback">&#8249; Назад</button><span>Журнал</span></div>
+  <pre id="log"></pre>
+</div>
+
+<script src="report.js"></script>
+<script src="mem_plan.js"></script>
+<script src="store.js"></script>
+<script src="origins.js"></script>
+<script src="senses.js"></script>
+<script>
+(function () {
+  'use strict';
+  // run.html?pkg=PACKAGE: the app from the library (senses/apps/PACKAGE,
+  // its system from meta.json). ?stack=a10|a81|a60|a44 overrides it, and with
+  // it an app of the system's own image runs without being installed
+  // (build/extra-apks8: Firefox). Test switches as the Web Systems PWA:
+  // ?canvas2d=1 (display without WebGL in workers, as iOS 16), ?memdata=1
+  // (/data and the library in IndexedDB, as iOS 16.1), ?remotegl=1, ?log=1,
+  // ?run=1 (start in a browser tab on a phone), ?memrefuse=S (the device's
+  // memory refused for S seconds, as right after another app on an iPhone),
+  // ?jit=0|1 over the app's meta.jit (JIT on unless false: ENV.ARC_JIT,
+  // the VM's ro.arcwasm.jit; docs/topics/guest-jit.md), ?net=0|1 over
+  // meta.net (the app's network: ENV.ARC_NET, which the VM's kernel applies;
+  // docs/topics/app-network.md), ?gms=0|1 over meta.gms (Google's services
+  // the user added for the system: ENV.ARC_GMS, the VM's ro.arcwasm.gms;
+  // docs/topics/gms.md), ?landscape=1 (a
+  // landscape display from the start, see "layout"), &tap=X,Y@S (repeatable) a
+  // touch at X,Y of the display (pixels, or N% of its width and height) S
+  // seconds after the app shows (phones nobody holds, as the VM test page),
+  // ?storage=skip (start whatever the free space: it is still measured for
+  // the VM's storage budget), ?freespace=1 (free all that comes back by itself
+  // first), ?opfsfree=MB|off (that budget instead of the measured one, or none),
+  // ?opfstrace=1 (the VM's OPFS thread logs its start step by step) and
+  // ?opfsgrow=MB (it writes a file of MB megabytes first, as an app that
+  // writes much; shim/opfs/library_arc_opfs.js).
+  // On an app's own origin (topic per-app-origin, origins.js) the library
+  // says ?home=LIBRARY (kept: the way back, with the memory and space this
+  // page saw), ?appstack=, ?jit= and ?net= (the system, JIT and
+  // network chosen there) and
+  // ?memlimit= (its memory test's result).
+  var S = Senses, $ = S.$, params = new URLSearchParams(location.search);
+  var pkg = params.get('pkg') || '';
+  var home = './';
+  if (params.get('memlimit')) {
+    try { JSON.parse(params.get('memlimit')); localStorage.setItem('senses-mem-limit', params.get('memlimit')); } catch (e) {}
+  }
+  var canvas = $('canvas');
+
+  // The systems' files (mk/topic-senses-apps.mk) and command lines, as the
+  // VM side wants them (topic install8, docs/topics/install8.md "Contract
+  // with the shell"): SystemServer --senses PACKAGE runs the one app from the
+  // library (read-only /mnt/apps, ENV.ARC_APPS_DIR) without launcher or
+  // SystemUI, on the stack's own /data (ENV.ARC_DATA_DIR), and says what
+  // happens on stdout ("SENSES: app shown|exit|crash|missing ..."). 4.4 takes
+  // the display's size on the command line; 6.0, 8.1 and 10 take the canvas's.
+  // touched: the system's memory monitor tells the wasm memory it touched
+  // (MemoryBudget.touched): its memory can be made whole at once (see "memory").
+  var SYSTEMS = {
+    a10: {script: 'a10/artvm10.js', vm: 'art10', touched: true,
+          args: function (p) { return ['arcwasm.server.SystemServer', '--senses', p]; }},
+    a81: {script: 'a81/artvm8.js', vm: 'art8', touched: true,
+          args: function (p) { return ['arcwasm.server.SystemServer', '--senses', p]; }},
+    a60: {script: 'a60/artvm.js', vm: 'art',
+          args: function (p) { return ['arcwasm.server.SystemServer', '--senses', p]; }},
+    a44: {script: 'a44/dalvikvm.js', vm: 'dalvik',
+          args: function (p) {
+            return ['arcwasm.server.SystemServer', '--display', canvas.width + 'x' + canvas.height + '@160',
+                    '--senses', p];
+          }},
+  };
+  // Dalvik's heap limit by the wasm memory this device allowed (its own
+  // default is 16 MB for everything); ART sizes its heap by the memory
+  // budget itself.
+  var HEAPS = {dalvik: [[1536, 256], [1024, 192], [768, 128], [0, 64]]};
+  function heapFor(vm, maxBytes) {
+    var steps = HEAPS[vm], mb = maxBytes / 1048576;
+    if (!steps) return null;
+    for (var i = 0; i < steps.length; i++) if (mb >= steps[i][0]) return '-Xmx' + steps[i][1] + 'm';
+  }
+
+  // --- overlay ---------------------------------------------------------------
+  function status(text, fraction, hint) {
+    $('overlay').hidden = false;
+    $('status').textContent = text;
+    $('status').classList.remove('error');
+    S.bar($('bar'), fraction);
+    $('hint').textContent = hint || '';
+  }
+  var failed = false;
+  function fail(text, hint) {
+    if (failed) return;
+    failed = true;
+    S.log('Run: failed: ' + text + (hint ? ' (' + hint + ')' : ''));
+    $('overlay').hidden = false;
+    $('status').textContent = text;
+    $('status').classList.add('error');
+    $('bar').hidden = true;
+    $('hint').textContent = hint || '';
+    $('retry').hidden = false;
+    $('library').hidden = false;
+    $('showlog').hidden = false;
+  }
+  var retryUrl = '';  // where "try again" goes (storage: the start without the space check)
+  $('retry').onclick = function () { if (retryUrl) replacePage(retryUrl); else reloadPage(); };
+  $('library').onclick = function () { toLibrary(false); };
+  $('showlog').onclick = S.showLog;
+  if (params.get('log') === '1') S.showLog();
+
+  // Back to the library: Android first gets HOME (the app stops and its
+  // task is saved: "SENSES: app exit PKG home", then the page goes, or after
+  // HOME_WAIT_MS at most); one VM per page, gone with it.
+  var leaving = false, HOME_WAIT_MS = 3000;
+  function toLibrary(home) {
+    if (leaving) return;
+    leaving = true;
+    $('stopping').hidden = false;
+    if (home && running) tapKey(3);
+    setTimeout(leaveNow, home && running ? HOME_WAIT_MS : 400);
+  }
+  // (memtestNext: the library goes on to its memory test, see "low memory")
+  var memtestNext = false;
+  function leaveNow() {
+    var q = backParams();
+    if (memtestNext) q.set('memtest', pkg);
+    ['canvas2d', 'memdata', 'remotegl', 'run'].forEach(function (k) { if (params.get(k)) q.set(k, params.get(k)); });
+    // (the reopen test: index.html's ?open=PKG&loops=N&leaveafter=S)
+    if (+params.get('loops') > 0) {
+      q.set('open', pkg); q.set('loops', params.get('loops')); q.set('leaveafter', params.get('leaveafter'));
+    }
+    replacePage(home + (String(q) ? '?' + q : ''));
+  }
+  // To a library of another origin: what it shows on the app's tile and card
+  // (index.html fromApp).
+  var lastStorage = null;
+  function backParams() {
+    var q = new URLSearchParams();
+    if (home === './') return q;
+    q.set('from', pkg);
+    if (ramPeak) q.set('ram', String(ramPeak));
+    if (lastStorage) {
+      q.set('used', String(Math.round(lastStorage.usage)));
+      q.set('quota', String(Math.round(lastStorage.quota)));
+      if (lastStorage.guessed) q.set('guessed', '1');
+    }
+    return q;
+  }
+
+  // --- memory ----------------------------------------------------------------
+  // A VM's wasm memory is shared memory, made whole at once: its initial part
+  // (256 MB ART, 512 MB Dalvik) and its maximum as reserved address space.
+  // Right after the previous app's page (iPhones: run.html left a moment ago)
+  // iOS has not given that page's memory back yet and refuses even 512 MB
+  // ("RangeError: Out of memory"), for seconds, at times tens of seconds
+  // (iPhone X, iOS 16.1: four and five failed starts in a row at 2 s apart).
+  // So the page makes the memory before it loads the VM: the build's
+  // ceiling or a smaller one, and when none is given it waits (1, 2, 3, 4,
+  // then 5 s at a time, up to MEMORY_WAIT_MS) and tries again, without
+  // reloading. The memory got goes to the VM: fit_memory.js asks
+  // WebAssembly.Memory for its memory, and the wrapper here answers with
+  // this one. Out of memory later, while the system starts: the page reloads
+  // after a pause with a lower ceiling (?memtry=2: 1 GB, ?memtry=3: 768 MB;
+  // not ?mem=, which the VM's memory budget takes for megabytes:
+  // shim/membudget/mem_budget_pre.js); past that, or once the app is on
+  // screen, the error.
+  // On an iPhone every page memory.grow adds is in the tab's footprint at
+  // once, touched or not, while the pages a memory is made with count only
+  // once touched (iPhone X, iOS 16.7, topic senses-shell-fixes: made with 16
+  // MB and grown to 512 untouched, 513 MB; made with 1536, 16 MB, and 529 once
+  // 512 MB are written). So a VM whose monitor tells what it touched (see
+  // "low memory") gets its memory whole at once there: the ceiling as its
+  // initial size, nothing ever grown; refused that, as before.
+  var MEMORY_WAIT_MS = 60000, PAGE = 65536;
+  var memTry = Math.max(1, Math.min(3, +params.get('memtry') || 1));
+  var CAPS = [0, 16384, 12288, 8192];  // pages; 0: the plan's ceiling (see makeMemory)
+  var RealMemory = WebAssembly.Memory, handed = null;
+  var madeMb = 0;  // the size the VM's memory was made with (MB), when it took the one made here
+  // The VM asking for other sizes than the memory made here would make a
+  // second one beside it: two reservations of 1.5 GB do not fit iOS's
+  // Gigacage (~1.87 GB), and the second is refused or smaller. Said in the
+  // log either way; a memory that did not fit is let go.
+  function HandedMemory(desc) {
+    if (handed && desc && desc.shared) {
+      var fits = desc.initial <= handed.initial && desc.maximum <= handed.maximum;
+      if (fits) madeMb = handed.initial / 16;
+      S.log('Run: the VM ' + (fits ? 'takes' : 'does not take') + ' the memory made first (it asks ' +
+            desc.initial + '/' + desc.maximum + ' pages, made ' + handed.initial + '/' + handed.maximum + ')' +
+            (fits ? '' : ': a second memory'));
+      var memory = handed.memory;
+      handed = null;
+      if (fits) return memory;
+    }
+    return new RealMemory(desc);
+  }
+  HandedMemory.prototype = RealMemory.prototype;
+  WebAssembly.Memory = HandedMemory;
+  function isOutOfMemory(text) {
+    return /out of memory|\bOOM\b|Cannot enlarge memory|allocation failed/i.test(text) && !/out of bounds/i.test(text);
+  }
+  // The wasm memory could not grow (Emscripten's sbrk, malloc): a failure
+  // soon after is most likely a program that went on without the memory
+  // it asked for (a NULL written through: "corrupted its heap memory area
+  // (address zero)", a heap check) -- out of memory, not a system failure.
+  var heapFullAt = 0;
+  function afterHeapFull(text) {
+    if (!heapFullAt || performance.now() - heapFullAt > 60000) return false;
+    S.log('Run: failed ' + Math.round((performance.now() - heapFullAt) / 1000) +
+          ' s after the wasm memory could not grow: out of memory (' + text + ')');
+    return true;
+  }
+  // The VM's initial memory and maximum (pages), from its script (in the
+  // worker's cache): what Emscripten makes the memory with. (The script is
+  // minified since 2026-10-20, tools/slim_thread_js.py: "INITIAL_MEMORY=N;"
+  // and "maximum:N"; until 2026-10-22 these did not match, and the page
+  // made no memory first: a start right after another app was refused.)
+  function memoryOf(script) {
+    return fetch(script).then(function (r) { return r.text(); }).then(function (js) {
+      var initial = /INITIAL_MEMORY *= *(\d+);/.exec(js), maximum = /"?maximum"?: *(\d+)/.exec(js);
+      return initial && maximum ? {initial: initial[1] / PAGE, maximum: +maximum[1]} : null;
+    }).catch(function () { return null; });
+  }
+  // The ceiling: the VM's memory plan's (shim/membudget/mem_plan.js, as the
+  // VM's mem_budget_pre.js will plan it: by the device's measured tab limit,
+  // see "low memory", or ?mem=, ?memcap=); a phone whose plan is a guess
+  // keeps 1536 MB (the VM then plans within it).
+  function memPlan() {
+    return ArcMemPlan({mem: params.get('mem'), memcap: params.get('memcap'),
+                       limitMb: devLimit && devLimit.mb, threadMb: devLimit && devLimit.threadMb,
+                       ios: ArcMemPlan.isIOS(navigator.userAgent, navigator.maxTouchPoints),
+                       deviceMemory: navigator.deviceMemory});
+  }
+  function makeMemory(want, whole, done) {
+    var plan = memPlan();
+    whole = whole && plan.ios;
+    var guessed = !devLimit && !params.get('mem') && !params.get('memcap');
+    var ceiling = Math.min(want.maximum, (S.mobile && guessed ? Math.min(1536, plan.cap) : plan.cap) * 16);
+    S.log('Run: memory plan (' + plan.why + '): budget ' + plan.budget + ' MB, wasm memory up to ' +
+          Math.round(ceiling / 16) + ' MB');
+    var caps = CAPS.slice(memTry - 1).map(function (c) { return c || ceiling; }).filter(function (c, i, all) {
+      return c >= want.initial && c <= ceiling && all.indexOf(c) === i;
+    });
+    var t0 = Date.now(), n = 0;
+    // ?memrefuse=S (tests on a Mac): refused for the first S seconds, as on an iPhone.
+    var refuseUntil = t0 + 1000 * (+params.get('memrefuse') || 0);
+    (function attempt() {
+      for (var i = 0; i < caps.length; i++) {
+        try {
+          if (Date.now() < refuseUntil) throw new RangeError('Out of memory (memrefuse)');
+          var initial = want.initial, memory = null;
+          if (whole) {
+            try { memory = new RealMemory({initial: caps[i], maximum: caps[i], shared: true}); initial = caps[i]; }
+            catch (e) { S.log('Run: wasm memory of ' + Math.round(caps[i] / 16) + ' MB at once refused (' + e + ')'); }
+          }
+          if (!memory) memory = new RealMemory({initial: want.initial, maximum: caps[i], shared: true});
+          if (n || i) S.log('Run: wasm memory ' + Math.round(caps[i] * PAGE / 1048576) + ' MB after ' +
+                            Math.round((Date.now() - t0) / 1000) + ' s, ' + n + ' waits');
+          if (initial > want.initial) S.log('Run: wasm memory made whole (' + Math.round(caps[i] / 16) +
+                                            ' MB at once: an iPhone counts the pages grown into, not those made)');
+          done({memory: memory, initial: initial, maximum: caps[i]});
+          return;
+        } catch (e) {}
+      }
+      var waited = Date.now() - t0;
+      if (waited >= MEMORY_WAIT_MS) { done(null); return; }
+      if (!n) S.log('Run: the device refuses ' + Math.round(want.initial * PAGE / 1048576) +
+                    ' MB of wasm memory now (the previous app\'s memory not given back yet): waiting');
+      n++;
+      status('Освобождаю память после прошлого приложения…', null,
+             'Устройство отдаёт её не сразу · ' + Math.round(waited / 1000) + ' с');
+      setTimeout(attempt, Math.min(5000, 1000 * n));
+    })();
+  }
+  function outOfMemory(what) {
+    if (shown || failed || leaving || memTry >= 3) {
+      running = false;
+      fail('Не хватило памяти', shown ? 'Приложению не хватило памяти устройства. Закройте другие приложения и откройте его снова.'
+                                      : 'Даже с меньшим потолком памяти система не запустилась. Закройте другие приложения ' +
+                                        'и SENSES Apps (смахните вверх в переключателе), затем откройте снова.');
+      return;
+    }
+    failed = true;
+    S.log('Run: out of memory while starting (' + what + '): again with less memory, try ' + (memTry + 1) + ' of 3');
+    status('Освобождаю память…', null, 'Попытка ' + (memTry + 1) + ' из 3 · с меньшим потолком памяти');
+    var url = new URL(location.href);
+    url.searchParams.set('memtry', String(memTry + 1));
+    setTimeout(function () { replacePage(url.toString()); }, 3000 * memTry);
+  }
+  window.addEventListener('error', function (e) {
+    var msg = String(e.message || e.error || '');
+    if (isOutOfMemory(msg) || (/RuntimeError/.test(msg) && afterHeapFull(msg))) outOfMemory(msg);
+    else if (/RuntimeError/.test(msg) && (shown || started)) { running = false; fail('Сбой системы', msg); }
+    else if (!shown && started) fail('Ошибка запуска', msg);
+  });
+
+  // --- layout ------------------------------------------------------------------
+  // Android's display: 360 px wide (160 dpi), as tall as the free area's
+  // proportions allow above the key panel; fixed for the run. Every system
+  // turns it itself for an app that wants landscape (below). ?landscape=1
+  // (tests): a display the other way round, 360 px high, from the start, as
+  // before the systems turned (topic rotation).
+  var PANEL_W = 511, PANEL_H = 72, SQUASH_MIN = 0.90;
+  var landscape = false;
+  function pickDisplaySize() {
+    var box = $('screen').getBoundingClientRect();
+    var w = Math.max(1, Math.min(box.width, box.height)), h = Math.max(box.width, box.height);
+    var height = Math.max(480, Math.min(800, Math.round(360 * (h / w - PANEL_H / PANEL_W) / 2) * 2));
+    canvas.width = landscape ? height : 360;
+    canvas.height = landscape ? 360 : height;
+  }
+  // KeyPanel.plan: the frame as wide as the window, the panel under it;
+  // when tight, the panel squashed to SQUASH_MIN, then the frame narrowed.
+  // Android turned its display (a landscape app: Surface.ROTATION_90 or 270,
+  // the window manager of every system, topic rotation; the VM publishes it:
+  // Module._arcwasm_input_rotation) and the window is wider than high: the phone
+  // element is turned the other way, so the app stands upright; held
+  // upright, a phone shows it sideways, as a phone does (the Web Systems
+  // PWA's way). Touches follow (browser_input.js, Module.arcwasmInput.turn).
+  // ?landscape=1's display is the same seen from the page: the canvas
+  // stands in the phone turned by 90 degrees, as a turned Android display
+  // draws on a phone's screen, and the phone turns -90 when the window is
+  // wider than high.
+  function androidRotation() {
+    if (landscape) return 1;
+    var f = bootStart && window.Module && Module._arcwasm_input_rotation;
+    try { return f ? f() : 0; } catch (e) { return 0; }
+  }
+  function turnNow() {
+    var r = androidRotation();
+    if ((r !== 1 && r !== 3) || innerWidth <= innerHeight) return 0;
+    return r === 1 ? -90 : 90;
+  }
+  var turn = 0;
+  setInterval(function () { if (turnNow() !== turn) fit(); }, 300);
+  // The canvas's own turn in the phone, and the canvas's on the page (what
+  // the input and the WebView's layer map through).
+  function innerTurn() { return landscape ? 90 : 0; }
+  function canvasTurn() { return innerTurn() + turn; }
+  function fit() {
+    turn = turnNow();
+    if (window.Module && Module.arcwasmInput) Module.arcwasmInput.turn = canvasTurn();
+    $('phone').style.transform = turn ? 'rotate(' + turn + 'deg)' : '';
+    var rect = $('screen').getBoundingClientRect();
+    var box = turn ? {width: rect.height, height: rect.width} : rect;
+    var inner = innerTurn();
+    var ar = inner ? canvas.width / canvas.height : canvas.height / canvas.width;
+    var cw = box.width, ch = cw * ar;
+    if (box.height - ch < PANEL_H * (cw / PANEL_W) * SQUASH_MIN) {
+      cw = box.height / (ar + PANEL_H / PANEL_W);
+      ch = cw * ar;
+    }
+    var panelH = Math.min(box.height - ch, PANEL_H * cw / PANEL_W);
+    cw = Math.floor(cw); ch = Math.floor(ch);
+    // (turned, the element is ch x cw; its margins give it cw x ch in the phone)
+    canvas.style.width = (inner ? ch : cw) + 'px';
+    canvas.style.height = (inner ? cw : ch) + 'px';
+    canvas.style.margin = inner ? (ch - cw) / 2 + 'px ' + (cw - ch) / 2 + 'px' : '';
+    canvas.style.transform = inner ? 'rotate(' + inner + 'deg)' : '';
+    $('panel').style.width = Math.floor(cw) + 'px';
+    $('panel').style.height = Math.floor(panelH) + 'px';
+    var st = 20 * panelH / PANEL_H;
+    $('mem').style.height = st + 'px';
+    $('mem').style.lineHeight = st + 'px';
+    $('mem').style.fontSize = Math.max(8, Math.min(12, st * 0.55)) + 'px';
+  }
+  window.addEventListener('resize', fit);
+  document.addEventListener('touchmove', function (e) {
+    if (!$('log').contains(e.target)) e.preventDefault();
+  }, {passive: false});
+
+  // --- SENSES's key panel (PanelKeys) ----------------------------------------------
+  // "back": held as long as the finger is; "home" short: back to the
+  // library (HOME to Android first), long: APP_SWITCH; the plate short: the
+  // menu, long: MENU. Keys go through the canvas's keyboard path
+  // ("Android:N", shim/input/browser_input.js).
+  var BACK = 0, HOME = 1, LONG_MS = 500;
+  var HITS = [[30, 4, 170, 68], [337, 4, 477, 68], [172, 4, 336, 68]];
+  function sendKey(type, keyCode) {
+    var code = 'Android:' + keyCode;
+    canvas.dispatchEvent(new KeyboardEvent(type, {code: code, key: code, bubbles: true}));
+  }
+  function tapKey(keyCode) { sendKey('keydown', keyCode); sendKey('keyup', keyCode); }
+  (function () {
+    var panel = $('panel'), glow = $('glow');
+    var pressed = -1, pointer = null, longFired = false, timer = 0;
+    // (clientX, clientY) in the panel's own units, the phone turned by
+    // |turn| (browser_input.js's localPoint; the canvas may be turned
+    // otherwise).
+    function areaAt(e) {
+      var r = panel.getBoundingClientRect(), x = e.clientX, y = e.clientY;
+      var at = turn === -90 ? [(r.bottom - y) / (r.height || 1), (x - r.left) / (r.width || 1)] :
+               turn === 90 ? [(y - r.top) / (r.height || 1), (r.right - x) / (r.width || 1)] :
+               [(x - r.left) / (r.width || 1), (y - r.top) / (r.height || 1)];
+      var u = at[0] * PANEL_W, v = at[1] * PANEL_H;
+      for (var i = 0; i < HITS.length; i++) {
+        var h = HITS[i];
+        if (u >= h[0] && u < h[2] && v >= h[1] && v < h[3]) return i;
+      }
+      return -1;
+    }
+    function light(i) {
+      if (i < 0) { glow.setAttribute('visibility', 'hidden'); return; }
+      var h = HITS[i];
+      glow.setAttribute('x', h[0]); glow.setAttribute('y', h[1]);
+      glow.setAttribute('width', h[2] - h[0]); glow.setAttribute('height', h[3] - h[1]);
+      glow.setAttribute('visibility', 'visible');
+    }
+    panel.addEventListener('pointerdown', function (e) {
+      if (pointer !== null) return;
+      var i = areaAt(e);
+      if (i < 0) return;
+      e.preventDefault();
+      pointer = e.pointerId; pressed = i; longFired = false;
+      try { panel.setPointerCapture(e.pointerId); } catch (x) {}
+      light(i);
+      if (i === BACK) { if (running) sendKey('keydown', 4); }
+      else timer = setTimeout(function () {
+        longFired = true;
+        if (navigator.vibrate) navigator.vibrate(20);
+        if (running) tapKey(pressed === HOME ? 187 : 82);
+      }, LONG_MS);
+    });
+    function end(e, cancelled) {
+      if (e.pointerId !== pointer) return;
+      clearTimeout(timer);
+      var onIt = !cancelled && areaAt(e) === pressed;
+      if (pressed === BACK) {
+        if (running) { sendKey('keyup', 4); backPressed(); }
+        else if (onIt) toLibrary(false);
+      } else if (onIt && !longFired) {
+        if (pressed === HOME) toLibrary(true);
+        else S.open('menu');
+      }
+      pointer = null; pressed = -1; light(-1);
+    }
+    panel.addEventListener('pointerup', function (e) { end(e, false); });
+    panel.addEventListener('pointercancel', function (e) { end(e, true); });
+    panel.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  })();
+  $('mlibrary').onclick = function () { S.close('menu'); toLibrary(true); };
+  $('mrestart').onclick = function () { S.close('menu'); freshStart('the menu'); };
+  $('mlog').onclick = function () { S.close('menu'); S.showLog(); };
+
+  // The plate's shine (Shine.Menu): 2 s after the panel shows, then once a minute.
+  var SHINE_M = [0.696811, -0.717255, 3.030674, 2.944293, -996.241235, -312.990331];
+  var SHINE_TY = [0, 7, -7, 0], SHINE_KEYS = [0, 0.512109, 0.51425, 1], SHINE_MS = 2000;
+  function shine() {
+    var t0 = performance.now();
+    (function frame() {
+      var t = performance.now() - t0, f = Math.min(1, t / SHINE_MS), i = SHINE_KEYS.length - 2;
+      for (var k = 1; k < SHINE_KEYS.length; k++) if (f < SHINE_KEYS[k]) { i = k - 1; break; }
+      var u = Math.min(1, Math.max(0, (f - SHINE_KEYS[i]) / (SHINE_KEYS[i + 1] - SHINE_KEYS[i])));
+      var ty = SHINE_TY[i] + (SHINE_TY[i + 1] - SHINE_TY[i]) * u, m = SHINE_M;
+      $('shine').setAttribute('gradientTransform', 'matrix(' + [m[0], m[1], m[2], m[3],
+          m[4] + m[2] * ty, m[5] + m[3] * ty].join(' ') + ')');
+      if (t < SHINE_MS) requestAnimationFrame(frame);
+    })();
+  }
+  setTimeout(function () { shine(); setInterval(shine, 60000); }, 2000);
+
+  // --- the app's activities, from ActivityManager's log ---------------------------------
+  // "◁" on the app's root activity finishes it (or the app moves its task
+  // to the back): nothing of it is left on screen, so back to the library.
+  var live = {}, backAt = 0;
+  function backPressed() { backAt = Date.now(); }
+  function liveCount() { return Object.keys(live).length; }
+  function watchLog(text) {
+    // A file of the VM refused space by its storage budget (?opfsfree, see
+    // "storage space"): the app goes on with ENOSPC, or fails.
+    if (/^arc-opfs: storage full: /.test(text)) storageFull();
+    // No room for the file data of a read or write (opfs-oom-ios, below).
+    if (/^arc-opfs: out of memory for file data/.test(text)) fileMemory();
+    if (/^Failed to grow the heap from |^dlmalloc: out of memory/.test(text)) heapFullAt = performance.now();
+    // The VM's one-app mode (install8): its signals first.
+    var sig = /^SENSES: app (\w+) (\S+)(?: (.*))?$/.exec(text);
+    if (sig) {
+      senses = true;
+      if (sig[1] === 'started' || sig[1] === 'restored') { started = true; startFrames = frames(); }
+      else if (sig[1] === 'shown') { appShown = true; scheduleTaps(); }
+      else if (sig[1] === 'exit') {
+        S.log('Run: the app left (' + sig[3] + '): back to the library');
+        if (leaving) setTimeout(leaveNow, 300); else toLibrary(false);
+      } else if (sig[1] === 'crash') {
+        running = false;
+        if (spaceRefused) failFull();
+        else if (fileMemoryRefused) failFileMemory();
+        else fail('Приложение закрылось с ошибкой', (sig[3] || '') + (sig[3] ? ' · ' : '') + 'данные приложения сохранены.');
+      } else if (sig[1] === 'missing') {
+        // The package manager refused it: too new for this system (Opera GX,
+        // minSdk 29, on 8.1), or not there.
+        var sys = S.STACKS[runStack];
+        if (runMeta && sys && runMeta.minSdk > sys.api)
+          fail('Приложение не для этой системы', 'Ему нужен Android API ' + runMeta.minSdk + ', а ' + sys.name +
+               ' — API ' + sys.api + ': система его не устанавливает.');
+        else
+          fail('Приложение не найдено', 'Система не видит ' + pkg + ' в библиотеке. Установите его заново.');
+      }
+      return;
+    }
+    if (senses) return;
+    // VMs before install8: ActivityManager's log.
+    var m = /ActivityManager.*\b(resumed|destroyed|finishing) ActivityRecord\{(\S+)/.exec(text);
+    if (m) {
+      if (m[1] === 'resumed') live[m[2]] = true;
+      else if (m[1] === 'destroyed') delete live[m[2]];
+      if (m[1] === 'destroyed' && shown && !liveCount() && Date.now() - backAt < 5000) {
+        S.log('Run: the app finished its last activity: back to the library');
+        toLibrary(false);
+      }
+    }
+    if (/ActivityManager.*moving task \d+ to the back/.test(text) && shown && Date.now() - backAt < 5000) {
+      S.log('Run: the app moved itself to the back: back to the library');
+      toLibrary(false);
+    }
+    if (/ActivityManager.*\bidle ActivityRecord\{/.test(text)) appIdle = true;
+    if (!started && /^SystemServer: (started|restored) /.test(text)) {
+      started = true;
+      startFrames = frames();
+    }
+    if (/^SystemServer: no activity to launch/.test(text))
+      fail('Приложение не найдено в системе', 'Система не видит пакет ' + pkg + '.');
+    if (/^E\/ActivityManager: process \S+ died$/.test(text)) crashed();
+  }
+  // &tap=X,Y@S: a touch as the input path takes one (browser_input.js),
+  // at the page point where the turned canvas shows that display pixel.
+  function scheduleTaps() {
+    params.getAll('tap').forEach(function (t) {
+      var m = /^(\d+(?:\.\d+)?)(%?),(\d+(?:\.\d+)?)(%?)@(\d+(?:\.\d+)?)$/.exec(t);
+      if (!m) return;
+      var x = m[2] ? m[1] * canvas.width / 100 : +m[1], y = m[4] ? m[3] * canvas.height / 100 : +m[3];
+      setTimeout(function () { tapAt(x, y); }, m[5] * 1000);
+    });
+  }
+  function tapAt(x, y) {
+    var r = canvas.getBoundingClientRect(), t = canvasTurn(), fx = x / canvas.width, fy = y / canvas.height;
+    var cx = t === 90 ? r.right - fy * r.width : t === -90 ? r.left + fy * r.width : r.left + fx * r.width;
+    var cy = t === 90 ? r.top + fx * r.height : t === -90 ? r.bottom - fx * r.height : r.top + fy * r.height;
+    S.log('Run: tap ' + Math.round(x) + ',' + Math.round(y) + ' (page ' + Math.round(cx) + ',' + Math.round(cy) + ')');
+    ['pointerdown', 'pointerup'].forEach(function (type, i) {
+      setTimeout(function () {
+        canvas.dispatchEvent(new PointerEvent(type, {pointerId: 7, pointerType: 'touch', clientX: cx, clientY: cy,
+                                                     pressure: i ? 0 : 1, buttons: i ? 0 : 1, bubbles: true}));
+      }, i * 120);
+    });
+  }
+
+  var crashes = 0;
+  function crashed() {
+    if (failed || leaving) return;
+    crashes++;
+    if (spaceRefused) failFull();
+    else if (fileMemoryRefused) failFileMemory();
+    else fail('Приложение закрылось с ошибкой', 'Журнал покажет, на чём. Данные приложения сохранены.');
+  }
+
+  // --- boot -------------------------------------------------------------------------
+  var Module, senses = false, appShown = false, started = false, appIdle = false, shown = false, running = false, startFrames = 0, bootStart = 0;
+  function frames() {
+    try { return bootStart ? Module._arcwasm_display_frames() : 0; } catch (e) { return 0; }
+  }
+  // Boot progress: the system's start and the app's, each measured against
+  // how long it took last time on this device (localStorage; first time a
+  // guess), so the bar moves instead of only spinning (up to 95%).
+  function lastMs(key, guess) {
+    try { return +localStorage.getItem(key) || guess; } catch (e) { return guess; }
+  }
+  function keepMs(key, ms) {
+    try { localStorage.setItem(key, String(Math.round(ms))); } catch (e) {}
+  }
+  function ticker() {
+    var bootKey = 'senses-boot-ms:' + runStack, appKey = 'senses-open-ms:' + pkg;
+    var bootGuess = lastMs(bootKey, runStack === 'a10' ? 25000 : 18000), appGuess = lastMs(appKey, 12000);
+    var startedAt = 0;
+    var timer = setInterval(function () {
+      if (failed) { clearInterval(timer); return; }
+      var now = performance.now(), secs = Math.round((now - bootStart) / 1000);
+      if (started && !startedAt) { startedAt = now; keepMs(bootKey, now - bootStart); }
+      // Drawn: frames after the launch, or the activity idle (a still
+      // screen draws only a frame or two) with something on the display.
+      if (appShown || (!senses && ((started && frames() > startFrames + 2) || (appIdle && frames() > 0))) ||
+          (secs > 300 && frames() > 0)) {
+        clearInterval(timer);
+        shown = true;
+        S.log('Run: app on screen after ' + secs + ' s');
+        if (startedAt) keepMs(appKey, now - startedAt);
+        setTimeout(function () { $('overlay').hidden = true; canvas.focus(); }, 400);
+        if (+params.get('leaveafter') > 0) setTimeout(function () { toLibrary(true); }, 1000 * params.get('leaveafter'));
+        // (tests: the low-memory "Перезагрузить" pressed S s after the app is on screen)
+        if (+params.get('memreloadafter') > 0 && !sessionStorage.getItem('senses-test-memreload')) {
+          sessionStorage.setItem('senses-test-memreload', '1');
+          setTimeout(memReload, 1000 * params.get('memreloadafter'));
+        }
+        return;
+      }
+      var name = (S.STACKS[runStack] || {}).name || 'системы';
+      var f = started ? 0.5 + 0.45 * Math.min(1, (now - startedAt) / appGuess)
+                      : 0.45 * Math.min(1, (now - bootStart) / bootGuess);
+      status(started ? 'Открываю приложение…' : 'Запуск ' + name + '…', f,
+             secs + ' с' + (started ? '' : ' · первый запуск дольше, до пары минут'));
+    }, 500);
+  }
+  function updateMemory() {
+    var parts = [];
+    var top = Module && Module._arcwasm_heap_top, max = Module && Module.arcwasmMemoryMax;
+    if (typeof top === 'function' && max) {
+      try {
+        parts.push('ОЗУ ' + S.size(top()) + ' / ' + S.size(max));
+        if (!ramFromMonitor) showRam(top() / MB, 0, false, false);
+      } catch (e) {}
+    }
+    SensesStore.usage().then(function (u) {
+      if (u && u.quota) parts.unshift('Хранилище ' + S.size(u.usage || 0) + ' / ' + S.size(u.quota));
+      $('mem').textContent = parts.join(' · ');
+    });
+  }
+
+  // --- storage space (topic opfs-after-kill, docs/topics/opfs-after-kill.md) -------
+  // Safari gives the origin a quota for OPFS, Cache Storage and IndexedDB
+  // together (1000 MB on Safari 16). Once it is used up, a file of the VM
+  // that grows waits for Safari's answer, which never comes while this page
+  // lives: the VM's file thread stops inside the call and the system with it
+  // (an app killed for memory leaves its writes and the systems' caches behind,
+  // and the next start of any app stopped at "Initializing OpfsHandler...").
+  // So: before the VM, enough free space, made by dropping what comes back by
+  // itself (SensesStore.freeSpace); while it runs, a file that has waited for
+  // space STALL_MS (arc_opfs_stall, shim/opfs/opfs_bridge.cc) ends the run:
+  // the page frees space at once (removing files and caches asks Safari for
+  // nothing) and says to close SENSES and open the app again. Not a new VM
+  // here: the stopped one's thread stays blocked inside Safari and keeps its
+  // memory while this process lives (iPhone X: 410 MB a minute later, the
+  // next VM "Out of memory"). Leaving the page is also what makes Safari
+  // answer the request, which every later one of the origin waits behind.
+  // ?freespace=1 on this page frees all that comes back by itself first.
+  var MB = 1048576, STALL_MS = 4000;
+  // Free space a start needs: the app's data and dex cache, plus the system's
+  // files the service worker keeps on the first run of a stack.
+  // (systemKept: whether this build's files of the system are all in the
+  // service worker's cache; a cache of another build's does not count -- the
+  // worker keeps the new files while the VM starts, ~95 MB for 8.1)
+  var systemKept = null;
+  function spaceNeeded(st, stackId) {
+    var cached = systemKept !== null ? systemKept :
+        Object.keys(st.caches || {}).some(function (n) { return n.indexOf('senses-sys-' + stackId + '-') === 0; });
+    return 160 * MB + (cached || !S.STACKS[stackId] ? 0 : S.STACKS[stackId].mb * MB);
+  }
+  // -> true/false, or null where the worker does not say (none, an older one).
+  function checkSystemKept(stackId) {
+    var sw = navigator.serviceWorker && navigator.serviceWorker.controller;
+    if (!sw || !window.caches || !SYSTEMS[stackId]) return Promise.resolve(null);
+    var script = SYSTEMS[stackId].script;
+    var files = [script, script.replace(/\.js$/, '.wasm'), script.replace(/\.js$/, '.data')].map(function (f) {
+      var u = new URL(f, location.href);
+      return u.origin + u.pathname;
+    });
+    return new Promise(function (ok) {
+      var ch = new MessageChannel();
+      ch.port1.onmessage = function (e) { ok(e.data); };
+      sw.postMessage({op: 'cacheFor', url: files[0]}, [ch.port2]);
+      setTimeout(function () { ok(null); }, 2000);
+    }).then(function (name) {
+      if (!name) return null;
+      return caches.has(name).then(function (has) {
+        if (!has) return false;
+        return caches.open(name).then(function (cache) {
+          return Promise.all(files.map(function (f) { return cache.match(f); })).then(function (hits) {
+            return hits.every(Boolean);
+          });
+        });
+      });
+    }).catch(function () { return null; });
+  }
+  function storageText(st) {
+    var data = 0;
+    Object.keys(st.data || {}).forEach(function (k) { data += st.data[k]; });
+    return 'Занято ' + S.size(st.usage) + ' из ' + (st.guessed ? 'около ' : '') + S.size(st.quota) +
+           ': приложения ' + S.size(st.apps || 0) + ', их данные ' + S.size(data) +
+           ', системы ' + S.size(st.cachesTotal || 0) + '.';
+  }
+  // The VM's storage budget (topic opfs-budget): the free space measured
+  // here, less the system's files the service worker is about to keep, to
+  // the VM's OPFS thread as ?opfsfree=MB. It keeps Safari's count from there
+  // and answers a write that would ask for more with ENOSPC (the app sees a
+  // full disk) instead of letting Safari's request stop the system; the
+  // first one is in the log ("arc-opfs: storage full", storageFull below).
+  var vmFree = null;
+  function budgetFrom(st, stackId) {
+    // (below zero where the origin is over the quota: what the VM frees
+    // goes to that first)
+    vmFree = st.quota - st.usage - (spaceNeeded(st, stackId) - 160 * MB);
+  }
+  function checkStorage(stackId) {
+    var skip = params.get('storage') === 'skip';
+    var force = params.get('freespace') === '1';
+    // (its small write to Cache Storage may wait behind a request for space
+    // of the origin: then no space for the VM at all)
+    var measured = new Promise(function (ok, no) {
+      checkSystemKept(stackId).then(function (kept) {
+        systemKept = kept;
+        return SensesStore.storage();
+      }).then(ok, no);
+      setTimeout(function () { no('timeout'); }, 10000);
+    });
+    return measured.then(function (st) {
+      lastStorage = st;
+      budgetFrom(st, stackId);
+      if (skip) {
+        S.log('Run: storage ' + Math.round(st.usage / MB) + ' of ' + Math.round(st.quota / MB) + ' MB, free ' +
+              Math.round(st.free / MB) + ' MB, system ' + (systemKept ? 'kept' : systemKept === false ? 'to keep' : 'kept?') +
+              ' (no check: storage=skip)');
+        return true;
+      }
+      var need = spaceNeeded(st, stackId);
+      S.log('Run: storage ' + Math.round(st.usage / MB) + ' of ' + Math.round(st.quota / MB) + ' MB' +
+            (st.guessed ? ' (quota assumed: Safari 16)' : '') + ', free ' + Math.round(st.free / MB) +
+            ' MB, need ' + Math.round(need / MB) + ' MB (system ' + (systemKept ? 'kept' : systemKept === false ? 'to keep' : 'kept?') +
+            '); apps ' + Math.round(st.apps / MB) + ', data ' +
+            JSON.stringify(Object.keys(st.data).reduce(function (o, k) { o[k] = Math.round(st.data[k] / MB); return o; }, {})) +
+            ', regenerable ' + Math.round(st.regen / MB) + ', caches ' + Math.round(st.cachesTotal / MB) + ' MB');
+      if (st.free >= need && !force) return true;
+      status('Освобождаю место в хранилище…', null, 'Кэши систем и приложений: они создадутся снова');
+      return SensesStore.freeSpace({need: need, keep: stackId, force: force}).then(function (r) {
+        S.log('Run: storage freed: ' + (r.removed.join(', ') || 'nothing') + '; now ' +
+              Math.round(r.after.usage / MB) + ' MB used, ' + Math.round(r.after.free / MB) + ' MB free');
+        lastStorage = r.after;
+        budgetFrom(r.after, stackId);
+        if (r.after.free >= need) return true;
+        fail('Хранилище заполнено', storageText(r.after) + ' Safari не даёт сайту больше места, и система ' +
+             'не сможет записывать файлы. Удалите ненужные приложения или их данные в библиотеке.');
+        retryUrl = withParam('storage', 'skip');
+        $('retry').textContent = 'Всё равно запустить';
+        return false;
+      });
+    }).catch(function (e) {
+      if (e === 'timeout') {
+        S.log('Run: storage check: no answer in 10 s (no space for the VM to grow its files)');
+        vmFree = 0;
+      } else {
+        S.log('Run: storage check: ' + e);
+      }
+      return true;
+    });
+  }
+  // The VM refused a file space (its budget, above): the app is told its
+  // disk is full and goes on, or fails. Said over the app while it runs; the
+  // error, if it ends, says why.
+  var spaceRefused = false;
+  function storageFull() {
+    if (spaceRefused) return;
+    spaceRefused = true;
+    S.log('Run: storage full: the system refused a file space (its budget); said over the app');
+    $('noticetext').textContent = 'Приложению не хватает места: Safari даёт SENSES около 1000 МБ на всё. ' +
+        'Удалите ненужные приложения или их данные в библиотеке.';
+    $('notice').hidden = false;
+    setTimeout(function () { $('notice').hidden = true; }, 15000);
+  }
+  $('notice').onclick = function () { $('notice').hidden = true; };
+  function failFull() {
+    $('notice').hidden = true;
+    fail('Хранилище заполнено', 'Приложению не хватило места, и оно закрылось. Safari даёт SENSES около 1000 МБ ' +
+         'на приложения, их данные и системы. Удалите ненужные приложения или их данные в библиотеке.');
+  }
+  // The VM's OPFS thread found no room for a file's data even after its
+  // retries (docs/topics/opfs-oom-ios.md: Safari's ArrayBuffers share their
+  // room with the wasm memory): the app's reads and writes fail. A reload
+  // gives the room back: the low-memory notice says so.
+  var fileMemoryRefused = false;
+  function fileMemory() {
+    if (fileMemoryRefused) return;
+    fileMemoryRefused = true;
+    S.log('Run: out of memory for file data: offering a reload');
+    if (memReloading) return;
+    $('memtitle').textContent = 'Браузеру не хватает памяти';
+    $('memtext').textContent = 'Приложение не может прочитать или записать свои файлы: Safari не даёт места для их ' +
+        'данных. Перезагрузка освободит память, приложение откроется там же, где было.';
+    $('memlater').hidden = false;
+    if ($('memtest')) $('memtest').hidden = true;  // (the device test's button, if memPressure showed it)
+    $('memwarn').hidden = false;
+  }
+  function failFileMemory() {
+    $('memwarn').hidden = true;
+    fail('Браузеру не хватило памяти', 'Приложение не смогло прочитать или записать свои файлы: Safari не дал места ' +
+         'для их данных, и оно закрылось. Откройте его снова — данные приложения сохранены.');
+  }
+  function withParam(k, v) {
+    var url = new URL(location.href);
+    url.searchParams.delete('freespace');
+    url.searchParams.delete('storage');
+    if (v) url.searchParams.set(k, v);
+    return url.toString();
+  }
+  // The VM's OPFS thread in a call that grows a file for STALL_MS: Safari
+  // does not give the space (see above).
+  function watchStorage() {
+    var reported = false;
+    var timer = setInterval(function () {
+      if (failed || leaving) { clearInterval(timer); return; }
+      var e = typeof wasmExports != 'undefined' && wasmExports, cell = e && e.arc_opfs_stall;
+      if (!cell || typeof wasmMemory == 'undefined') return;
+      try {
+        var at = Number(cell.value) >>> 0, f = new Float64Array(wasmMemory.buffer, at, 2);
+        var since = f[0], waited = since ? Date.now() - since : 0;
+        if (waited < STALL_MS || reported) return;
+        reported = true;
+        var path = '';
+        if (e.arc_opfs_stall_path) {
+          var b = new Uint8Array(wasmMemory.buffer, Number(e.arc_opfs_stall_path.value) >>> 0, 256), n = b.indexOf(0);
+          path = new TextDecoder().decode(b.slice(0, n < 0 ? 256 : n));
+        }
+        S.log('Run: storage full: ' + path + ' grows by ' + f[1] + ' bytes and the browser has given no space for ' +
+              Math.round(waited / 1000) + ' s (docs/topics/opfs-after-kill.md)');
+        running = false;
+        fail('Хранилище Safari заполнено', 'Safari не даёт SENSES больше места, и система остановилась на записи ' +
+             'файла. Освобождаю место…');
+        $('retry').hidden = true;
+        SensesStore.freeSpace({need: 512 * MB, keep: runStack, force: true, stalled: true}).then(function (r) {
+          var freed = Math.max(0, r.before.usage - r.after.usage);
+          S.log('Run: storage freed ' + Math.round(freed / MB) + ' MB (' + (r.removed.join(', ') || 'nothing') + '); ' +
+                Math.round(r.after.usage / MB) + ' of ' + Math.round(r.after.quota / MB) + ' MB used');
+          $('hint').textContent = 'Освобождено ' + S.size(freed) + ' (кэши систем и приложений). ' +
+              (r.after.free < spaceNeeded(r.after, runStack) ? 'Места всё ещё мало: удалите ненужные приложения в библиотеке. ' : '') +
+              'Остановленная система держит память, пока SENSES открыт: закройте SENSES (смахните вверх в ' +
+              'переключателе приложений; в Safari — закройте вкладку) и откройте приложение снова.';
+        }, function (e) {
+          S.log('Run: free space: ' + e);
+          $('hint').textContent = 'Удалите ненужные приложения в библиотеке, затем закройте SENSES и откройте приложение снова.';
+        });
+      } catch (err) {}
+    }, 1000);
+  }
+
+  var runMeta = null, runStack = '';  // what start() runs (for the errors)
+  // --- low memory: offer a full reload -----------------------------------------
+  // The VM's memory monitor fills its budget (mem_budget_pre.js reports it
+  // every second: per mille of the budget, and the threads): past 90%, or on
+  // an iPhone past THREADS_WARN threads (each thread's worker costs the tab ~5
+  // MB; WebKit closes it at ~1.5 GB without a word: docs/topics/ios-threads.md),
+  // a "Перезагрузить" over the app. The reload goes through the system server
+  // (the app's task saved, it comes back where it was), else after 6 s as is.
+  // "Позже" hides it for SNOOZE_MS. A tab WebKit closed comes back with the
+  // last start's mark in sessionStorage (pagehide never ran): said once.
+  var THREADS_WARN = 60, SNOOZE_MS = 120000, memSnoozed = 0, memShown = false, memReloading = false;
+  // The device's tab limit and a thread's cost, from the library's memory
+  // test (memtest.html); not measured: ~1.5 GB and ~5 MB on iPhones (iPhone X
+  // and 12 Pro both closed tabs at ~1490 MB). The tab is estimated as the VM's
+  // wasm memory + the threads' workers + ~100 MB of page (tabEstimate).
+  // The VM gets the limit too (Module.arcMemLimit: its budget and ceiling,
+  // shim/membudget/mem_plan.js). Not measured on a phone: the warning offers
+  // the test (once the app is left: through the library, so the test runs in
+  // a fresh process, and back to the app after it).
+  var devLimit = null;
+  try { devLimit = ArcMemPlan.limit(localStorage.getItem('senses-mem-limit')); } catch (e) {}
+  function offerMemtest() {
+    $('memtest').hidden = !!devLimit || !S.mobile;
+  }
+  $('memtest').onclick = function () {
+    S.log('Run: low memory: the user goes to the memory test');
+    $('memwarn').hidden = true;
+    memtestNext = true;
+    toLibrary(true);
+  };
+  // The VM's part is the wasm memory it has touched (the memory monitor's
+  // estimate, MemoryBudget.touched: the break less what is known untouched
+  // below it), not what it finds in use: a page of it once touched stays in
+  // the tab (WebKit takes none of it back; freed malloc chunks, the Java
+  // heap's high water). Nor the memory's size: the page makes it whole at
+  // once and what grows it may not touch it -- Subway 3.70 on an iPhone 12
+  // Pro: its reservations grew the memory to 866 MB 12 s in, in use 297 MB,
+  // and wasm 866 + 48 threads x 6.9 + 100 = 1297 MB of a 1488 MB tab said
+  // "low memory" (topic senses-shell-fixes). A VM without the monitor's
+  // estimate (4.4, 6.0.1): the memory's size, else in use.
+  // Each worker (the running threads' and the spare ones) costs the tab
+  // besides: on an iPhone a VM's worker ~20-28 MB of JavaScriptCore heaps
+  // (iPhone X, Subway: 373 MB outside the wasm memory with 12 workers, 825-
+  // 1000 MB with 34-35; Telegram X-like apps less), more than the memory
+  // test's own small workers (5-8 MB): at least VM_WORKER_MB there.
+  var VM_WORKER_MB = 20;
+  function tabEstimate(s) {
+    var threadMb = devLimit && devLimit.threadMb || (s.ios ? 5 : 1);
+    if (s.ios) threadMb = Math.max(threadMb, VM_WORKER_MB);
+    return vmMb(s) + (s.workers || s.threads) * threadMb + 100;
+  }
+  // On an iPhone what the memory grew past its made size counts whole (see
+  // "memory"; a memory the VM made itself: all of it); elsewhere what was
+  // touched.
+  function vmMb(s) {
+    // (made whole and nothing said yet, the first seconds: what is in use)
+    if (!(s.touchedMb > 0) && madeMb && madeMb >= s.wasmMb) return s.pm * s.budget / 1000;
+    if (!(s.touchedMb > 0)) return s.wasmMb > 0 ? s.wasmMb : s.pm * s.budget / 1000;
+    if (!s.ios) return s.touchedMb;
+    return madeMb ? Math.min(s.wasmMb, s.touchedMb + Math.max(0, s.wasmMb - madeMb)) : s.wasmMb;
+  }
+  function tabLimit(s) { return devLimit && devLimit.mb || (s.ios ? 1490 : 0); }
+  // The RAM badge: what the memory monitor finds in use (8.1, 10), else the
+  // VM's heap top (4.4, 6.0.1); on an iPhone the threads too (their workers
+  // cost the tab besides). Its peak is kept for the library's tile.
+  var ramPeak = 0, ramFromMonitor = false;
+  function showRam(mb, threads, ios, warn, est, limit) {
+    if (!(mb > 0)) return;
+    mb = Math.round(mb);
+    $('ram').textContent = limit && est ? 'ОЗУ ≈ ' + Math.round(est) + ' из ' + limit + ' МБ · ' + threads + ' потоков'
+        : 'ОЗУ ' + mb + ' МБ' + (ios && threads ? ' · ' + threads + ' потоков' : '');
+    $('ram').classList.toggle('warn', !!warn);
+    $('ram').hidden = false;
+    if (limit && est) mb = Math.round(est);  // (the tile shows what the tab took)
+    if (mb > ramPeak) {
+      ramPeak = mb;
+      try { localStorage.setItem('senses-ram-peak:' + pkg, String(ramPeak)); } catch (e) {}
+    }
+  }
+  var memToldAt = 0;
+  function memPressure(s) {
+    // (what the estimate is made of, every 30 s: set against the device's footprint)
+    if (Date.now() - memToldAt >= 30000 && running) {
+      memToldAt = Date.now();
+      S.log('Run: memory: the tab ~' + Math.round(tabEstimate(s)) + (tabLimit(s) ? ' of ' + tabLimit(s) : '') +
+            ' MB: wasm ' + Math.round(vmMb(s)) + ' (touched ' + (s.touchedMb || '?') + ', size ' + s.wasmMb +
+            (madeMb ? ', made ' + madeMb : '') + '), workers ' + (s.workers || s.threads) + ' (threads ' + s.threads +
+            '), in use ' + Math.round(s.pm * s.budget / 1000) + ' MB');
+    }
+    if (s.pm > 0) {
+      ramFromMonitor = true;
+      var lim = tabLimit(s), est = tabEstimate(s);
+      showRam(s.pm * s.budget / 1000, s.threads, s.ios,
+              s.pm >= 900 || (lim ? est >= lim * 0.85 : s.ios && s.threads >= THREADS_WARN), est, lim);
+    }
+    if (memReloading || !running) return;
+    var limit = tabLimit(s), est = tabEstimate(s);
+    var byBudget = s.pm >= 900, byThreads = limit ? est >= limit * 0.85 : s.ios && s.threads >= THREADS_WARN;
+    if (!byBudget && !byThreads) {
+      if (memShown && s.pm < 800 && (!limit || est < limit * 0.8)) { $('memwarn').hidden = true; memShown = false; }
+      return;
+    }
+    if (memShown || Date.now() < memSnoozed) return;
+    memShown = true;
+    S.log('Run: low memory: ' + Math.round(s.pm / 10) + '% of the budget (' + s.budget + ' MB), ' + s.threads +
+          ' threads, wasm touched ' + (s.touchedMb || '?') + ' of ' + s.wasmMb + ' MB, the tab ~' + Math.round(est) +
+          (limit ? ' of ' + limit : '') + ' MB: offering a reload');
+    $('memtitle').textContent = 'Мало памяти';
+    $('memtext').textContent = (byBudget
+        ? 'Приложение заняло ' + Math.min(99, Math.round(s.pm / 10)) + '% памяти, которую ему даёт браузер.'
+        : 'Вкладка заняла около ' + Math.round(est) + ' МБ из ' + limit + ' (потоков: ' + s.threads +
+          '), и браузер может её закрыть.') +
+        ' Перезагрузка освободит память, приложение откроется там же, где было.';
+    $('memlater').hidden = false;
+    offerMemtest();
+    $('memwarn').hidden = false;
+  }
+  function memReload() {
+    if (memReloading) return;
+    memReloading = true;
+    $('memwarn').hidden = true;
+    S.log('Run: low memory: the user reloads');
+    status('Перезагрузка…', 0, 'Приложение сохраняет состояние.');
+    if (window.Module && typeof Module.arcMemUserRestart == 'function' && running) Module.arcMemUserRestart();
+    else freshStart('low memory');
+  }
+  $('memreload').onclick = memReload;
+  $('memlater').onclick = function () {
+    $('memwarn').hidden = true;
+    memShown = false;
+    memSnoozed = Date.now() + SNOOZE_MS;
+  };
+  var ALIVE = 'senses-run-alive';
+  function killedBefore() {
+    var was = null;
+    try { was = sessionStorage.getItem(ALIVE); } catch (e) {}
+    if (was !== pkg) return;
+    S.log('Run: the previous start of ' + pkg + ' in this tab ended without leaving the page (closed by the browser, likely for memory)');
+    $('memtitle').textContent = 'Вкладка была перезапущена';
+    $('memtext').textContent = 'Похоже, браузеру не хватило памяти, и он закрыл приложение. Если это повторяется, ' +
+        'нажимайте «Перезагрузить», когда SENSES предупредит о нехватке памяти.';
+    $('memlater').hidden = true;
+    offerMemtest();
+    $('memreload').textContent = 'Понятно';
+    $('memreload').onclick = function () {
+      $('memwarn').hidden = true;
+      $('memreload').textContent = 'Перезагрузить';
+      $('memreload').onclick = memReload;
+      $('memlater').hidden = false;
+    };
+    $('memwarn').hidden = false;
+  }
+  function markAlive() {
+    try { sessionStorage.setItem(ALIVE, pkg); } catch (e) {}
+  }
+  // Every way this page leaves on purpose forgets the mark first (pagehide
+  // alone came too late on an iPhone: the next page still saw it).
+  function forgetAlive() {
+    try { sessionStorage.removeItem(ALIVE); } catch (e) {}
+  }
+  function reloadPage() { forgetAlive(); location.reload(); }
+  // A fresh start of the app for memory: through the library's page, which
+  // is not cross-origin isolated (sw.js), so WebKit swaps the process and
+  // drops this one with all of the VM's memory at once; the library then opens
+  // the app again (?open=PKG&loops=1). A reload of this page instead stays in
+  // the same process: the next VM got 512 MB of the 1536 and the tab was
+  // closed seconds later (iPhone X, iOS 16.7).
+  function freshStart(why) {
+    S.log('Run: fresh start (' + why + '): through the library');
+    var q = backParams();
+    q.set('open', pkg);
+    q.set('loops', '1');
+    ['canvas2d', 'memdata', 'remotegl', 'jit', 'log'].forEach(function (k) { if (params.get(k)) q.set(k, params.get(k)); });
+    replacePage(home + '?' + q);
+  }
+  function replacePage(url) { forgetAlive(); location.replace(url); }
+  window.addEventListener('pagehide', forgetAlive);
+
+  function start(meta, stackId) {
+    runMeta = meta;
+    killedBefore();
+    markAlive();
+    var jitOn = params.get('jit') ? params.get('jit') !== '0' : meta.jit !== false;
+    S.log('Run: JIT ' + (jitOn ? 'on' : 'off'));
+    var netOn = params.get('net') ? params.get('net') !== '0' : meta.net !== false;
+    S.log('Run: network ' + (netOn ? 'on' : 'off'));
+    var gmsOn = params.get('gms') ? params.get('gms') !== '0' : meta.gms !== false;
+    S.log('Run: Google services ' + (gmsOn ? 'on (if added for the system)' : 'off'));
+    runStack = stackId;
+    var system = SYSTEMS[stackId], info = S.STACKS[stackId];
+    $('title').textContent = meta.label || pkg;
+    $('os').textContent = info.name + (meta.versionName ? ' · версия ' + meta.versionName : '') +
+                          (jitOn ? '' : ' · без JIT') + (netOn ? '' : ' · без сети') +
+                          (gmsOn ? '' : ' · без сервисов Google');
+    document.title = (meta.label || pkg) + ' — SENSES';
+    landscape = params.get('landscape') === '1';
+    pickDisplaySize();
+    fit();
+    var args = system.args(pkg);
+    S.log('Run: ' + system.script + ' ' + args.join(' ') + ' · display ' + canvas.width + 'x' + canvas.height +
+          (landscape ? ' (landscape)' : '') + ' · ' + navigator.userAgent);
+    status('Загрузка ' + info.name + '…', 0, 'Около ' + info.mb + ' МБ при первом запуске, потом из памяти устройства.');
+    // The VM's memory first (see "memory"), then the VM.
+    memoryOf(system.script).then(function (want) {
+      if (!want) { load(); return; }
+      makeMemory(want, !!system.touched, function (got) {
+        if (!got) {
+          fail('Не хватает памяти', 'Устройство за минуту не отдало память для системы. Закройте другие приложения ' +
+               'и SENSES Apps (смахните вверх в переключателе), затем откройте снова.');
+          return;
+        }
+        handed = got;
+        status('Загрузка ' + info.name + '…', 0, 'Около ' + info.mb + ' МБ при первом запуске, потом из памяти устройства.');
+        load();
+      });
+    });
+    function load() {
+      var dir = system.script.replace(/[^/]*$/, '');
+      Module = window.Module = {
+        arguments: args,
+        // The memory made above (makeMemory): its maximum is the ceiling.
+        arcwasmMemoryCap: handed ? handed.maximum : 0,
+        // The device's tab limit for the VM's memory plan (see "low memory").
+        arcMemLimit: devLimit,
+        preRun: [function () {
+          // (the input exists once the script runs)
+          if (Module.arcwasmInput) Module.arcwasmInput.turn = canvasTurn();
+          ENV.ARC_DATA_DIR = 'senses/data/' + stackId;
+          ENV.ARC_APPS_DIR = 'senses/apps';
+          ENV.ARC_JIT = jitOn ? '1' : '0';
+          // The app's network (shim/posix_translation/net_bridge.h).
+          ENV.ARC_NET = netOn ? '1' : '0';
+          // Google's services the user added for this system (/data/google):
+          // left out with 0 (framework/java-arcwasm/arcwasm/server/Gms.java).
+          ENV.ARC_GMS = gmsOn ? '1' : '0';
+          // An .xapk's OBB files (topic apks-split): the VM mounts the
+          // library's PACKAGE/obb read-only as the app's OBB directory.
+          if (meta.obb && meta.obb.length) ENV.ARC_APP_OBB = pkg;
+          var max = Module.arcwasmMemoryMax || 0, heap = heapFor(system.vm, max);
+          if (heap) args.unshift(heap);
+          S.log('Run: wasm memory up to ' + Math.round(max / 1048576) + ' MB' + (heap ? ', Java heap ' + heap : ''));
+          watchStorage();
+        }],
+        locateFile: function (path, prefix) { return (prefix || dir) + path; },
+        canvas: canvas,
+        print: function (t) { S.log(t); watchLog(t); },
+        printErr: function (t) { S.log(t); watchLog(t); },
+        setStatus: function (text) {
+          var m = /\((\d+)\/(\d+)\)/.exec(text);
+          if (m && !failed && !bootStart)
+            status('Загрузка ' + info.name + '… ' + S.size(+m[1]) + ' из ' + S.size(+m[2]), m[1] / m[2],
+                   'Только при первом запуске, потом из памяти устройства.');
+        },
+        onRuntimeInitialized: function () {
+          bootStart = performance.now();
+          running = true;
+          ticker();
+          setInterval(updateMemory, 5000);
+        },
+        arcMemPressure: memPressure,
+        onExit: function (code) {
+          running = false;
+          if (!leaving) { if (spaceRefused) failFull(); else fail('Система завершилась (код ' + code + ')'); }
+        },
+        onAbort: function (what) {
+          running = false;
+          if (isOutOfMemory(String(what)) || afterHeapFull(String(what))) outOfMemory(String(what));
+          else if (spaceRefused) failFull();
+          else fail('Сбой системы', String(what));
+        },
+        // Over the memory budget (topic mem-budget), after the task's state
+        // is saved: a new VM; the app comes back where it was.
+        arcMemRestart: function () {
+          S.log('Run: memory budget: restarting the system (the app comes back with its saved state)');
+          setTimeout(function () { freshStart('memory budget'); }, 100);
+        },
+      };
+      var s = document.createElement('script');
+      var query = ['canvas2d', 'memdata', 'remotegl', 'opfstrace', 'opfsgrow'].filter(function (k) {
+        return params.get(k) === '1' || (k == 'opfsgrow' && +params.get(k) > 0) || (k === 'memdata' && params.get(k) === 'mem');
+      }).map(function (k) { return k + '=' + params.get(k); });
+      // ?opfsfree=MB on this page (tests) over the measured budget; =0 is
+      // none at all, =off no budget.
+      var given = params.get('opfsfree');
+      if (given !== 'off' && (given !== null ? /^-?\d+$/.test(given) : vmFree !== null)) {
+        query.push('opfsfree=' + (given !== null ? given : Math.floor(vmFree / MB)));
+        S.log('Run: storage budget of the VM ' + query[query.length - 1].slice(9) + ' MB');
+      }
+      query = query.join('&');
+      s.src = system.script + (query ? '?' + query : '');
+      s.onerror = function () { fail('Не удалось загрузить систему', 'Для первого запуска нужен интернет.'); };
+      // The /system image (.data). By default a Blob, not an ArrayBuffer
+      // (topic image-on-demand): the VM fills the pages it uses from it
+      // with range requests to its blob: URL (posix_translation/
+      // readonly_file.cc), so the image is neither in wasm memory whole nor
+      // in the tab's JavaScript heap -- a Blob's bytes are the browser's
+      // (WebKit's network process, Chrome's blob storage). The file
+      // packager gets an empty package. ?image=copy: as before, the image in
+      // one ArrayBuffer for the packager's loader (Module.getPreloadedPackage:
+      // its own download keeps the chunks as well as their copy, 65 MB more
+      // of the tab on an iPhone, docs/topics/ios-mem.md), copied whole into
+      // wasm memory. The script asks for the image when it runs, so it
+      // comes after it; the wasm compiles meanwhile.
+      var image = null, asBlob = params.get('image') !== 'copy';
+      var compiled = WebAssembly.compileStreaming(fetch(system.script.replace(/\.js$/, '.wasm')));
+      compiled.catch(function () {});
+      Module.getPreloadedPackage = function () { var b = image; image = null; return b; };
+      Module.instantiateWasm = function (imports, done) {
+        compiled.then(function (mod) {
+          return WebAssembly.instantiate(mod, imports).then(function (inst) { done(inst, mod); });
+        }).catch(function (e) { fail('Не удалось загрузить систему', String(e)); });
+        return {};
+      };
+      // A piece of the body, once it is in the Blob, is let go of at once
+      // (transfer, or a closed MessageChannel on iOS 16): left to the garbage
+      // collector, the pieces of a body from the network stayed in "JS VM
+      // Gigacage" (~100 MB on an iPhone X) at the first start of a new build.
+      function drop(buf) {
+        try {
+          if (typeof buf.transfer == 'function') buf.transfer(0);
+          else { var ch = new MessageChannel(); ch.port1.postMessage(buf, [buf]); ch.port1.close(); ch.port2.close(); }
+        } catch (e) {}
+      }
+      // Read in pieces, saying how much of it is there: from the network the
+      // first time, from the service worker's cache after that (a few
+      // seconds). A Blob grows by 8 MB at a time (the pieces in between are
+      // short-lived); an ArrayBuffer is one buffer of the image's size (no
+      // second copy).
+      fetch(system.script.replace(/\.js$/, '.data')).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        var total = +r.headers.get('Content-Length') || 0;
+        if (!r.body || !total) return asBlob ? r.blob() : r.arrayBuffer();
+        var buf = asBlob ? null : new Uint8Array(total), blob = asBlob ? new Blob([]) : null;
+        var parts = [], inParts = 0, got = 0, reader = r.body.getReader(), shownAt = 0;
+        function show() {
+          if (failed || bootStart) return;
+          status('Загрузка ' + info.name + ' — ' + S.size(got) + ' из ' + S.size(total), got / total,
+                 'Первый раз из сети, потом из памяти устройства.');
+        }
+        show();
+        return (function pump() {
+          return reader.read().then(function (c) {
+            if (c.done) {
+              show();
+              if (asBlob) {
+                blob = new Blob([blob].concat(parts));
+                parts.forEach(function (p) { drop(p.buffer); });
+                return blob;
+              }
+              return got === total ? buf.buffer : buf.slice(0, got).buffer;
+            }
+            if (asBlob) {
+              parts.push(c.value);
+              inParts += c.value.length;
+              if (inParts >= 8 << 20) {
+                blob = new Blob([blob].concat(parts));
+                parts.forEach(function (p) { drop(p.buffer); });
+                parts = []; inParts = 0;
+              }
+            } else {
+              if (got + c.value.length > total) {  // longer than it said: grow once
+                var bigger = new Uint8Array(Math.max(total * 2, got + c.value.length));
+                bigger.set(buf.subarray(0, got));
+                buf = bigger; total = bigger.length;
+              }
+              buf.set(c.value, got);
+            }
+            got += c.value.length;
+            var now = performance.now();
+            if (now - shownAt > 100) { shownAt = now; show(); }
+            return pump();
+          });
+        })();
+      }).then(function (b) {
+        if (!asBlob) { image = b; return; }
+        Module.arcImageSource = {url: URL.createObjectURL(b), size: b.size, blob: b};
+        image = new ArrayBuffer(0);
+        S.log('Run: the system image as a Blob (' + Math.round(b.size / 1048576) + ' MB), its pages read when first used');
+      }, function (e) {
+        S.log('Run: image download: ' + e + ' (the loader tries itself)');
+      }).then(function () { document.body.appendChild(s); });
+    }
+  }
+
+  function boot() {
+    if (!window.isSecureContext) {
+      fail('Нужно открыть по HTTPS', 'Страница открыта по ' + location.protocol + '.');
+      return;
+    }
+    status('Подготовка…', null);
+    var meta = null;
+    SensesOrigins.config().then(function (cfg) {
+      var O = SensesOrigins, given = params.get('home');
+      if (given && O.trusted(O.originOf(given), cfg) && given !== O.library()) O.setHome(given);
+      var kept = O.home();
+      if (kept && kept !== O.library() && O.trusted(O.originOf(kept), cfg)) home = kept;
+      if (home !== './') S.log('Run: on the app\'s own origin ' + location.host + ', library ' + home);
+      if (!pkg) { replacePage(home); return new Promise(function () {}); }
+      return SensesStore.init();
+    }).then(function () { return SensesStore.get(pkg); }).catch(function () { return null; })
+    .then(function (m) {
+      meta = m;
+      if (meta) SensesStore.readIcon(pkg).then(function (url) { if (url) $('icon').src = url; });
+      return S.serviceWorker(function () { status('Обновление…', null); });
+    }).then(function (controlled) {
+      S.log('Run: controlled=' + controlled + ' isolated=' + window.crossOriginIsolated + ' standalone=' + S.standalone);
+      if (!window.crossOriginIsolated) {
+        if (controlled && !sessionStorage.getItem('senses-reloaded')) {
+          sessionStorage.setItem('senses-reloaded', '1');
+          reloadPage();
+          return;
+        }
+        fail('Браузер не поддерживает нужные функции', 'Нужен Safari или Chrome свежей версии (SharedArrayBuffer).');
+        return;
+      }
+      sessionStorage.removeItem('senses-reloaded');
+      // (an app in the library without a system ran on 8.1, the default
+      // before topic a10-default: it keeps 8.1 and its /data there)
+      var stackId = params.get('stack') || params.get('appstack') || (meta && (meta.stack || 'a81')) || S.DEFAULT_STACK;
+      if (!SYSTEMS[stackId]) stackId = S.DEFAULT_STACK;
+      if (!meta && !params.get('stack')) {
+        fail('Приложение не установлено', pkg + ' нет в библиотеке.');
+        return;
+      }
+      checkStorage(stackId).then(function (ok) {
+        if (ok) start(meta || {package: pkg, label: pkg}, stackId);
+      });
+    });
+  }
+  fit();
+  boot();
+})();
+</script>
+</body>
+</html>
