@@ -64,9 +64,11 @@
     </div>
 
     <div id="steps" hidden>
+      <p class="card" id="https_note" data-t="https_note" hidden></p>
       <p data-t="why"></p>
       <div id="ios" hidden>
         <p class="bad" id="not_safari" data-t="not_safari" hidden></p>
+        <p class="muted" data-t="ios_warning"></p>
         <h2 data-t="step1"></h2>
         <a class="button" href="senses-ca.mobileconfig" data-t="download_profile"></a>
         <p data-t="ios1"></p>
@@ -91,6 +93,7 @@
       <p data-t="come_back"></p>
       <div class="card status"><span class="dot wait"></span><span data-t="waiting"></span></div>
       <p class="muted" data-t="scope"></p>
+      <a class="button second" id="open_anyway" data-t="open_anyway" hidden></a>
     </div>
     <p class="muted" id="host_note" hidden></p>
   </section>
@@ -151,6 +154,11 @@ var T = {
   come_back: ['Come back to this page: it notices the certificate by itself and shows the <b>Open</b> button.',
               'Вернитесь на эту страницу: она сама заметит сертификат и покажет кнопку <b>«Открыть»</b>.'],
   waiting: ['Waiting for the certificate…', 'Жду сертификат…'],
+  ios_warning: ['Safari may open this address over https by itself and show “This Connection Is Not Private”. That is expected until the profile is installed: tap <b>Show Details</b> → <b>visit this website</b>. Once the profile is installed and trusted, the warning goes away.',
+                'Safari может сам открыть этот адрес по https и показать «Подключение не защищено». Это ожидаемо, пока профиль не установлен: нажмите <b>«Подробнее»</b> → <b>«Посетить веб-сайт»</b>. После установки профиля и включения доверия к нему предупреждение исчезает.'],
+  https_note: ['Safari warned that the connection is not private: that is expected until the profile below is installed — it is this computer\'s own certificate. Install the profile, then come back here.',
+               'Safari предупредил, что подключение не защищено: так и должно быть, пока не установлен профиль ниже, — это собственный сертификат вашего компьютера. Установите профиль и вернитесь сюда.'],
+  open_anyway: ['The profile is installed and trusted: open SENSES Web Apps', 'Профиль уже установлен и включён: открыть SENSES Web Apps'],
   scope: ['The certificate was made on that computer and works only for home network addresses (10.x, 172.16–31.x, 192.168.x) and .local names, never for sites on the internet. Remove it any time: Settings → General → VPN &amp; Device Management → SENSES Web Apps → Remove Profile.',
           'Сертификат создан на том компьютере и действует только для адресов домашней сети (10.x, 172.16–31.x, 192.168.x) и имён .local, для сайтов в интернете — никогда. Удалить можно в любой момент: Настройки → Основные → VPN и управление устройством → SENSES Web Apps → Удалить профиль.'],
   by_address: ['This phone does not find the computer by name ({name}), so SENSES opens by address. If the router gives the computer another address, the apps will be at the old one: on the router, reserve this address for the computer.',
@@ -182,6 +190,13 @@ function report(state, host) {
     fetch('report', {method: 'POST', headers: {'Content-Type': 'application/json'},
                      body: JSON.stringify({state: state, host: host})}).catch(function () {});
   } catch (e) {}
+}
+function probeTrust() {
+  if (!navigator.serviceWorker) return Promise.resolve(false);
+  return Promise.race([
+    navigator.serviceWorker.register('probe-sw.js', {scope: 'probe/'}).then(function () { return true; },
+                                                                             function () { return false; }),
+    new Promise(function (resolve) { setTimeout(function () { resolve(false); }, 6000); })]);
 }
 function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) {} }
 
@@ -218,6 +233,10 @@ function phone() {
   if (before) tries.push(before);
   if (info.name && tries.indexOf(info.name) < 0) tries.push(info.name);
   if (info.ip && tries.indexOf(info.ip) < 0) tries.push(info.ip);
+  // Over https (Safari turned the http address into https and this page
+  // came past its certificate warning) an http request is mixed content and
+  // other names have no warning accepted: the name, else the address.
+  if (location.protocol === 'https:') return choose(before || info.name || info.ip || location.hostname);
   (function next(i) {
     if (i >= tries.length) return choose(info.ip || location.hostname, true);
     if (tries[i] === location.hostname) return choose(tries[i]);
@@ -237,18 +256,36 @@ function phone() {
     $('open').href = base + '/';
     $('open').onclick = function () { store('senses-host', host); store('senses-opened', '1'); };
     var shown = false;
+    function steps() {
+      if (shown) return;
+      shown = true;
+      report('steps', host);
+      $('checking').hidden = true;
+      $('steps').hidden = false;
+      $(ios ? 'ios' : android ? 'android' : 'other').hidden = false;
+      $('not_safari').hidden = !(ios && /CriOS|FxiOS|EdgiOS|OPiOS|YaBrowser/.test(ua));
+      if (location.protocol === 'https:') {
+        $('https_note').hidden = false;
+        $('open_anyway').hidden = false;
+        $('open_anyway').href = base + '/';
+      }
+    }
+    if (location.protocol === 'https:') {
+      // Here past the warning: a request may go through on the exception
+      // Safari made for this address, so only a service worker tells -- it
+      // is registered only when the certificate is trusted.
+      probeTrust().then(function (ok) {
+        if (ok) return ready();
+        steps();
+        // Back from Settings with the profile trusted: look again.
+        document.addEventListener('visibilitychange', function () { if (!document.hidden) location.reload(); });
+      });
+      return;
+    }
     (function check() {
-      if (location.protocol === 'https:') return ready();
       ping(base, 5000).then(function (ok) {
         if (ok) return ready();
-        if (!shown) {
-          shown = true;
-          report('steps', host);
-          $('checking').hidden = true;
-          $('steps').hidden = false;
-          $(ios ? 'ios' : android ? 'android' : 'other').hidden = false;
-          $('not_safari').hidden = !(ios && /CriOS|FxiOS|EdgiOS|OPiOS|YaBrowser/.test(ua));
-        }
+        steps();
         setTimeout(check, document.hidden ? 6000 : 2500);
       });
     })();

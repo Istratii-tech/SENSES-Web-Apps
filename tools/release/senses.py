@@ -8,10 +8,10 @@ Wi-Fi. Python 3.8+ and its standard library only; Windows, macOS and Linux.
 What it does (docs/topics/local-release.md):
 - serves the release's site/ (the PWA, tools/serve.py) over HTTPS with its own
   root CA, made on the first run; the phone installs and trusts that CA once,
-  from a setup page served over plain HTTP on a port of its own (PORT-1),
-  where TLS never answers: a browser that tries https there first (Safari's
-  upgrade of http addresses) falls back to http and reaches the page; plain
-  HTTP from the network to PORT is sent there too;
+  from a setup page on a port of its own (PORT-1), over plain HTTP and, for
+  a Safari that turns the http address into https by itself, over TLS too
+  (past its certificate warning: the one before the profile); plain HTTP
+  from the network to PORT is sent there too;
 - serves this computer's own browser over plain http://localhost (a secure
   context already);
 - gives the server a name on the home network (NAME.local, mdns.py), so a new
@@ -435,7 +435,7 @@ def run_server(args, state, site, version, port, setup_port, slots, name, addres
                                       extra=[('Content-Disposition', 'attachment; filename="senses-ca.crt"')])
             if rest == 'qr.svg':
                 return self.send_body(qr.QR(phone_url).svg().encode(), 'image/svg+xml')
-            files = {'': ('index.html', 'text/html; charset=utf-8')}
+            files = {'': ('index.html', 'text/html; charset=utf-8'), 'probe-sw.js': ('probe-sw.js', 'text/javascript')}
             if rest not in files:
                 return self.send_error(404)
             with open(os.path.join(setup_dir, files[rest][0]), 'rb') as f:
@@ -453,6 +453,13 @@ def run_server(args, state, site, version, port, setup_port, slots, name, addres
         plain = True
 
     class SetupHandler(PlainHandler):
+        setup_only = True
+
+    class SetupTLSHandler(Handler):
+        # Safari on some iPhones turns http://ADDR:SETUP_PORT into https and
+        # does not fall back when the connection closes: the setup page then
+        # comes over TLS too, past "This Connection Is Not Private" -- the one
+        # warning before the profile is installed.
         setup_only = True
 
     class Server(serve.Server):
@@ -477,17 +484,9 @@ def run_server(args, state, site, version, port, setup_port, slots, name, addres
             if args.verbose and not ipaddress.ip_address(client_address[0].split('%')[0]).is_loopback:
                 say(msg('conn', ip=client_address[0], port=self.server_address[1],
                         kind='TLS' if tls_hello else 'HTTP'))
-            if self.setup_only:
-                # Plain HTTP only: a TLS hello gets the connection closed, so
-                # a browser that tried https first falls back to http.
-                if tls_hello:
-                    return
-                request.settimeout(None)
-                SetupHandler(request, client_address, self, directory=site)
-                return
             if not tls_hello:
                 request.settimeout(None)
-                PlainHandler(request, client_address, self, directory=site)
+                (SetupHandler if self.setup_only else PlainHandler)(request, client_address, self, directory=site)
                 return
             try:
                 conn = tls.wrap_socket(request, server_side=True)
@@ -495,7 +494,7 @@ def run_server(args, state, site, version, port, setup_port, slots, name, addres
             except (OSError, ssl.SSLError):
                 return
             try:
-                Handler(conn, client_address, self, directory=site)
+                (SetupTLSHandler if self.setup_only else Handler)(conn, client_address, self, directory=site)
             finally:
                 try:
                     conn.close()
@@ -508,6 +507,7 @@ def run_server(args, state, site, version, port, setup_port, slots, name, addres
         srv.tls = tls  # what the relay checks pages' Origin against (https)
         servers.append(srv)
     setup = Server(('0.0.0.0', setup_port), SetupHandler)
+    setup.tls = tls
     setup.setup_only = True
     servers.append(setup)
     for srv in servers[1:]:
