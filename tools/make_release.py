@@ -25,7 +25,7 @@ RELEASE = os.path.join(ROOT, 'tools', 'release')
 
 SERVER = [('tools/release/senses.py', 'senses.py'), ('tools/release/certs.py', 'certs.py'),
           ('tools/release/qr.py', 'qr.py'), ('tools/release/mdns.py', 'mdns.py'),
-          ('tools/release/setup/index.html', 'setup/index.html'), ('tools/release/setup/probe-sw.js', 'setup/probe-sw.js'),
+          ('tools/release/setup/index.html', 'setup/index.html'),
           ('tools/serve.py', 'serve.py'), ('tools/net_relay.py', 'net_relay.py')]
 STARTERS = [('start-macos.command', 'Start SENSES.command'), ('start-windows.bat', 'Start SENSES.bat'),
             ('start-linux.sh', 'start-senses.sh')]

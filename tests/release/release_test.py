@@ -174,7 +174,8 @@ def query(name, qtype):
 def test_mdns():
     ip = lan_ip()
     name = 'senses-test-%d.local' % os.getpid()
-    r = mdns.Responder(name, ip)
+    check_name = name.replace('.local', '-check.local')
+    r = mdns.Responder([name, check_name], ip)
     if not r.start():
         check('mDNS responder starts', False, str(getattr(r, 'error', '')))
         return
@@ -182,6 +183,8 @@ def test_mdns():
     check('mDNS A answer', a is not None and socket.inet_aton(ip) in a)
     aaaa = query(name, 28)
     check('mDNS AAAA -> NSEC', aaaa is not None and struct.pack('>H', 47) in aaaa)
+    c = query(check_name, 1)
+    check('mDNS: the check name too', c is not None and socket.inet_aton(ip) in c)
     check('mDNS other names ignored', query('other-%d.local' % os.getpid(), 1) is None)
 
 
@@ -284,11 +287,40 @@ def test_server():
             check('setup port over TLS: nothing but the setup page', False)
         except urllib.error.HTTPError as e:
             check('setup port over TLS: nothing but the setup page', e.code == 302)
-        probe = urllib.request.urlopen('https://%s:%d/__setup/probe-sw.js' % (ip, setup), context=tls_ctx)
-        check('setup port: the trust probe worker', probe.headers['Content-Type'] == 'text/javascript')
+        # The check name (NAME-check.local, what the setup page and the
+        # library ask to tell trust from Safari's exception) is in the
+        # certificate: a TLS handshake for it verifies against the CA.
+        with open(os.path.join(state, 'config.json')) as f:
+            check_name = json.load(f)['name'] + '-check.local'
+        try:
+            with socket.create_connection((ip, port), timeout=5) as raw:
+                with tls_ctx.wrap_socket(raw, server_hostname=check_name) as conn:
+                    conn.sendall(('GET /__ping HTTP/1.0\r\nHost: %s:%d\r\n\r\n' % (check_name, port)).encode())
+                    reply = b''
+                    while True:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        reply += chunk
+            check('the check name is in the certificate', b'"senses": true' in reply, repr(reply[:80]))
+        except (ssl.SSLError, OSError) as e:
+            check('the check name is in the certificate', False, str(e))
         info = json.loads(urllib.request.urlopen('http://%s:%d/__setup/info.json' % (ip, setup)).read())
         check('setup info', info['port'] == port and info['setup_port'] == setup and info['version'] == 'test-1'
               and info['ip'] == ip, repr(info))
+        check('profile address', info.get('profile_url') == 'http://%s:%d/p' % (ip, setup), repr(info))
+        for scheme, opener_ctx in (('http', None), ('https', tls_ctx)):
+            r = urllib.request.urlopen('%s://%s:%d/p' % (scheme, ip, setup), context=opener_ctx)
+            check('short profile address /p over %s' % scheme,
+                  r.headers['Content-Type'] == 'application/x-apple-aspen-config' and b'PayloadContent' in r.read())
+        svg = urllib.request.urlopen('http://%s:%d/__setup/qr-profile.svg' % (ip, setup)).read()
+        check('profile QR is the code of the short address', svg == qr.QR(info['profile_url']).svg().encode())
+        if sys.platform == 'darwin':
+            png(qr.QR(info['profile_url']), os.path.join(TMP, 'profile.png'))
+            js = write(os.path.join(TMP, 'decode-profile.js'), DECODE_JS)
+            got = subprocess.run(['osascript', '-l', 'JavaScript', js, os.path.join(TMP, 'profile.png')],
+                                 capture_output=True, text=True).stdout.strip()
+            check('profile QR decodes to the short address', got == info['profile_url'], got)
         r = urllib.request.urlopen('http://%s:%d/__setup/senses-ca.mobileconfig' % (ip, setup))
         check('profile type', r.headers['Content-Type'] == 'application/x-apple-aspen-config')
         ctx = client_ctx(state)

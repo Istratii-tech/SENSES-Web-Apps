@@ -77,6 +77,8 @@ MESSAGES = {
              'На iPhone в той же сети Wi-Fi откройте «Камеру» и наведите на этот код:'),
     'or_type': ('or type in Safari:', 'или наберите в Safari:'),
     'library': ('SENSES itself (once the phone trusts this computer):', 'Сам SENSES (когда телефон доверяет компьютеру):'),
+    'profile_qr': ('The iPhone profile: if the page on the phone does not offer it, scan this code (or type {url}):',
+                   'Профиль для iPhone: если страница на телефоне не предлагает профиль, отсканируйте этот код (или наберите {url}):'),
     'conn': ('{ip} → port {port}: {kind}', '{ip} → порт {port}: {kind}'),
     'here': ('On this computer:', 'На этом компьютере:'),
     'name': ('Its name on the home network:', 'Имя в домашней сети:'),
@@ -307,7 +309,7 @@ def ensure_certificates(state, names, addresses):
             ca_key = certs.RSAKey.from_pem(f.read())
         # Not past the CA's own end (it would be refused then anyway).
         days = max(1, min(397, (ca_end - now).days - 1))
-        key, cert = certs.make_server(ca_key, ca_der, want['names'], want['addresses'], days)
+        key, cert = certs.make_server(ca_key, ca_der, list(names), want['addresses'], days)  # names[0]: the CN
         certs.write_private(state.p('server.key'), key.to_pem())
         with open(state.p('server.crt'), 'w') as f:
             f.write(certs.pem('CERTIFICATE', cert))
@@ -346,12 +348,14 @@ def run_server(args, state, site, version, port, setup_port, slots, name, addres
     info = {
         'senses': True, 'version': version, 'port': port, 'setup_port': setup_port, 'slots': slots,
         'name': name + '.local' if args.mdns_ok else None, 'ip': ip, 'addresses': addresses,
+        'check': name + '-check.local' if args.mdns_ok else None,
         'ca': certs.common_name(ca_der), 'os': 'mac' if MAC else 'windows' if WINDOWS else 'linux',
         'computer': platform.node().split('.')[0], 'stacks': stacks_of(site),
     }
     mobileconfig = certs.mobileconfig(ca_der, 'SENSES Web Apps (%s)' % info['computer'],
                                       'local.senses.' + re.sub(r'[^a-z0-9-]', '', name))
     phone_url = 'http://%s:%d/' % (ip, setup_port) if ip else 'http://localhost:%d/' % setup_port
+    profile_url = phone_url + 'p'
 
     class Handler(serve.IsolatedHandler):
         plain = False
@@ -389,6 +393,10 @@ def run_server(args, state, site, version, port, setup_port, slots, name, addres
                 return self.send_body(b'', 'text/plain', 302, [('Location', '/__setup/')])
             if path.startswith('/__setup/'):
                 return self.setup_page(path[len('/__setup/'):])
+            if path in ('/p', '/p/') and (self.setup_only or self.local_client()):
+                # The profile by a short address (and its own QR code): for a
+                # phone whose setup page does not offer it, typed by hand.
+                return self.setup_page('senses-ca.mobileconfig')
             if self.setup_only:
                 return self.send_body(b'', 'text/plain', 302, [('Location', '/__setup/')])
             if self.plain and not self.local_client():
@@ -426,7 +434,7 @@ def run_server(args, state, site, version, port, setup_port, slots, name, addres
 
         def setup_page(self, rest):
             if rest == 'info.json':
-                data = dict(info, clients=sorted(seen), phone_url=phone_url, reports=reports)
+                data = dict(info, clients=sorted(seen), phone_url=phone_url, profile_url=profile_url, reports=reports)
                 return self.send_body(json.dumps(data).encode(), 'application/json')
             if rest == 'senses-ca.mobileconfig':
                 return self.send_body(mobileconfig, 'application/x-apple-aspen-config')
@@ -435,7 +443,9 @@ def run_server(args, state, site, version, port, setup_port, slots, name, addres
                                       extra=[('Content-Disposition', 'attachment; filename="senses-ca.crt"')])
             if rest == 'qr.svg':
                 return self.send_body(qr.QR(phone_url).svg().encode(), 'image/svg+xml')
-            files = {'': ('index.html', 'text/html; charset=utf-8'), 'probe-sw.js': ('probe-sw.js', 'text/javascript')}
+            if rest == 'qr-profile.svg':
+                return self.send_body(qr.QR(profile_url).svg().encode(), 'image/svg+xml')
+            files = {'': ('index.html', 'text/html; charset=utf-8')}
             if rest not in files:
                 return self.send_error(404)
             with open(os.path.join(setup_dir, files[rest][0]), 'rb') as f:
@@ -665,14 +675,17 @@ def main(argv=None):
     args.mdns_ok = False
     responder = None
     if not args.no_mdns and addresses:
-        responder = mdns.Responder(name + '.local', addresses[0])
+        responder = mdns.Responder([name + '.local', name + '-check.local'], addresses[0])
         args.mdns_ok = responder.start()
     if args.reset_cert:
         reset_certificates(state)
         say(msg('reset'))
     # Only names and addresses the CA may vouch for (certs.PERMITTED_*): this
     # computer itself uses http://localhost, which needs no certificate.
-    ca_der = ensure_certificates(state, [name + '.local'], addresses)
+    # NAME-check.local: a name no one opens, so Safari never holds an exception
+    # for it; a request to it over https goes through only when the phone
+    # trusts the certificate itself (the setup page and the library ask it).
+    ca_der = ensure_certificates(state, [name + '.local', name + '-check.local'], addresses)
     srv, phone_url, info, seen = run_server(args, state, site, version, port, setup_port, slots, name, addresses,
                                             ca_der)
 
@@ -683,6 +696,10 @@ def main(argv=None):
         say(msg('scan'))
         print_qr(phone_url)
         say('  ' + msg('or_type') + ' ' + phone_url)
+        say()
+        say(msg('profile_qr', url=phone_url + 'p'))
+        print_qr(phone_url + 'p')
+        say()
         say('  ' + msg('library') + ' https://%s:%d/' % (name + '.local' if args.mdns_ok else addresses[0], port))
     say('  ' + msg('here') + ' http://localhost:%d/' % port)
     if args.mdns_ok:

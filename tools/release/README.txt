@@ -42,7 +42,9 @@ The page walks you through it:
      profile is installed: tap Show Details > visit this website (it is
      your own computer's certificate). Once the profile is installed and
      trusted, the warning goes away.
-  b. "Download the profile" > Allow > Close.
+  b. "Download the profile" > Allow > Close. If the page does not offer the
+     profile: scan the second QR code ("The iPhone profile", in the window
+     and on the computer's page) or open http://ADDRESS:8499/p.
   c. Settings > Profile Downloaded > Install > passcode > Install > Done.
   d. Settings > General > About > Certificate Trust Settings > turn on
      "SENSES Web Apps CA (your computer)" > Continue.

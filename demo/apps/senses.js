@@ -116,13 +116,14 @@
   // worker takes over when a page asks (the library: at once; the app page:
   // before the system starts). -> Promise<controlled>
   function serviceWorker(onUpdating) {
+    checkTrust();
     if (!('serviceWorker' in navigator)) { untrusted(); return Promise.resolve(false); }
     // Safari 16 past the certificate warning: register() neither resolves
     // nor fails. 10 s without a worker in charge is the same answer.
     setTimeout(function () { if (!navigator.serviceWorker.controller) untrusted(); }, 10000);
     navigator.serviceWorker.addEventListener('controllerchange', function () {
       var bar = document.getElementById('senses-untrusted');
-      if (bar) bar.remove();
+      if (bar && bar.dataset.why === 'worker') bar.remove();
     });
     return navigator.serviceWorker.register('sw.js').then(function (reg) {
       if (!navigator.serviceWorker.controller) return navigator.serviceWorker.ready;
@@ -155,35 +156,73 @@
     }, function (e) { log('Senses: service worker: ' + e); untrusted(); return false; });
   }
 
-  // No service worker (or one that never takes the page) over https from the local release's server
-  // (tools/release/senses.py, which has /__setup/): the phone opened the
-  // library past Safari's "not private" warning, without trusting the
-  // computer's certificate -- no worker, no storage, no apps. Its setup page
-  // (plain HTTP, a port of its own) is where the phone installs the profile.
+  // The local release's server (tools/release/senses.py: it has
+  // /__setup/info.json) over https: does the phone trust its certificate?
+  // A phone that came past Safari's "not private" warning ("Visit Website")
+  // has an exception for this address, and under it the page, its requests
+  // and even its service worker work -- but not for another name. So the
+  // answer is a request to the server's check name (info.check,
+  // NAME-check.local, which no one opens): through = trusted; refused or no
+  // answer = not, and a bar sends the person to the setup page (plain HTTP,
+  // a port of its own) to install the profile. Without a check name (a
+  // server without mDNS) the service worker tells: none, failed, or not in
+  // charge after 10 s. "It is installed" hides the bar for good (a network
+  // that does not carry .local names).
+  var releaseInfo = null;
+  function release() {
+    if (!releaseInfo) {
+      releaseInfo = fetch('/__setup/info.json', {cache: 'no-store'}).then(function (r) {
+        return r.ok ? r.json() : null;
+      }).catch(function () { return null; });
+    }
+    return releaseInfo;
+  }
+  function checkTrust() {
+    if (location.protocol !== 'https:') return;
+    release().then(function (info) {
+      if (!info || !info.check) return;
+      var ctl = window.AbortController ? new AbortController() : null;
+      var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 6000);
+      fetch('https://' + info.check + ':' + info.port + '/__ping', {cache: 'no-store', signal: ctl && ctl.signal})
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) { clearTimeout(timer); if (!(j && j.senses)) untrustedBar(info, 'check'); },
+              function () { clearTimeout(timer); untrustedBar(info, 'check'); });
+    });
+  }
   function untrusted() {
-    if (location.protocol !== 'https:' || document.getElementById('senses-untrusted')) return;
-    fetch('/__setup/info.json', {cache: 'no-store'}).then(function (r) {
-      return r.ok ? r.json() : null;
-    }).then(function (info) {
-      if (!info || !info.setup_port || document.getElementById('senses-untrusted') ||
-          navigator.serviceWorker && navigator.serviceWorker.controller) return;
-      var bar = document.createElement('div');
-      bar.id = 'senses-untrusted';
-      bar.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:1000;padding:calc(12px + ' +
-          'env(safe-area-inset-top)) 16px 12px;background:#5c1f1b;color:#fff;font:15px/1.4 -apple-system,' +
-          'system-ui,sans-serif;text-align:center';
-      var link = document.createElement('a');
-      link.href = 'http://' + location.hostname + ':' + info.setup_port + '/';
-      link.textContent = 'Открыть страницу установки';
-      link.style.cssText = 'display:inline-block;margin-top:8px;padding:8px 16px;border-radius:18px;' +
-          'background:#fff;color:#000;font-weight:600;text-decoration:none';
-      bar.appendChild(document.createTextNode('Этот телефон ещё не доверяет компьютеру, поэтому ' +
-          'приложения здесь не заработают. Сначала установите профиль.'));
-      bar.appendChild(document.createElement('br'));
-      bar.appendChild(link);
-      document.body.appendChild(bar);
-      log('Senses: no service worker over https here: the setup page is ' + link.href);
-    }).catch(function () {});
+    if (location.protocol !== 'https:') return;
+    release().then(function (info) { if (info && !info.check) untrustedBar(info, 'worker'); });
+  }
+  function untrustedBar(info, why) {
+    try { if (localStorage.getItem('senses-trust-dismissed')) return; } catch (e) {}
+    if (!info.setup_port || document.getElementById('senses-untrusted')) return;
+    if (why === 'worker' && navigator.serviceWorker && navigator.serviceWorker.controller) return;
+    var bar = document.createElement('div');
+    bar.id = 'senses-untrusted';
+    bar.dataset.why = why;
+    bar.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:1000;padding:calc(12px + ' +
+        'env(safe-area-inset-top)) 16px 12px;background:#5c1f1b;color:#fff;font:15px/1.4 -apple-system,' +
+        'system-ui,sans-serif;text-align:center';
+    var button = 'display:inline-block;margin:8px 4px 0;padding:8px 16px;border-radius:18px;font-weight:600;' +
+        'text-decoration:none;border:0;font-size:15px';
+    var link = document.createElement('a');
+    link.href = 'http://' + location.hostname + ':' + info.setup_port + '/';
+    link.textContent = 'Открыть страницу установки';
+    link.style.cssText = button + ';background:#fff;color:#000';
+    var hide = document.createElement('button');
+    hide.textContent = 'Профиль установлен — скрыть';
+    hide.style.cssText = button + ';background:transparent;color:#fff;box-shadow:inset 0 0 0 1px #fff8';
+    hide.onclick = function () {
+      try { localStorage.setItem('senses-trust-dismissed', '1'); } catch (e) {}
+      bar.remove();
+    };
+    bar.appendChild(document.createTextNode('Этот телефон ещё не доверяет компьютеру, поэтому ' +
+        'приложения здесь не заработают. Сначала установите профиль.'));
+    bar.appendChild(document.createElement('br'));
+    bar.appendChild(link);
+    bar.appendChild(hide);
+    document.body.appendChild(bar);
+    log('Senses: the phone does not trust the server (' + why + '): the setup page is ' + link.href);
   }
 
   // --- the app's network (topic app-network, docs/topics/app-network.md) -----------

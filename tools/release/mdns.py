@@ -1,6 +1,6 @@
 """A name for the server on the home network: a minimal mDNS responder
-(RFC 6762) that answers A queries for one .local name with this computer's
-LAN address.
+(RFC 6762) that answers A queries for a few .local names (the server's, and
+the setup page's check name) with this computer's LAN address.
 
 Why a name: the phone keeps the apps' data per origin (scheme, host, port).
 With an address in it, a router that hands the computer another address one
@@ -50,8 +50,10 @@ def _encode_name(name):
 
 
 class Responder:
-    def __init__(self, name, address):
-        self.name = name.lower().rstrip('.')
+    def __init__(self, names, address):
+        if isinstance(names, str):
+            names = [names]
+        self.names = [n.lower().rstrip('.') for n in names]
         self.address = address
         self.sock = None
         self.queries = 0
@@ -79,8 +81,8 @@ class Responder:
         threading.Thread(target=self._announce, daemon=True).start()
         return True
 
-    def _record(self, qtype=1):
-        name = _encode_name(self.name)
+    def _record(self, qname, qtype=1):
+        name = _encode_name(qname)
         if qtype == 28:
             # No IPv6 address: an NSEC saying the name has only an A record
             # (RFC 6762 6.1), so resolvers do not wait out the AAAA query.
@@ -92,7 +94,8 @@ class Responder:
         # Two unsolicited answers, a second apart (RFC 6762 8.3): caches that
         # held another address for the name drop it.
         for _ in range(2):
-            self._send(struct.pack('>HHHHHH', 0, 0x8400, 0, 1, 0, 0) + self._record(), (GROUP, PORT))
+            for n in self.names:
+                self._send(struct.pack('>HHHHHH', 0, 0x8400, 0, 1, 0, 0) + self._record(n), (GROUP, PORT))
             time.sleep(1)
 
     def _send(self, packet, dest):
@@ -120,14 +123,14 @@ class Responder:
             qname, pos = _read_name(data, pos)
             qtype, qclass = struct.unpack('>HH', data[pos:pos + 4])
             pos += 4
-            if qname != self.name or qtype not in (1, 28, 255) or qclass & 0x7fff not in (1, 255):
+            if qname not in self.names or qtype not in (1, 28, 255) or qclass & 0x7fff not in (1, 255):
                 continue
             self.queries += 1
-            record = self._record(28 if qtype == 28 else 1)
+            record = self._record(qname, 28 if qtype == 28 else 1)
             if src[1] != PORT:
                 # A legacy one-shot query (RFC 6762 6.7): answered to its
                 # sender, with its id and question.
-                q = _encode_name(self.name) + struct.pack('>HH', qtype, 1)
+                q = _encode_name(qname) + struct.pack('>HH', qtype, 1)
                 self._send(struct.pack('>HHHHHH', qid, 0x8400, 1, 1, 0, 0) + q + record, src)
                 continue
             packet = struct.pack('>HHHHHH', 0, 0x8400, 0, 1, 0, 0) + record

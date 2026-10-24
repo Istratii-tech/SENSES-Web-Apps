@@ -27,6 +27,8 @@ Requests and questions: issues of this repository or `https://t.me/istratii_tech
 4. На iPhone в той же сети Wi-Fi наведите «Камеру» на QR-код. Один раз для телефона страница проведёт по
    шагам: «Скачать профиль» → Настройки → «Профиль загружен» → «Установить» → Основные → Об этом
    устройстве → «Доверие сертификатам» → включить сертификат SENSES. Затем — «Открыть SENSES Web Apps».
+   Если страница не предлагает профиль — отсканируйте второй QR-код «Профиль для iPhone» (в окне и на
+   странице компьютера) или откройте `http://АДРЕС:8499/p`.
 5. **Предупреждение Safari.** Safari может сам открыть адрес по https и показать «Подключение не защищено».
    Это ожидаемо, пока профиль не установлен: нажмите «Подробнее» → «Посетить веб-сайт» (это сертификат
    вашего же компьютера). После установки профиля и включения доверия к нему предупреждение исчезает.
@@ -44,6 +46,8 @@ How to use SENSES Web Apps
 4. On your iPhone, on the same Wi-Fi, point the Camera at the QR code. Once per phone the page walks you
    through it: Download the profile → Settings → Profile Downloaded → Install → General → About →
    Certificate Trust Settings → turn on the SENSES certificate. Then "Open SENSES Web Apps".
+   If the page does not offer the profile, scan the second QR code, "The iPhone profile" (in the window and
+   on the computer's page), or open `http://ADDRESS:8499/p`.
 5. **Safari's warning.** Safari may open the address over https by itself and show "This Connection Is Not
    Private". That is expected until the profile is installed: tap Show Details → visit this website (it is
    your own computer's certificate). Once the profile is installed and trusted, the warning goes away.
