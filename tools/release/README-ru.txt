@@ -107,4 +107,5 @@ ca.key и server.key может читать только ваш пользов�
 
 Параметры: --port N, --no-browser, --lang en|ru, --verbose (python3 server/senses.py --help).
 
-Лицензии: NOTICE.txt и папка licenses/.
+Лицензии: сам SENSES Web Apps — под GNU AGPL v3 (LICENSE.txt); входящие в него компоненты —
+NOTICE.txt и папка licenses/. Исходники: https://github.com/Istratii-tech/SENSES-Web-Apps
