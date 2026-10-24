@@ -97,6 +97,8 @@ Unpack the new release (anywhere, even over the old folder) and start it the
 same way. It keeps the same certificate, port and name (kept in your user
 settings folder, see below), so the phone keeps its apps and their data; the
 phone updates SENSES itself the next time you open it.
+Easier: the launcher (SENSES-Web-Apps-launcher-VERSION.zip on the Releases
+page) downloads new versions by itself, into the same settings folder.
 
 If the phone cannot connect
 ---------------------------
