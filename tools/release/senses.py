@@ -8,7 +8,10 @@ Wi-Fi. Python 3.8+ and its standard library only; Windows, macOS and Linux.
 What it does (docs/topics/local-release.md):
 - serves the release's site/ (the PWA, tools/serve.py) over HTTPS with its own
   root CA, made on the first run; the phone installs and trusts that CA once,
-  from a setup page served over plain HTTP on the same port;
+  from a setup page served over plain HTTP on a port of its own (PORT-1),
+  where TLS never answers: a browser that tries https there first (Safari's
+  upgrade of http addresses) falls back to http and reaches the page; plain
+  HTTP from the network to PORT is sent there too;
 - serves this computer's own browser over plain http://localhost (a secure
   context already);
 - gives the server a name on the home network (NAME.local, mdns.py), so a new
@@ -73,6 +76,8 @@ MESSAGES = {
     'scan': ('On your iPhone, on the same Wi-Fi, open the Camera and point it at this code:',
              'На iPhone в той же сети Wi-Fi откройте «Камеру» и наведите на этот код:'),
     'or_type': ('or type in Safari:', 'или наберите в Safari:'),
+    'library': ('SENSES itself (once the phone trusts this computer):', 'Сам SENSES (когда телефон доверяет компьютеру):'),
+    'conn': ('{ip} → port {port}: {kind}', '{ip} → порт {port}: {kind}'),
     'here': ('On this computer:', 'На этом компьютере:'),
     'name': ('Its name on the home network:', 'Имя в домашней сети:'),
     'no_name': ('No .local name ({err}): phones use the address.',
@@ -314,7 +319,7 @@ def ensure_certificates(state, names, addresses):
 
 # --- the server ------------------------------------------------------------------
 
-def run_server(args, state, site, version, port, slots, name, addresses, ca_der):
+def run_server(args, state, site, version, port, setup_port, slots, name, addresses, ca_der):
     os.environ['ARC_APP_PORTS'] = '%d-%d' % (port + 1, port + slots) if slots else ''
     os.environ['ARC_CACHE'] = '1'
     os.environ['ARC_NET_ECHO'] = '0'
@@ -339,17 +344,18 @@ def run_server(args, state, site, version, port, slots, name, addresses, ca_der)
     seen = {}
     reports = {}  # client address -> the setup page's state there
     info = {
-        'senses': True, 'version': version, 'port': port, 'slots': slots,
+        'senses': True, 'version': version, 'port': port, 'setup_port': setup_port, 'slots': slots,
         'name': name + '.local' if args.mdns_ok else None, 'ip': ip, 'addresses': addresses,
         'ca': certs.common_name(ca_der), 'os': 'mac' if MAC else 'windows' if WINDOWS else 'linux',
         'computer': platform.node().split('.')[0], 'stacks': stacks_of(site),
     }
     mobileconfig = certs.mobileconfig(ca_der, 'SENSES Web Apps (%s)' % info['computer'],
                                       'local.senses.' + re.sub(r'[^a-z0-9-]', '', name))
-    phone_url = 'http://%s:%d/' % (ip, port) if ip else 'http://localhost:%d/' % port
+    phone_url = 'http://%s:%d/' % (ip, setup_port) if ip else 'http://localhost:%d/' % setup_port
 
     class Handler(serve.IsolatedHandler):
         plain = False
+        setup_only = False
 
         def local_client(self):
             host = (self.headers.get('Host') or '').rpartition(':')[0] or self.headers.get('Host', '')
@@ -383,9 +389,14 @@ def run_server(args, state, site, version, port, slots, name, addresses, ca_der)
                 return self.send_body(b'', 'text/plain', 302, [('Location', '/__setup/')])
             if path.startswith('/__setup/'):
                 return self.setup_page(path[len('/__setup/'):])
-            if self.plain and not self.local_client():
-                # A phone that does not trust the CA yet: only the setup page.
+            if self.setup_only:
                 return self.send_body(b'', 'text/plain', 302, [('Location', '/__setup/')])
+            if self.plain and not self.local_client():
+                # A phone that does not trust the CA yet: to the setup page,
+                # on its own port.
+                host = (self.headers.get('Host') or ip or 'localhost').rsplit(':', 1)[0]
+                return self.send_body(b'', 'text/plain', 302,
+                                      [('Location', 'http://%s:%d/__setup/' % (host, setup_port))])
             return super().do_GET()
 
         def do_HEAD(self):
@@ -394,7 +405,7 @@ def run_server(args, state, site, version, port, slots, name, addresses, ca_der)
         def do_POST(self):
             if urllib.parse.urlsplit(self.path).path == '/__setup/report':
                 return self.report()
-            if self.plain and not self.local_client():
+            if self.setup_only or (self.plain and not self.local_client()):
                 return self.send_error(404)
             return super().do_POST()
 
@@ -441,10 +452,14 @@ def run_server(args, state, site, version, port, slots, name, addresses, ca_der)
     class PlainHandler(Handler):
         plain = True
 
+    class SetupHandler(PlainHandler):
+        setup_only = True
+
     class Server(serve.Server):
         """HTTPS and plain HTTP on the same port: a TLS connection starts with
         a handshake record (0x16), plain HTTP with a method name."""
         daemon_threads = True
+        setup_only = False
 
         def handle_error(self, request, client_address):
             if args.verbose:
@@ -458,7 +473,19 @@ def run_server(args, state, site, version, port, slots, name, addresses, ca_der)
                 return
             if not first:
                 return
-            if first[0] != 0x16:
+            tls_hello = first[0] == 0x16
+            if args.verbose and not ipaddress.ip_address(client_address[0].split('%')[0]).is_loopback:
+                say(msg('conn', ip=client_address[0], port=self.server_address[1],
+                        kind='TLS' if tls_hello else 'HTTP'))
+            if self.setup_only:
+                # Plain HTTP only: a TLS hello gets the connection closed, so
+                # a browser that tried https first falls back to http.
+                if tls_hello:
+                    return
+                request.settimeout(None)
+                SetupHandler(request, client_address, self, directory=site)
+                return
+            if not tls_hello:
                 request.settimeout(None)
                 PlainHandler(request, client_address, self, directory=site)
                 return
@@ -480,6 +507,9 @@ def run_server(args, state, site, version, port, slots, name, addresses, ca_der)
         srv = Server(('0.0.0.0', p), Handler)
         srv.tls = tls  # what the relay checks pages' Origin against (https)
         servers.append(srv)
+    setup = Server(('0.0.0.0', setup_port), SetupHandler)
+    setup.setup_only = True
+    servers.append(setup)
     for srv in servers[1:]:
         threading.Thread(target=srv.serve_forever, daemon=True).start()
     return servers[0], phone_url, info, seen
@@ -505,7 +535,7 @@ def device_name(agent):
 
 # --- the computer -------------------------------------------------------------------
 
-def firewall_hints(port, slots):
+def firewall_hints(port, setup_port, slots):
     hints = []
     try:
         if MAC:
@@ -522,7 +552,7 @@ def firewall_hints(port, slots):
             if 'Public' in out and 'Private' not in out and 'Domain' not in out:
                 hints.append(msg('fw_win_public'))
         else:
-            hints.append(msg('fw_linux', ports='%d:%d' % (port, port + slots) if slots else str(port)))
+            hints.append(msg('fw_linux', ports='%d:%d' % (min(port, setup_port), max(port + slots, setup_port))))
     except Exception:
         pass
     return hints
@@ -554,6 +584,7 @@ def main(argv=None):
     global LANG
     ap = argparse.ArgumentParser(description='SENSES Web Apps: a server for your phone on your home network.')
     ap.add_argument('--port', type=int, help='the port (first run: 8500 or the next free one; then kept)')
+    ap.add_argument('--setup-port', type=int, help='the setup page\'s plain-HTTP port (first run: PORT-1; then kept)')
     ap.add_argument('--slots', type=int, help='apps\' own origins: ports PORT+1..PORT+SLOTS (default 16)')
     ap.add_argument('--site', help='the site folder (default: site/ next to server/)')
     ap.add_argument('--state', help='the settings folder (CA, port, name, logs)')
@@ -598,20 +629,25 @@ def main(argv=None):
         if not args.no_browser:
             webbrowser.open('http://localhost:%d/__setup/' % port)
         return 0
+    setup_port = args.setup_port or state.config.get('setup_port')
     if port:
-        busy = [p for p in range(port, port + slots + 1) if not port_free(p)]
+        # (A settings folder from before the setup port had its own: PORT-1,
+        # else the first port after the slots.)
+        if not setup_port:
+            setup_port = port - 1 if port_free(port - 1) else port + slots + 1
+        busy = [p for p in [setup_port] + list(range(port, port + slots + 1)) if not port_free(p)]
         if busy:
             say(msg('port_busy', port=busy[0]))
             return 3
     else:
         for base in range(DEFAULT_PORT, 10000 - slots, 100):
-            if all(port_free(p) for p in range(base, base + slots + 1)):
-                port = base
+            if all(port_free(p) for p in range(base - 1, base + slots + 1)):
+                port, setup_port = base, setup_port or base - 1
                 break
         else:
             say(msg('no_ports'))
             return 3
-    state.config['port'], state.config['slots'] = port, slots
+    state.config['port'], state.config['setup_port'], state.config['slots'] = port, setup_port, slots
     old = state.config.get('version')
     if old and old != version:
         say(msg('updated', old=old, new=version))
@@ -637,7 +673,8 @@ def main(argv=None):
     # Only names and addresses the CA may vouch for (certs.PERMITTED_*): this
     # computer itself uses http://localhost, which needs no certificate.
     ca_der = ensure_certificates(state, [name + '.local'], addresses)
-    srv, phone_url, info, seen = run_server(args, state, site, version, port, slots, name, addresses, ca_der)
+    srv, phone_url, info, seen = run_server(args, state, site, version, port, setup_port, slots, name, addresses,
+                                            ca_der)
 
     say()
     say(msg('running'))
@@ -646,13 +683,14 @@ def main(argv=None):
         say(msg('scan'))
         print_qr(phone_url)
         say('  ' + msg('or_type') + ' ' + phone_url)
+        say('  ' + msg('library') + ' https://%s:%d/' % (name + '.local' if args.mdns_ok else addresses[0], port))
     say('  ' + msg('here') + ' http://localhost:%d/' % port)
     if args.mdns_ok:
         say('  ' + msg('name') + ' %s.local' % name)
     elif addresses and not args.no_mdns:
         say('  ' + msg('no_name', err=getattr(responder, 'error', '?')))
     say()
-    for hint in firewall_hints(port, slots):
+    for hint in firewall_hints(port, setup_port, slots):
         say('! ' + hint)
     say(msg('keep_open'))
     say()

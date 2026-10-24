@@ -28,7 +28,8 @@ Unpack the zip anywhere and:
   "Private networks".
 * Linux: ./start-senses.sh
 
-A window shows a QR code and an address like http://192.168.x.y:8500/, and a
+A window shows a QR code and an address like http://192.168.x.y:8499/ (the
+setup page, plain http; SENSES itself is on https, port 8500), and a
 page with the same opens in your browser. Keep the window open while you use
 the apps; close it (or press Ctrl+C) to stop.
 
@@ -81,6 +82,10 @@ phone updates SENSES itself the next time you open it.
 
 If the phone cannot connect
 ---------------------------
+* Safari says "This Connection Is Not Private"? Do not go on: the phone does
+  not trust the computer yet, and apps would not work. Open the http:// address
+  with port 8499 (the setup page) and do step 2. If you went on anyway, SENSES
+  shows a red bar with the link to that page.
 * Same Wi-Fi? Guest networks and "client isolation" keep devices apart.
 * Firewall: allow Python (macOS: System Settings > Network > Firewall >
   Options; Windows: the network must be "Private").
@@ -104,5 +109,4 @@ new certificate (as --reset-cert): phones then need step 2 again.
 
 Options: --port N, --no-browser, --lang en|ru, --verbose (python3 server/senses.py --help).
 
-Licences: SENSES Web Apps itself is under the GNU AGPL v3 (LICENSE.txt); the components
-it includes — NOTICE.txt and licenses/. Source: https://github.com/Istratii-tech/SENSES-Web-Apps
+Licences: NOTICE.txt and licenses/.
