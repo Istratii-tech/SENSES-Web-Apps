@@ -221,6 +221,15 @@ def ws_status(host, port, path, origin, ctx):
     return status, body
 
 
+def client_ctx(state):
+    if ssl.OPENSSL_VERSION.startswith('LibreSSL 2.'):
+        # Apple's Python 3.9 (LibreSSL 2.8) cannot check a name-constrained
+        # CA as a client ("unsupported name constraint type"); browsers,
+        # iOS and macOS can (test_certs). Here only the server's side.
+        return ssl._create_unverified_context()
+    return ssl.create_default_context(cafile=os.path.join(state, 'ca.crt'))
+
+
 def test_server():
     site = os.path.join(TMP, 'site')
     os.makedirs(site)
@@ -264,24 +273,25 @@ def test_server():
             check('setup port: nothing but the setup page', e.code == 302 and e.headers['Location'] == '/__setup/')
         page = urllib.request.urlopen('http://%s:%d/__setup/' % (ip, setup)).read()
         check('setup page over HTTP on its port', b'SENSES Web Apps' in page)
+        # Over TLS too (a Safari that turns the http address into https by
+        # itself): the same setup page, and still nothing else.
+        tls_ctx = client_ctx(state)
+        page = urllib.request.urlopen('https://%s:%d/__setup/' % (ip, setup), context=tls_ctx).read()
+        check('setup port over TLS: the setup page', b'SENSES Web Apps' in page)
+        https_opener = urllib.request.build_opener(NoRedirect, urllib.request.HTTPSHandler(context=tls_ctx))
         try:
-            with socket.create_connection((ip, setup), timeout=5) as raw:
-                ssl._create_unverified_context().wrap_socket(raw, server_hostname=ip)
-            check('setup port: no TLS (a browser trying https falls back to http)', False)
-        except (ssl.SSLError, OSError):
-            check('setup port: no TLS (a browser trying https falls back to http)', True)
+            https_opener.open('https://%s:%d/index.html' % (ip, setup))
+            check('setup port over TLS: nothing but the setup page', False)
+        except urllib.error.HTTPError as e:
+            check('setup port over TLS: nothing but the setup page', e.code == 302)
+        probe = urllib.request.urlopen('https://%s:%d/__setup/probe-sw.js' % (ip, setup), context=tls_ctx)
+        check('setup port: the trust probe worker', probe.headers['Content-Type'] == 'text/javascript')
         info = json.loads(urllib.request.urlopen('http://%s:%d/__setup/info.json' % (ip, setup)).read())
         check('setup info', info['port'] == port and info['setup_port'] == setup and info['version'] == 'test-1'
               and info['ip'] == ip, repr(info))
         r = urllib.request.urlopen('http://%s:%d/__setup/senses-ca.mobileconfig' % (ip, setup))
         check('profile type', r.headers['Content-Type'] == 'application/x-apple-aspen-config')
-        ctx = ssl.create_default_context(cafile=os.path.join(state, 'ca.crt'))
-        if ssl.OPENSSL_VERSION.startswith('LibreSSL 2.'):
-            # Apple's Python 3.9 (LibreSSL 2.8) cannot check a name-constrained
-            # CA as a client ("unsupported name constraint type"); browsers,
-            # iOS and macOS can (test_certs). Here only the server's side.
-            print('note: %s cannot verify name constraints; HTTPS unverified here' % ssl.OPENSSL_VERSION)
-            ctx = ssl._create_unverified_context()
+        ctx = client_ctx(state)
         for host, p in ((ip, port), (ip, port + 2)):
             body = urllib.request.urlopen('https://%s:%d/index.html' % (host, p), context=ctx).read()
             check('HTTPS %s:%d with the CA' % (host, p), b'SENSES' in body)

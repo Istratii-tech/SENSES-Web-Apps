@@ -27,9 +27,12 @@ Requests and questions: issues of this repository or `https://t.me/istratii_tech
 4. На iPhone в той же сети Wi-Fi наведите «Камеру» на QR-код. Один раз для телефона страница проведёт по
    шагам: «Скачать профиль» → Настройки → «Профиль загружен» → «Установить» → Основные → Об этом
    устройстве → «Доверие сертификатам» → включить сертификат SENSES. Затем — «Открыть SENSES Web Apps».
-5. Скачайте Android-приложение (.apk, .apks, .xapk) на телефон, в SENSES нажмите «Установить приложение»
+5. **Предупреждение Safari.** Safari может сам открыть адрес по https и показать «Подключение не защищено».
+   Это ожидаемо, пока профиль не установлен: нажмите «Подробнее» → «Посетить веб-сайт» (это сертификат
+   вашего же компьютера). После установки профиля и включения доверия к нему предупреждение исчезает.
+6. Скачайте Android-приложение (.apk, .apks, .xapk) на телефон, в SENSES нажмите «Установить приложение»
    и выберите файл. Совет: «Поделиться» → «На экран „Домой“».
-6. Подробно — `README-ru.txt` в архиве выпуска.
+7. Подробно — `README-ru.txt` в архиве выпуска.
 
 How to use SENSES Web Apps
 
@@ -41,9 +44,12 @@ How to use SENSES Web Apps
 4. On your iPhone, on the same Wi-Fi, point the Camera at the QR code. Once per phone the page walks you
    through it: Download the profile → Settings → Profile Downloaded → Install → General → About →
    Certificate Trust Settings → turn on the SENSES certificate. Then "Open SENSES Web Apps".
-5. Download an Android app (.apk, .apks, .xapk) to the phone, tap "Install app" in SENSES and pick the
+5. **Safari's warning.** Safari may open the address over https by itself and show "This Connection Is Not
+   Private". That is expected until the profile is installed: tap Show Details → visit this website (it is
+   your own computer's certificate). Once the profile is installed and trusted, the warning goes away.
+6. Download an Android app (.apk, .apks, .xapk) to the phone, tap "Install app" in SENSES and pick the
    file. Tip: Share → Add to Home Screen.
-6. Details: `README.txt` in the release archive.
+7. Details: `README.txt` in the release archive.
 
 ## О сертификате / About the certificate
 

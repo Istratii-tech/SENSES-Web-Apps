@@ -37,11 +37,16 @@ the apps; close it (or press Ctrl+C) to stop.
 -------------------------------------
 Scan the QR code with the iPhone Camera (or type the address in Safari).
 The page walks you through it:
-  a. "Download the profile" > Allow > Close.
-  b. Settings > Profile Downloaded > Install > passcode > Install > Done.
-  c. Settings > General > About > Certificate Trust Settings > turn on
+  a. Safari's warning. Safari may open the address over https by itself and
+     show "This Connection Is Not Private". That is expected until the
+     profile is installed: tap Show Details > visit this website (it is
+     your own computer's certificate). Once the profile is installed and
+     trusted, the warning goes away.
+  b. "Download the profile" > Allow > Close.
+  c. Settings > Profile Downloaded > Install > passcode > Install > Done.
+  d. Settings > General > About > Certificate Trust Settings > turn on
      "SENSES Web Apps CA (your computer)" > Continue.
-  d. Back in Safari the page shows "Open SENSES Web Apps".
+  e. Back in Safari the page shows "Open SENSES Web Apps".
 (What this certificate is: "About the certificate" below.)
 
 Android: the page offers the certificate file instead; install it in
@@ -93,10 +98,11 @@ phone updates SENSES itself the next time you open it.
 
 If the phone cannot connect
 ---------------------------
-* Safari says "This Connection Is Not Private"? Do not go on: the phone does
-  not trust the computer yet, and apps would not work. Open the http:// address
-  with port 8499 (the setup page) and do step 2. If you went on anyway, SENSES
-  shows a red bar with the link to that page.
+* Safari says "This Connection Is Not Private"? On the setup page (port 8499)
+  that is expected before the profile: go on (Show Details > visit this
+  website). On SENSES itself (port 8500) it means the phone does not trust the
+  computer yet and apps would not work: open the setup page and do step 2. If
+  you went on there anyway, SENSES shows a red bar with the link to it.
 * Same Wi-Fi? Guest networks and "client isolation" keep devices apart.
 * Firewall: allow Python (macOS: System Settings > Network > Firewall >
   Options; Windows: the network must be "Private").
