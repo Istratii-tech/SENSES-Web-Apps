@@ -21,7 +21,7 @@ Requests and questions: issues of this repository or `https://t.me/istratii_tech
 
 **Какой файл качать.** Обычно — **запускатор** `SENSES-Web-Apps-launcher-ВЕРСИЯ.zip` (~35 КБ) из Releases
 этого репозитория. При каждом запуске он сам скачивает на компьютер последнюю версию SENSES Web Apps
-отсюда же (Android 10 — ~58 МБ, все системы — ~170 МБ; выбор при первом запуске), сверяет SHA-256 и
+отсюда же (Android 10 — ~58 МБ; все системы — ~170 МБ, по `--variant all`), сверяет SHA-256 и
 запускает; обновления приходят сами, сертификат и приложения на телефоне сохраняются. Полные архивы
 `…-android10.zip` и `…-all.zip` — для компьютера без интернета: их распаковывают и запускают так же
 (или отдают запускатору: `--install ПУТЬ.zip`).
@@ -29,7 +29,7 @@ Requests and questions: issues of this repository or `https://t.me/istratii_tech
 1. Скачайте запускатор (или полный архив) и распакуйте его на компьютере (macOS, Windows или Linux).
 2. Нужен Python 3.8 или новее (https://www.python.org/downloads/; в Windows отметьте «Add python.exe to PATH»).
 3. Запустите «Start SENSES.command» (macOS), «Start SENSES.bat» (Windows) или `./start-senses.sh` (Linux).
-   Запускатор в первый раз спросит, какие системы скачать, и покажет загрузку. Затем появится окно с
+   Запускатор скачает систему Android 10 и покажет загрузку. Затем появится окно с
    QR-кодом и адресом; не закрывайте его, пока пользуетесь приложениями.
 4. На iPhone в той же сети Wi-Fi наведите «Камеру» на QR-код. Один раз для телефона страница проведёт по
    шагам: «Скачать профиль» → Настройки → «Профиль загружен» → «Установить» → Основные → Об этом
@@ -50,7 +50,7 @@ How to use SENSES Web Apps
 
 **Which file to download.** Usually the **launcher**, `SENSES-Web-Apps-launcher-VERSION.zip` (~35 KB), from
 this repository's Releases. At each start it downloads the latest SENSES Web Apps from here to your
-computer (Android 10 ~58 MB, all systems ~170 MB; you choose at the first start), checks its SHA-256 and
+computer (Android 10 ~58 MB; all systems ~170 MB with `--variant all`), checks its SHA-256 and
 starts it; updates come by themselves, and the certificate and the phone's apps stay. The full archives
 `…-android10.zip` and `…-all.zip` are for a computer without internet: unpack and start them the same
 way (or give one to the launcher: `--install PATH.zip`).
@@ -58,7 +58,7 @@ way (or give one to the launcher: `--install PATH.zip`).
 1. Download the launcher (or a full archive) and unpack it on your computer (macOS, Windows or Linux).
 2. You need Python 3.8 or newer (https://www.python.org/downloads/; on Windows tick "Add python.exe to PATH").
 3. Start "Start SENSES.command" (macOS), "Start SENSES.bat" (Windows) or `./start-senses.sh` (Linux).
-   The launcher asks the first time which systems to download and shows the download. Then a window
+   The launcher downloads the Android 10 system and shows the download. Then a window
    shows a QR code and an address; keep it open while you use the apps.
 4. On your iPhone, on the same Wi-Fi, point the Camera at the QR code. Once per phone the page walks you
    through it: Download the profile → Settings → Profile Downloaded → Install → General → About →

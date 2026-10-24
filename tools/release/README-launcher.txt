@@ -30,9 +30,9 @@ Unpack the zip anywhere and:
   "Private networks".
 * Linux: ./start-senses.sh
 
-The first time it asks which systems to download: 1 — Android 10 only
-(enough for most apps), 2 — all systems (Android 4.4, 6.0.1, 8.1 and 10).
-It downloads SENSES Web Apps with a progress bar, checks it and starts it.
+It downloads SENSES Web Apps with Android 10 (enough for most apps) with a
+progress bar, checks it and starts it. All systems (Android 4.4, 6.0.1, 8.1
+and 10): start it once with --variant all.
 
 A window shows a QR code and an address like http://192.168.x.y:8499/ (the
 setup page, plain http; SENSES itself is on https, port 8500), and a

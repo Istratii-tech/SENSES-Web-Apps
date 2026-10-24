@@ -42,10 +42,13 @@
   // -> {slots: [base URL], homes: [origin]} or null.
   function config() {
     if (!cfgPromise) {
-      cfgPromise = fetch('origins.json', {cache: 'no-store'}).then(function (r) {
+      // (sw.js answers within 3 s from its copy; without a worker in charge,
+      // a host out of reach must not hold the page either: no slots then)
+      var late = new Promise(function (resolve) { setTimeout(resolve, 5000, null); });
+      cfgPromise = Promise.race([fetch('origins.json', {cache: 'no-store'}).then(function (r) {
         if (!r.ok) return null;
         return r.json().then(normalize);
-      }).catch(function () { return null; });
+      }).catch(function () { return null; }), late]);
     }
     return cfgPromise;
   }

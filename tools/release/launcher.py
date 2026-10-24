@@ -60,14 +60,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 MESSAGES = {
     'checking': ('Checking for a new SENSES Web Apps…', 'Проверяю, нет ли новой версии SENSES Web Apps…'),
-    'choose': ('Which systems to download?\n'
-               '  1) Android 10 only ({a10}) — enough for most apps\n'
-               '  2) All systems: Android 4.4, 6.0.1, 8.1 and 10 ({all})\n'
-               'Type 1 or 2 and press Enter [1]: ',
-               'Какие системы скачать?\n'
-               '  1) Только Android 10 ({a10}) — хватает большинству приложений\n'
-               '  2) Все системы: Android 4.4, 6.0.1, 8.1 и 10 ({all})\n'
-               'Введите 1 или 2 и нажмите Enter [1]: '),
     'variant': ('Systems: {variant} (to change: --variant android10 or --variant all).',
                 'Системы: {variant} (сменить: --variant android10 или --variant all).'),
     'up_to_date': ('SENSES Web Apps {version} is the latest.', 'SENSES Web Apps {version} — последняя версия.'),
@@ -469,15 +461,6 @@ def pick(release, variant):
     return None, None, None
 
 
-def sizes(release):
-    out = {}
-    for a in release['assets']:
-        m = ASSET.match(a.get('name') or '')
-        if m:
-            out[m.group('variant')] = a.get('size') or 0
-    return out
-
-
 def choose_variant(release, state, args):
     if args.variant:
         if args.variant != state.launcher.get('variant'):
@@ -485,16 +468,10 @@ def choose_variant(release, state, args):
         return args.variant
     if state.launcher.get('variant') in VARIANTS:
         return state.launcher['variant']
-    variant = 'android10'
-    s = sizes(release) if release else {}
-    if sys.stdin and sys.stdin.isatty() and len(s) > 1:
-        try:
-            answer = input(msg('choose', a10=mb(s.get('android10', 0)), all=mb(s.get('all', 0)))).strip()
-        except EOFError:
-            answer = ''
-        variant = 'all' if answer == '2' else 'android10'
-    state.update(variant=variant)
-    return variant
+    # Android 10 unless asked otherwise: the system SENSES opens apps on, and
+    # enough for most of them (--variant all brings 4.4, 6.0.1 and 8.1).
+    state.update(variant='android10')
+    return 'android10'
 
 
 def install(state, fetcher, release, variant):

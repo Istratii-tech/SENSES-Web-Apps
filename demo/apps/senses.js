@@ -125,7 +125,17 @@
       var bar = document.getElementById('senses-untrusted');
       if (bar && bar.dataset.why === 'worker') bar.remove();
     });
-    return navigator.serviceWorker.register('sw.js').then(function (reg) {
+    // With a worker in charge, its registration is at hand without the
+    // network: register() fetches sw.js first, and with the computer out of
+    // reach (Wi-Fi off) iOS holds that request for a minute.
+    var registered = navigator.serviceWorker.register('sw.js');
+    if (navigator.serviceWorker.controller) {
+      registered.catch(function () {});
+      registered = Promise.race([registered, navigator.serviceWorker.getRegistration().then(function (reg) {
+        return reg || registered;
+      })]);
+    }
+    return registered.then(function (reg) {
       if (!navigator.serviceWorker.controller) return navigator.serviceWorker.ready;
       var checked = reg.update().catch(function () {});
       var timeout = new Promise(function (resolve) { setTimeout(resolve, 4000); });
