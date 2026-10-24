@@ -133,7 +133,8 @@ the components' source folders.
 * Tint from Dawn (BSD 3-Clause), SPIRV-Tools (Apache 2.0), SPIR-V Headers and
   the Vulkan headers (MIT/Apache 2.0).
 * The SENSES Web Apps shell (site/*.html, *.js), the WebAssembly ports and
-  the server (server/): SENSES Web Apps' own code (see the repository's LICENSE).
+  the server (server/): SENSES Web Apps' own code, under the GNU Affero General
+  Public License version 3 (LICENSE.txt). Its source: the repository below.
 
 Source code
 -----------
@@ -204,6 +205,8 @@ def main():
         text(os.path.join(RELEASE, 'start', src), os.path.join(stage, dst), crlf=dst.endswith('.bat'))
     for d in DOCS:
         text(os.path.join(RELEASE, d), os.path.join(stage, d), crlf=True)
+    # SENSES Web Apps' own code: GNU AGPL v3 (the same file as the repository's LICENSE).
+    text(os.path.join(RELEASE, 'publication', 'LICENSE'), os.path.join(stage, 'LICENSE.txt'), crlf=True)
     with open(os.path.join(stage, 'VERSION'), 'w') as f:
         f.write(a.version + '\n')
     rows = copy_licenses(stage, stacks, a.emsdk)
