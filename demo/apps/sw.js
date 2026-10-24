@@ -74,10 +74,33 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin || url.pathname.startsWith('/__')) return;
   // vm/: the VM side's test page (topic install8), not part of the app: as served.
   if (url.href.startsWith(new URL('vm/', self.registration.scope).href)) return;
-  // The apps' origins (origins.js): the host's, now; none offline.
-  if (url.href === new URL('origins.json', self.registration.scope).href) return;
+  // The apps' origins (origins.js): the host's, now; the last one kept when
+  // the host does not answer in time.
+  if (url.href === new URL('origins.json', self.registration.scope).href) {
+    event.respondWith(fresh(event, request, url));
+    return;
+  }
   event.respondWith(respond(event, request, url));
 });
+
+// The server's answer if it comes within 3 s, else the copy kept from the
+// last one. The library and the app's page wait for origins.json before
+// anything else, and with the computer out of reach (the phone's Wi-Fi off)
+// iOS holds a request to its .local name for a minute instead of failing it.
+async function fresh(event, request, url) {
+  const cache = await caches.open(SHELL_CACHE);
+  const key = url.origin + url.pathname;
+  const net = fetch(request).then((response) => {
+    if (response.ok) {
+      const kept = cache.put(key, response.clone()).catch(() => {});
+      try { event.waitUntil(kept); } catch (e) {}
+    }
+    return response;
+  }, () => null);
+  const response = await Promise.race([net, new Promise((resolve) => setTimeout(resolve, 3000, null))]);
+  if (response) return response;
+  return (await cache.match(key)) || new Response('', {status: 404});
+}
 
 async function respond(event, request, url) {
   const cache = await caches.open(cacheFor(request.url));
