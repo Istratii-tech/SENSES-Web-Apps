@@ -139,7 +139,8 @@ TECHNICAL.md    how the pieces fit together
 * **ARC** (`upstream/`) — BSD-style licence of The Chromium Authors (`upstream/src/LICENSE`).
 * **Emscripten runtime, musl, libc++, compiler-rt** — MIT, NCSA, Apache 2.0 with LLVM exception.
 * **Tint** (Dawn) — BSD 3-Clause; **SPIRV-Tools** — Apache 2.0; **SPIR-V and Vulkan headers** — MIT/Apache 2.0.
-* **SENSES Web Apps' own code** — see `LICENSE`.
+* **SENSES Web Apps' own code** — **GNU Affero General Public License v3.0** (`LICENSE`): if you change it and
+  distribute it or let people use it over a network, you must publish your changes under the same licence.
 
 Details: `NOTICE`.
 
