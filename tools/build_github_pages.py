@@ -219,14 +219,248 @@ def patch_vm_page(source: str, version: str) -> str:
     )
     text = replace_once(
         text,
+        '<div id="vm"></div>\n<div id="keys">',
+        '<div id="vm"></div>\n'
+        '<div id="startup" class="indeterminate" aria-live="off">\n'
+        '  <div class="loading-card">\n'
+        '    <div class="loading-kicker">ANDROID 10</div>\n'
+        '    <h2 id="loading-title" aria-live="polite">Запуск приложения…</h2>\n'
+        '    <div id="loading-bar" class="loading-bar" role="progressbar" aria-label="Загрузка Android 10" aria-valuemin="0" aria-valuemax="100" aria-valuetext="Подготовка Android 10"><span id="loading-fill"></span></div>\n'
+        '    <div class="loading-row"><span id="loading-detail">Подготовка системы…</span><span id="loading-percent">…</span></div>\n'
+        '    <div id="loading-count" class="loading-count">Подготовка Android · 0 с</div>\n'
+        '  </div>\n'
+        '</div>\n'
+        '<div id="keys">',
+        'startup progress overlay',
+    )
+    text = replace_once(
+        text,
         '  <pre id="log"></pre>\n</main>',
         '  <pre id="log"></pre>\n'
         '  <div class="site-foot"><a href="../">О проекте</a><a href="../LICENSE.txt">Лицензия</a></div>\n'
         '</main>',
         'page footer',
     )
+    text = replace_once(
+        text,
+        '  var orientations = {};  // package -> meta.orientation (refresh())\n  function start(pkg) {',
+        '  var orientations = {};  // package -> meta.orientation (refresh())\n'
+        '  var loadParts = { system: { loaded: 0, total: 0 }, wasm: { loaded: 0, total: 0 } };\n'
+        "  var startupStage = 'prepare', startupAt = 0, startupTimer = 0, startupPackage = '';\n"
+        '  function formatMB(bytes) {\n'
+        "    return (bytes / 1000000).toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 });\n"
+        '  }\n'
+        '  function showStartup(pkg) {\n'
+        '    startupPackage = pkg;\n'
+        "    startupStage = 'prepare';\n"
+        '    startupAt = performance.now();\n'
+        '    loadParts = { system: { loaded: 0, total: 0 }, wasm: { loaded: 0, total: 0 } };\n'
+        "    $('startup').classList.add('on', 'indeterminate');\n"
+        "    $('loading-title').textContent = 'Запуск ' + pkg;\n"
+        "    $('loading-detail').textContent = 'Подготовка Android 10…';\n"
+        "    $('loading-count').textContent = 'Подготовка Android · 0 с';\n"
+        "    $('loading-percent').textContent = '…';\n"
+        "    $('loading-fill').style.width = '0%';\n"
+        "    $('loading-bar').removeAttribute('aria-valuenow');\n"
+        "    $('loading-bar').setAttribute('aria-valuetext', 'Подготовка Android 10');\n"
+        '    if (startupTimer) clearInterval(startupTimer);\n'
+        '    startupTimer = setInterval(function () {\n'
+        "      if (!$('startup').classList.contains('on')) return;\n"
+        '      var seconds = Math.floor((performance.now() - startupAt) / 1000);\n'
+        "      if (startupStage === 'download') {\n"
+        '        var loaded = loadParts.system.loaded + loadParts.wasm.loaded;\n'
+        '        var total = loadParts.system.total + loadParts.wasm.total;\n'
+        "        $('loading-count').textContent = 'Загружено ' + formatMB(loaded) + (total ? ' / ' + formatMB(total) + ' МБ' : ' МБ') + ' · ' + seconds + ' с';\n"
+        '        return;\n'
+        '      }\n'
+        "      $('loading-count').textContent = (startupStage === 'runtime' ? 'Запуск приложения' : 'Подготовка Android') + ' · ' + seconds + ' с';\n"
+        '    }, 1000);\n'
+        '  }\n'
+        '  function hideStartup() {\n'
+        "    $('startup').classList.remove('on', 'indeterminate');\n"
+        '    if (startupTimer) clearInterval(startupTimer);\n'
+        '    startupTimer = 0;\n'
+        '  }\n'
+        '  function updateStartup(info) {\n'
+        '    if (!info || !loadParts[info.phase]) return;\n'
+        "    startupStage = 'download';\n"
+        '    var part = loadParts[info.phase];\n'
+        '    part.loaded = Math.max(part.loaded, Number(info.loaded) || 0);\n'
+        '    part.total = Math.max(part.total, Number(info.total) || 0);\n'
+        '    var loaded = loadParts.system.loaded + loadParts.wasm.loaded;\n'
+        '    var total = loadParts.system.total + loadParts.wasm.total;\n'
+        '    var determinate = loadParts.system.total > 0 && loadParts.wasm.total > 0;\n'
+        '    var percent = determinate ? Math.min(99, Math.floor(loaded * 100 / total)) : 0;\n'
+        "    $('loading-title').textContent = 'Запуск ' + startupPackage;\n"
+        "    $('loading-detail').textContent = 'Система ' + formatMB(loadParts.system.loaded) + ' МБ · WebAssembly ' + formatMB(loadParts.wasm.loaded) + ' МБ';\n"
+        "    $('loading-count').textContent = determinate ? formatMB(loaded) + ' / ' + formatMB(total) + ' МБ загружено' : 'Загружено ' + formatMB(loaded) + ' МБ';\n"
+        "    $('loading-percent').textContent = determinate ? percent + '%' : '…';\n"
+        "    $('loading-fill').style.width = percent + '%';\n"
+        '    if (determinate) {\n'
+        "      $('startup').classList.remove('indeterminate');\n"
+        "      $('loading-bar').setAttribute('aria-valuenow', String(percent));\n"
+        "      $('loading-bar').setAttribute('aria-valuetext', percent + '% · ' + formatMB(loaded) + ' из ' + formatMB(total) + ' МБ');\n"
+        '    } else {\n'
+        "      $('startup').classList.add('indeterminate');\n"
+        "      $('loading-bar').removeAttribute('aria-valuenow');\n"
+        "      $('loading-bar').setAttribute('aria-valuetext', formatMB(loaded) + ' МБ загружено');\n"
+        '    }\n'
+        '  }\n'
+        '  function appStarted() {\n'
+        "    startupStage = 'runtime';\n"
+        "    $('loading-title').textContent = 'Запускается приложение…';\n"
+        "    $('loading-detail').textContent = 'Файлы загружены — запускается Android';\n"
+        "    $('loading-percent').textContent = '100%';\n"
+        "    $('loading-fill').style.width = '100%';\n"
+        "    $('startup').classList.add('indeterminate');\n"
+        "    $('loading-bar').removeAttribute('aria-valuenow');\n"
+        "    $('loading-bar').setAttribute('aria-valuetext', 'Файлы загружены, запускается приложение');\n"
+        '  }\n'
+        '  function start(pkg) {\n'
+        '    showStartup(pkg);',
+        'startup progress state',
+    )
+    text = replace_once(
+        text,
+        '  function stop(why) {\n    if (!frame) return;',
+        '  function stop(why) {\n    hideStartup();\n    if (!frame) return;',
+        'hide startup progress when closing the VM',
+    )
+    text = replace_once(
+        text,
+        "    var t = ((performance.now() - startedAt) / 1000).toFixed(1) + ' с';\n    if (m.event) {\n      log(t + ' SENSES: ' + m.event);",
+        "    var t = ((performance.now() - startedAt) / 1000).toFixed(1) + ' с';\n"
+        "    if (m.progress) { updateStartup(m.progress); return; }\n"
+        "    if (m.event) {\n"
+        "      log(t + ' SENSES: ' + m.event);\n"
+        "      if (/^app started /.test(m.event)) appStarted();\n"
+        "      if (/^app shown /.test(m.event)) hideStartup();",
+        'handle VM download and launch progress',
+    )
     if '__VERSION__' in text:
         text = text.replace('__VERSION__', version)
+    return text
+
+
+def patch_run_page(source: str) -> str:
+    text = replace_once(
+        source,
+        """  function post(msg) {
+    try { parent.postMessage(Object.assign({ senses: true }, msg), location.origin); } catch (e) {}
+  }""",
+        """  function post(msg) {
+    try { parent.postMessage(Object.assign({ senses: true }, msg), location.origin); } catch (e) {}
+  }
+  function reportProgress(phase, loaded, total) {
+    post({ progress: { phase: phase, loaded: loaded, total: total } });
+  }
+  function progressResponse(response, phase) {
+    if (!response.ok) return response;
+    var total = Number(response.headers.get('Content-Length')) || 0;
+    reportProgress(phase, 0, total);
+    if (!response.body) {
+      reportProgress(phase, total, total);
+      return response;
+    }
+    var reader = response.body.getReader(), loaded = 0, reported = 0;
+    var body = new ReadableStream({
+      pull: function (controller) {
+        return reader.read().then(function (chunk) {
+          if (chunk.done) {
+            if (loaded !== reported) reportProgress(phase, loaded, total || loaded);
+            controller.close();
+            return;
+          }
+          loaded += chunk.value.byteLength;
+          if (loaded - reported >= 1048576 || (total && loaded >= total)) {
+            reported = loaded;
+            reportProgress(phase, loaded, total);
+          }
+          controller.enqueue(chunk.value);
+        }).catch(function (error) { controller.error(error); });
+      },
+      cancel: function (reason) { return reader.cancel(reason); }
+    });
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: new Headers(response.headers)
+    });
+  }""",
+        'VM download progress messaging',
+    )
+    text = replace_once(
+        text,
+        """  function blobOf(r) {
+    if (!r.body) return r.blob();
+    var reader = r.body.getReader(), blob = new Blob([]), parts = [], inParts = 0;
+    function flush() {
+      blob = new Blob([blob].concat(parts));
+      parts.forEach(function (p) { drop(p.buffer); });
+      parts = []; inParts = 0;
+    }
+    return (function pump() {
+      return reader.read().then(function (c) {
+        if (c.done) { flush(); return blob; }
+        parts.push(c.value);
+        inParts += c.value.length;
+        if (inParts >= 8 << 20) flush();
+        return pump();
+      });
+    })();
+  }""",
+        """  function blobOf(r, phase) {
+    var total = Number(r.headers.get('Content-Length')) || 0;
+    if (!r.body) return r.blob().then(function (blob) {
+      if (phase) reportProgress(phase, blob.size, total || blob.size);
+      return blob;
+    });
+    var reader = r.body.getReader(), blob = new Blob([]), parts = [], inParts = 0, loaded = 0, reported = 0;
+    if (phase) reportProgress(phase, 0, total);
+    function flush() {
+      blob = new Blob([blob].concat(parts));
+      parts.forEach(function (p) { drop(p.buffer); });
+      parts = []; inParts = 0;
+    }
+    return (function pump() {
+      return reader.read().then(function (c) {
+        if (c.done) {
+          flush();
+          if (phase && loaded !== reported) reportProgress(phase, loaded, total || loaded);
+          return blob;
+        }
+        parts.push(c.value);
+        inParts += c.value.byteLength;
+        loaded += c.value.byteLength;
+        if (phase && (loaded - reported >= 1048576 || (total && loaded >= total))) {
+          reported = loaded;
+          reportProgress(phase, loaded, total);
+        }
+        if (inParts >= 8 << 20) flush();
+        return pump();
+      });
+    })();
+  }""",
+        'system image download progress',
+    )
+    text = replace_once(
+        text,
+        r"    var compiled = WebAssembly.compileStreaming(fetch(s.script.replace(/\.js$/, '.wasm')));",
+        r"    var compiled = WebAssembly.compileStreaming(fetch(s.script.replace(/\.js$/, '.wasm')).then(function (response) { return progressResponse(response, 'wasm'); }));",
+        'wasm download progress',
+    )
+    text = replace_once(
+        text,
+        "      return blobOf(r).then(function (b) {",
+        "      return blobOf(r, 'system').then(function (b) {",
+        'cached system image progress',
+    )
+    text = replace_once(
+        text,
+        '      return asBlob ? blobOf(r) : r.arrayBuffer();',
+        "      return asBlob ? blobOf(r, 'system') : r.arrayBuffer();",
+        'system image progress',
+    )
     return text
 
 
@@ -279,8 +513,10 @@ def build(zip_path: Path, checksum_path: Path, output: Path) -> None:
     split_data_file(output / 'vm' / 'a10' / 'artvm10.data', version)
 
     vm_dir = output / 'vm'
-    for name in ('run.html', 'apk.js', 'library-worker.js'):
+    for name in ('apk.js', 'library-worker.js'):
         shutil.copy2(ROOT / 'demo' / 'senses-apps-vm' / name, vm_dir / name)
+    run_source = (ROOT / 'demo' / 'senses-apps-vm' / 'run.html').read_text(encoding='utf-8')
+    (vm_dir / 'run.html').write_text(patch_run_page(run_source), encoding='utf-8')
     shutil.copy2(ROOT / 'shim' / 'opfs' / 'idb_opfs.js', vm_dir / 'idb_opfs.js')
     for name in REQUIRED_SHELL_FILES:
         source = ROOT / 'pages' / 'vm' / name
