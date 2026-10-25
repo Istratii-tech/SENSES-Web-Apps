@@ -73,6 +73,42 @@
   function post(msg) {
     try { parent.postMessage(Object.assign({ senses: true }, msg), location.origin); } catch (e) {}
   }
+  function reportProgress(phase, loaded, total) {
+    post({ progress: { phase: phase, loaded: loaded, total: total } });
+  }
+  function progressResponse(response, phase) {
+    if (!response.ok) return response;
+    var total = Number(response.headers.get('Content-Length')) || 0;
+    reportProgress(phase, 0, total);
+    if (!response.body) {
+      reportProgress(phase, total, total);
+      return response;
+    }
+    var reader = response.body.getReader(), loaded = 0, reported = 0;
+    var body = new ReadableStream({
+      pull: function (controller) {
+        return reader.read().then(function (chunk) {
+          if (chunk.done) {
+            if (loaded !== reported) reportProgress(phase, loaded, total || loaded);
+            controller.close();
+            return;
+          }
+          loaded += chunk.value.byteLength;
+          if (loaded - reported >= 1048576 || (total && loaded >= total)) {
+            reported = loaded;
+            reportProgress(phase, loaded, total);
+          }
+          controller.enqueue(chunk.value);
+        }).catch(function (error) { controller.error(error); });
+      },
+      cancel: function (reason) { return reader.cancel(reason); }
+    });
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: new Headers(response.headers)
+    });
+  }
   // Android keys through the canvas's keyboard path ("Android:N", browser_input.js).
   function tapKey(keyCode) {
     ['keydown', 'keyup'].forEach(function (type) {
@@ -356,9 +392,14 @@
       else { var ch = new MessageChannel(); ch.port1.postMessage(buf, [buf]); ch.port1.close(); ch.port2.close(); }
     } catch (e) {}
   }
-  function blobOf(r) {
-    if (!r.body) return r.blob();
-    var reader = r.body.getReader(), blob = new Blob([]), parts = [], inParts = 0;
+  function blobOf(r, phase) {
+    var total = Number(r.headers.get('Content-Length')) || 0;
+    if (!r.body) return r.blob().then(function (blob) {
+      if (phase) reportProgress(phase, blob.size, total || blob.size);
+      return blob;
+    });
+    var reader = r.body.getReader(), blob = new Blob([]), parts = [], inParts = 0, loaded = 0, reported = 0;
+    if (phase) reportProgress(phase, 0, total);
     function flush() {
       blob = new Blob([blob].concat(parts));
       parts.forEach(function (p) { drop(p.buffer); });
@@ -366,9 +407,18 @@
     }
     return (function pump() {
       return reader.read().then(function (c) {
-        if (c.done) { flush(); return blob; }
+        if (c.done) {
+          flush();
+          if (phase && loaded !== reported) reportProgress(phase, loaded, total || loaded);
+          return blob;
+        }
         parts.push(c.value);
-        inParts += c.value.length;
+        inParts += c.value.byteLength;
+        loaded += c.value.byteLength;
+        if (phase && (loaded - reported >= 1048576 || (total && loaded >= total))) {
+          reported = loaded;
+          reportProgress(phase, loaded, total);
+        }
         if (inParts >= 8 << 20) flush();
         return pump();
       });
@@ -395,7 +445,7 @@
         arcReport('SensesVm: the image from IndexedDB (' + Math.round(kept.blob.size / 1048576) + ' MB)');
         return kept.blob;
       }
-      return blobOf(r).then(function (b) {
+      return blobOf(r, 'system').then(function (b) {
         return idb('readwrite', function (st) { st.put({id: id, blob: b}, slot); })
           .then(function () { return idb('readonly', function (st) { return st.get(slot); }); })
           .then(function (again) {
@@ -412,7 +462,7 @@
     document.body.appendChild(script);
   } else {
     var image = null;
-    var compiled = WebAssembly.compileStreaming(fetch(s.script.replace(/\.js$/, '.wasm')));
+    var compiled = WebAssembly.compileStreaming(fetch(s.script.replace(/\.js$/, '.wasm')).then(function (response) { return progressResponse(response, 'wasm'); }));
     compiled.catch(function () {});
     Module.getPreloadedPackage = function () { var b = image; image = null; return b; };
     Module.instantiateWasm = function (imports, done) {
@@ -426,7 +476,7 @@
     fetch(s.script.replace(/\.js$/, '.data'), params.get('imagefresh') === '1' ? {cache: 'reload'} : {}).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       if (params.get('image') === 'idb') return storedImage(r);
-      return asBlob ? blobOf(r) : r.arrayBuffer();
+      return asBlob ? blobOf(r, 'system') : r.arrayBuffer();
     }).then(function (b) {
       if (!asBlob) { image = b; return; }
       Module.arcImageSource = {url: URL.createObjectURL(b), size: b.size, blob: b};

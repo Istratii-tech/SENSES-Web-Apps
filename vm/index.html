@@ -52,6 +52,15 @@
   <div class="site-foot"><a href="../">О проекте</a><a href="../LICENSE.txt">Лицензия</a></div>
 </main>
 <div id="vm"></div>
+<div id="startup" class="indeterminate" aria-live="off">
+  <div class="loading-card">
+    <div class="loading-kicker">ANDROID 10</div>
+    <h2 id="loading-title" aria-live="polite">Запуск приложения…</h2>
+    <div id="loading-bar" class="loading-bar" role="progressbar" aria-label="Загрузка Android 10" aria-valuemin="0" aria-valuemax="100" aria-valuetext="Подготовка Android 10"><span id="loading-fill"></span></div>
+    <div class="loading-row"><span id="loading-detail">Подготовка системы…</span><span id="loading-percent">…</span></div>
+    <div id="loading-count" class="loading-count">Подготовка Android · 0 с</div>
+  </div>
+</div>
 <div id="keys"><button data-key="4">◁</button><button data-key="3">○</button><button id="back">✕</button></div>
 <script src="bootstrap.js"></script>
 <script src="apk.js"></script>
@@ -162,7 +171,79 @@
 
   var frame = null, startedAt = 0;
   var orientations = {};  // package -> meta.orientation (refresh())
+  var loadParts = { system: { loaded: 0, total: 0 }, wasm: { loaded: 0, total: 0 } };
+  var startupStage = 'prepare', startupAt = 0, startupTimer = 0, startupPackage = '';
+  function formatMB(bytes) {
+    return (bytes / 1000000).toLocaleString('ru-RU', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  }
+  function showStartup(pkg) {
+    startupPackage = pkg;
+    startupStage = 'prepare';
+    startupAt = performance.now();
+    loadParts = { system: { loaded: 0, total: 0 }, wasm: { loaded: 0, total: 0 } };
+    $('startup').classList.add('on', 'indeterminate');
+    $('loading-title').textContent = 'Запуск ' + pkg;
+    $('loading-detail').textContent = 'Подготовка Android 10…';
+    $('loading-count').textContent = 'Подготовка Android · 0 с';
+    $('loading-percent').textContent = '…';
+    $('loading-fill').style.width = '0%';
+    $('loading-bar').removeAttribute('aria-valuenow');
+    $('loading-bar').setAttribute('aria-valuetext', 'Подготовка Android 10');
+    if (startupTimer) clearInterval(startupTimer);
+    startupTimer = setInterval(function () {
+      if (!$('startup').classList.contains('on')) return;
+      var seconds = Math.floor((performance.now() - startupAt) / 1000);
+      if (startupStage === 'download') {
+        var loaded = loadParts.system.loaded + loadParts.wasm.loaded;
+        var total = loadParts.system.total + loadParts.wasm.total;
+        $('loading-count').textContent = 'Загружено ' + formatMB(loaded) + (total ? ' / ' + formatMB(total) + ' МБ' : ' МБ') + ' · ' + seconds + ' с';
+        return;
+      }
+      $('loading-count').textContent = (startupStage === 'runtime' ? 'Запуск приложения' : 'Подготовка Android') + ' · ' + seconds + ' с';
+    }, 1000);
+  }
+  function hideStartup() {
+    $('startup').classList.remove('on', 'indeterminate');
+    if (startupTimer) clearInterval(startupTimer);
+    startupTimer = 0;
+  }
+  function updateStartup(info) {
+    if (!info || !loadParts[info.phase]) return;
+    startupStage = 'download';
+    var part = loadParts[info.phase];
+    part.loaded = Math.max(part.loaded, Number(info.loaded) || 0);
+    part.total = Math.max(part.total, Number(info.total) || 0);
+    var loaded = loadParts.system.loaded + loadParts.wasm.loaded;
+    var total = loadParts.system.total + loadParts.wasm.total;
+    var determinate = loadParts.system.total > 0 && loadParts.wasm.total > 0;
+    var percent = determinate ? Math.min(99, Math.floor(loaded * 100 / total)) : 0;
+    $('loading-title').textContent = 'Запуск ' + startupPackage;
+    $('loading-detail').textContent = 'Система ' + formatMB(loadParts.system.loaded) + ' МБ · WebAssembly ' + formatMB(loadParts.wasm.loaded) + ' МБ';
+    $('loading-count').textContent = determinate ? formatMB(loaded) + ' / ' + formatMB(total) + ' МБ загружено' : 'Загружено ' + formatMB(loaded) + ' МБ';
+    $('loading-percent').textContent = determinate ? percent + '%' : '…';
+    $('loading-fill').style.width = percent + '%';
+    if (determinate) {
+      $('startup').classList.remove('indeterminate');
+      $('loading-bar').setAttribute('aria-valuenow', String(percent));
+      $('loading-bar').setAttribute('aria-valuetext', percent + '% · ' + formatMB(loaded) + ' из ' + formatMB(total) + ' МБ');
+    } else {
+      $('startup').classList.add('indeterminate');
+      $('loading-bar').removeAttribute('aria-valuenow');
+      $('loading-bar').setAttribute('aria-valuetext', formatMB(loaded) + ' МБ загружено');
+    }
+  }
+  function appStarted() {
+    startupStage = 'runtime';
+    $('loading-title').textContent = 'Запускается приложение…';
+    $('loading-detail').textContent = 'Файлы загружены — запускается Android';
+    $('loading-percent').textContent = '100%';
+    $('loading-fill').style.width = '100%';
+    $('startup').classList.add('indeterminate');
+    $('loading-bar').removeAttribute('aria-valuenow');
+    $('loading-bar').setAttribute('aria-valuetext', 'Файлы загружены, запускается приложение');
+  }
   function start(pkg) {
+    showStartup(pkg);
     var stack = $('stack').value;
     var q = new URLSearchParams({ stack: stack, pkg: pkg });
     ['canvas2d', 'memdata', 'remotegl', 'nowebgpu'].forEach(function (k) {
@@ -186,6 +267,7 @@
     log('Запуск ' + pkg + ' на ' + stack + '…');
   }
   function stop(why) {
+    hideStartup();
     if (!frame) return;
     frame.remove();
     frame = null;
@@ -219,8 +301,11 @@
     var m = ev.data;
     if (!m || !m.senses || ev.origin !== location.origin) return;
     var t = ((performance.now() - startedAt) / 1000).toFixed(1) + ' с';
+    if (m.progress) { updateStartup(m.progress); return; }
     if (m.event) {
       log(t + ' SENSES: ' + m.event);
+      if (/^app started /.test(m.event)) appStarted();
+      if (/^app shown /.test(m.event)) hideStartup();
       var url = /^open url (https?:\/\/\S+)/.exec(m.event);
       if (url) openUrl(url[1]);
       if (/^app (exit|crash|missing) /.test(m.event)) setTimeout(function () { stop(m.event); }, 300);
