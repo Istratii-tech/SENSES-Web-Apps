@@ -1,4 +1,4 @@
-const CACHE_NAME = 'senses-pages-2026.10.25-progress-20261025b';
+const CACHE_NAME = 'senses-pages-2026.10.25-656b11927b2f';
 const DATA_FILE = 'a10/artvm10.data';
 const DATA_MANIFEST = 'a10/artvm10.data.parts.json';
 const SHELL = [

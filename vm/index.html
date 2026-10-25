@@ -238,8 +238,9 @@
     $('loading-detail').textContent = 'Файлы загружены — запускается Android';
     $('loading-percent').textContent = '100%';
     $('loading-fill').style.width = '100%';
-    $('startup').classList.add('indeterminate');
-    $('loading-bar').removeAttribute('aria-valuenow');
+    $('startup').classList.remove('indeterminate');
+    $('loading-count').textContent = 'Запуск приложения · 0 с';
+    $('loading-bar').setAttribute('aria-valuenow', '100');
     $('loading-bar').setAttribute('aria-valuetext', 'Файлы загружены, запускается приложение');
   }
   function start(pkg) {
