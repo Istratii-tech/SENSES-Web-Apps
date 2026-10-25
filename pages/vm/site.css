@@ -155,7 +155,7 @@ pre:empty { display: none; }
 .site-foot a { color: #c4c0ff; text-decoration: none; }
 .site-foot a:hover { text-decoration: underline; }
 #vm { z-index: 10; }
-#keys { z-index: 11; }
+#keys { z-index: 12; }
 #keys button { min-height: 42px; min-width: 42px; border-radius: 999px; }
 
 @media (max-width: 520px) {
@@ -174,3 +174,19 @@ pre:empty { display: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
+#startup { position: fixed; inset: 0; z-index: 11; display: none; place-items: center; padding: 24px; background: rgba(7, 9, 15, .78); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+#startup.on { display: grid; }
+.loading-card { width: min(100%, 440px); box-sizing: border-box; padding: clamp(22px, 5vw, 32px); border: 1px solid rgba(255, 255, 255, .12); border-radius: 24px; background: rgba(19, 22, 32, .97); box-shadow: 0 24px 80px rgba(0, 0, 0, .48); }
+.loading-kicker { color: #aaa3ff; font-size: 11px; font-weight: 700; letter-spacing: .16em; }
+#startup h2 { margin: 10px 0 22px; font-size: clamp(22px, 5vw, 30px); letter-spacing: -.04em; }
+.loading-bar { height: 12px; overflow: hidden; border: 1px solid rgba(255, 255, 255, .09); border-radius: 999px; background: rgba(255, 255, 255, .08); }
+#loading-fill { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #7668ff, #b386ff); transition: width .16s linear; }
+#startup.indeterminate #loading-fill { width: 30% !important; animation: startup-progress 1.2s ease-in-out infinite; }
+@keyframes startup-progress { from { transform: translateX(-125%); } to { transform: translateX(450%); } }
+.loading-row { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; margin-top: 13px; }
+#loading-detail { color: #bdc3d0; font-size: 12px; }
+#loading-percent { color: #f5f2ff; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.loading-count { margin-top: 10px; color: #939aaa; font-size: 12px; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 520px) { .loading-card { padding: 22px 18px; } }
+@media (prefers-reduced-motion: reduce) { #startup.indeterminate #loading-fill { animation-duration: 3s; } }
