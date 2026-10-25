@@ -19,6 +19,9 @@ Requests and questions: issues of this repository or `https://t.me/istratii_tech
 
 Инструкция: как пользоваться SENSES Web Apps
 
+Попробуйте без установки: https://istratii-tech.github.io/SENSES-Web-Apps/vm/ 
+Долгая загрузка на черном экране
+
 **Какой файл качать.** Обычно — **запускатор** `SENSES-Web-Apps-launcher-ВЕРСИЯ.zip` (~35 КБ) из Releases
 этого репозитория. При каждом запуске он сам скачивает на компьютер последнюю версию SENSES Web Apps
 отсюда же (Android 10 — ~58 МБ; все системы — ~170 МБ, по `--variant all`), сверяет SHA-256 и
@@ -55,6 +58,9 @@ Requests and questions: issues of this repository or `https://t.me/istratii_tech
    Откат к прошлой версии: запуск с `--rollback`; другие системы: `--variant all`.
 
 How to use SENSES Web Apps
+
+Try it without installing: https://istratii-tech.github.io/SENSES-Web-Apps/vm/ 
+Long loading time on the black screen
 
 **Which file to download.** Usually the **launcher**, `SENSES-Web-Apps-launcher-VERSION.zip` (~35 KB), from
 this repository's Releases. At each start it downloads the latest SENSES Web Apps from here to your
