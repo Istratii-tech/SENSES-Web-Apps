@@ -31,6 +31,7 @@ Requests and questions: issues of this repository or `https://t.me/istratii_tech
    На macos скорее всего установится автоматически.
 3. Запустите «Start SENSES.command» (macOS), «Start SENSES.bat» (Windows) или `./start-senses.sh` (Linux).
    Выберите систему. Лучше всего сейчас работает Андроид 10.
+   Вы так же можете запустить через iSH на айфоне без компьютера.
    Запускатор скачает систему Android 10 и покажет загрузку. Затем появится окно с
    QR-кодом и адресом; не закрывайте его, пока не запустите первое приложение.
 4. На iPhone в той же сети Wi-Fi наведите «Камеру» на QR-код. Один раз для телефона страница проведёт по
@@ -66,6 +67,7 @@ way (or give one to the launcher: `--install PATH.zip`).
 2. Install Python 3.8 or newer (https://www.python.org/downloads/; on Windows, check “Add python.exe to PATH”).
 On macOS it will most likely be installed automatically.
 3. Run “Start SENSES.command” (macOS), “Start SENSES.bat” (Windows) or ./start-senses.sh (Linux).
+You can also run it via iSH on your iPhone without a computer.
 Choose a system. Android 10 currently works best.
 The launcher will download Android 10 and show the download progress. A window with a
 QR code and an address will then appear. Keep it open until you have launched your first app.
