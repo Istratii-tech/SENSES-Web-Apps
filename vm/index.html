@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SENSES Web Apps — Android 10</title>
+<style>
+  :root { --bg: #101216; --fg: #e3e6ec; --muted: #8b92a1; --line: #262a33; --accent: #6ea8fe;
+          --bad: #ff7b72; color-scheme: dark; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #f6f7f9; --fg: #1b1e26; --muted: #5b6272; --line: #dde1e8;
+                                     --accent: #1f6feb; --bad: #cf222e; color-scheme: light; }
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+               font: 15px/1.4 -apple-system, system-ui, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+  button, select, label.file { font: inherit; padding: 6px 12px; border-radius: 8px;
+    border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer; }
+  label.file input { display: none; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { display: flex; gap: 8px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  li .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  pre { font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word;
+        color: var(--muted); max-height: 40vh; overflow: auto; }
+  #vm { position: fixed; inset: 0; background: #000; display: none; }
+  #vm iframe { width: 100%; height: 100%; border: 0; }
+  #vm.on { display: block; }
+  #keys { position: fixed; right: 12px; top: 12px; z-index: 2; display: none; gap: 6px; }
+  #keys button { background: #000a; color: #fff; border-color: #fff4; }
+  #vm.on ~ #keys { display: flex; }
+  .bad { color: var(--bad); }
+</style>
+<link rel="stylesheet" href="site.css">
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+</head>
+<body>
+<main>
+    <div class="topbar"><a class="home-link" href="../">← SENSES Web Apps</a>
+    <span class="build-tag">Android 10 · 2026.10.25</span></div>
+  <h1>Запуск Android 10</h1>
+  <div class="muted" id="storage">Проверяю браузер…</div>
+  <div class="notice"><strong>Первый запуск загрузит около 125 МБ.</strong> APK и данные приложений останутся в хранилище этого браузера. На GitHub Pages нет сетевого моста: приложения Android здесь работают без интернета.</div>
+  <div class="row">
+    <label class="file">Добавить APK<input type="file" id="file" accept=".apk,application/vnd.android.package-archive"></label>
+    <input type="hidden" id="stack" value="a10">
+  </div>
+  <ul id="apps"></ul>
+  <pre id="log"></pre>
+  <div class="site-foot"><a href="../">О проекте</a><a href="../LICENSE.txt">Лицензия</a></div>
+</main>
+<div id="vm"></div>
+<div id="keys"><button data-key="4">◁</button><button data-key="3">○</button><button id="back">✕</button></div>
+<script src="bootstrap.js"></script>
+<script src="apk.js"></script>
+<script src="report.js"></script>
+<script>
+(async function () {
+  if (!(await window.SENSES_PAGES_READY)) return;
+  var params = new URLSearchParams();
+  var $ = function (id) { return document.getElementById(id); };
+  var worker = new Worker('library-worker.js' + (params.get('memdata') === '1' ? '?memdata=1' : ''));
+  var calls = new Map(), nextId = 1;
+  worker.onmessage = function (ev) {
+    var c = calls.get(ev.data.id);
+    calls.delete(ev.data.id);
+    if (ev.data.error) c.reject(new Error(ev.data.error)); else c.resolve(ev.data.result);
+  };
+  function call(op, args, transfer) {
+    return new Promise(function (resolve, reject) {
+      var id = nextId++;
+      calls.set(id, { resolve: resolve, reject: reject });
+      worker.postMessage(Object.assign({ id: id, op: op }, args || {}), transfer || []);
+    });
+  }
+  function log(text, bad) {
+    var line = document.createElement('div');
+    if (bad) line.className = 'bad';
+    line.textContent = text;
+    $('log').appendChild(line);
+    $('log').scrollTop = 1e9;
+    arcReport('SensesTest: ' + text);
+  }
+  $('stack').value = 'a10';
+
+  async function refresh() {
+    var list = $('apps');
+    list.textContent = '';
+    var dirs = await call('list', { path: 'senses/apps' });
+    for (var d of dirs) {
+      if (d.kind !== 'directory') continue;
+      var metaBytes = await call('get', { path: 'senses/apps/' + d.name + '/meta.json' });
+      var meta = metaBytes ? JSON.parse(new TextDecoder().decode(metaBytes)) : { package: d.name };
+      orientations[meta.package] = meta.orientation || null;
+      var li = document.createElement('li');
+      var name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = meta.package + ' ' + (meta.versionName || '') + ' · ' +
+          Math.round((meta.size || 0) / 1048576) + ' МБ · minSdk ' + (meta.minSdk || '?');
+      var run = document.createElement('button');
+      run.textContent = 'Открыть';
+      run.onclick = start.bind(null, meta.package);
+      var del = document.createElement('button');
+      del.textContent = 'Удалить';
+      del.onclick = remove.bind(null, meta.package);
+      li.append(name, run, del);
+      list.appendChild(li);
+    }
+    if (!list.children.length) list.innerHTML = '<li class="muted">Библиотека пуста</li>';
+  }
+
+  // Adding an APK, as the shell does: meta.json from the manifest, then the
+  // APK (written under another name and moved: a VM never sees half of it).
+  $('file').onchange = function () {
+    var f = this.files[0];
+    this.value = '';
+    if (f) add(f.name, f.arrayBuffer());
+  };
+  async function add(name, bufferPromise) {
+    try {
+      var bytes = new Uint8Array(await bufferPromise);
+      log('Читаю ' + name + ' (' + Math.round(bytes.length / 1048576) + ' МБ)…');
+      var info = await SensesApk.inspect(bytes);
+      var old = await call('get', { path: 'senses/apps/' + info.package + '/meta.json' });
+      old = old && JSON.parse(new TextDecoder().decode(old));
+      if (old && old.size === bytes.length && old.versionCode === info.versionCode) {
+        // The same APK: rewriting it would read as an update; meta.json may
+        // gain fields of a newer page.
+        await call('put', { path: 'senses/apps/' + info.package + '/meta.json',
+                            bytes: new TextEncoder().encode(JSON.stringify(Object.assign(old, info))) });
+        log('Уже в библиотеке: ' + info.package + ' ' + info.versionName);
+        await refresh();
+        return;
+      }
+      var meta = Object.assign(info, { label: info.package, launcher: null,
+          stack: $('stack').value, installedAt: Date.now(), size: bytes.length });
+      var dir = 'senses/apps/' + info.package + '/';
+      await call('put', { path: dir + 'base.apk', bytes: bytes }, [bytes.buffer]);
+      await call('put', { path: dir + 'meta.json',
+                          bytes: new TextEncoder().encode(JSON.stringify(meta)) });
+      log('В библиотеке: ' + info.package + ' ' + info.versionName + ' (versionCode ' +
+          info.versionCode + ', ABI ' + info.abis.join(',') + ')');
+      await refresh();
+    } catch (e) {
+      log('Не удалось: ' + e, true);
+    }
+  }
+
+  // Removing: the library's files, and each stack's data of the app (the
+  // VMs also drop what is left at their next start).
+  async function remove(pkg) {
+    await call('remove', { path: 'senses/apps/' + pkg });
+    for (var s of ['a44', 'a60', 'a81', 'a10']) {
+      for (var d of ['data/', 'user_de/0/', 'app-lib/', 'app/'])
+        await call('remove', { path: 'senses/data/' + s + '/' + d + pkg });
+    }
+    log('Удалено: ' + pkg);
+    refresh();
+  }
+
+  var frame = null, startedAt = 0;
+  var orientations = {};  // package -> meta.orientation (refresh())
+  function start(pkg) {
+    var stack = $('stack').value;
+    var q = new URLSearchParams({ stack: stack, pkg: pkg });
+    ['canvas2d', 'memdata', 'remotegl', 'nowebgpu'].forEach(function (k) {
+      if (params.get(k) === '1' || (k == 'remotegl' && /^(noshared|check)$/.test(params.get(k))))
+        q.set(k, params.get(k));
+    });
+    if (params.get('press')) q.set('press', params.get('press'));
+    ['memcap', 'initmem'].forEach(function (k) { if (params.has(k)) q.set(k, params.get(k)); });
+    if (params.get('scan')) q.set('scan', params.get('scan'));
+    if (params.get('landscape')) q.set('landscape', params.get('landscape'));
+    else if (orientations[pkg] === 'landscape') q.set('landscape', '1');
+    params.getAll('opt').forEach(function (o) { q.append('opt', o); });
+    params.getAll('env').forEach(function (e) { q.append('env', e); });
+    q.append('env', 'ARC_NET=0');
+    frame = document.createElement('iframe');
+    frame.src = 'run.html?' + q;
+    frame.allow = 'cross-origin-isolated';
+    $('vm').appendChild(frame);
+    $('vm').className = 'on';
+    startedAt = performance.now();
+    log('Запуск ' + pkg + ' на ' + stack + '…');
+  }
+  function stop(why) {
+    if (!frame) return;
+    frame.remove();
+    frame = null;
+    $('vm').className = '';
+    log('VM закрыта: ' + why);
+    refresh();
+  }
+  $('back').onclick = function () { stop('кнопка «Закрыть»'); };
+  document.querySelectorAll('#keys button[data-key]').forEach(function (b) {
+    b.onclick = function () {
+      if (frame) frame.contentWindow.postMessage({ senses: true, key: +b.dataset.key }, location.origin);
+    };
+  });
+  // "SENSES: open url URL": in a new tab, or (popups blocked: the tap was
+  // in the VM, the signal comes later) as a link to tap over the app.
+  function openUrl(url) {
+    var w = null;
+    try { w = window.open(url, '_blank', 'noopener'); } catch (e) {}
+    if (w) return;
+    var a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener';
+    a.textContent = 'Открыть ' + url;
+    a.style.cssText = 'position:fixed;left:12px;right:12px;bottom:12px;z-index:3;padding:12px;' +
+        'border-radius:10px;background:#000c;color:#fff;font:14px -apple-system,sans-serif;' +
+        'text-align:center;overflow-wrap:anywhere';
+    a.onclick = function () { setTimeout(function () { a.remove(); }, 0); };
+    document.body.appendChild(a);
+    setTimeout(function () { a.remove(); }, 15000);
+  }
+  window.addEventListener('message', function (ev) {
+    var m = ev.data;
+    if (!m || !m.senses || ev.origin !== location.origin) return;
+    var t = ((performance.now() - startedAt) / 1000).toFixed(1) + ' с';
+    if (m.event) {
+      log(t + ' SENSES: ' + m.event);
+      var url = /^open url (https?:\/\/\S+)/.exec(m.event);
+      if (url) openUrl(url[1]);
+      if (/^app (exit|crash|missing) /.test(m.event)) setTimeout(function () { stop(m.event); }, 300);
+    } else if (m.exit !== undefined) {
+      stop('VM вышла с кодом ' + m.exit);
+    } else if (m.abort) {
+      log(t + ' сбой VM: ' + m.abort, true);
+      stop('сбой VM');
+    } else if (m.restart) {
+      log(t + ' перезапуск по памяти');
+    }
+  });
+
+  call('probe').then(async function (kind) {
+    $('storage').textContent = 'Хранилище: ' + (kind === 'opfs' ? 'OPFS' : 'IndexedDB (как на iOS 16.1)') +
+        ' · библиотека senses/apps, данные senses/data/a10';
+    await refresh();
+    for (var gone of params.getAll('remove')) await remove(gone);
+    for (var url of params.getAll('add')) {
+      await add(url, fetch(url).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.arrayBuffer();
+      }));
+    }
+    if (params.get('run')) start(params.get('run'));
+  }).catch(function (e) { log('Хранилище: ' + e, true); });
+})();
+</script>
+</body>
+</html>

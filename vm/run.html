@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SENSES app VM</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; object-fit: contain; touch-action: none; }
+</style>
+</head>
+<body>
+<!-- One app on one stack (topic install8, docs/topics/install8.md): the VM of
+     SENSES Web Apps, in an iframe of the library page (index.html), which
+     removes the frame when the app exits (a VM cannot be unloaded from a
+     page: its threads and memory go with the frame).
+       run.html?stack=a81|a10|a60|a44&pkg=PACKAGE[&canvas2d=1&memdata=1&remotegl=1][&opt=--dump]
+       [&memcap=MB][&initmem=MB][&landscape=1][&env=KEY=VALUE][&display=WxH][&tap=X,Y@S]
+       [&opfstrace=1][&opfsgrow=MB][&opfsfree=MB] (the OPFS thread's start step by step to
+       the log; a file of MB written first; a storage budget of MB, ENOSPC past it:
+       shim/opfs/library_arc_opfs.js, topics opfs-after-kill and opfs-budget)
+     Lines "SENSES: ..." go to the parent page (postMessage), all output too
+     (and to tools/serve.py's log). The parent sends keys as {senses: true,
+     key: 3 (HOME) | 4 (BACK)}; ?press=home@S|back@S presses one S seconds
+     after the app's first frame (unattended runs); &tap=X,Y@S (repeatable)
+     touches the display at X,Y (display pixels) S seconds after it (Safari,
+     which cannot be driven: topic senses-a10). -->
+<canvas id="canvas" tabindex="0"></canvas>
+<script src="report.js"></script>
+<script>
+  var params = new URLSearchParams(location.search);
+  var stack = params.get('stack') || 'a81';
+  var pkg = params.get('pkg') || '';
+  var canvas = document.getElementById('canvas');
+  // The display: the frame's size in CSS pixels (360 dp wide at most, as a
+  // phone; 160 dpi), fixed when the VM starts.
+  var w = Math.max(240, Math.min(window.innerWidth, 480));
+  var h = Math.max(320, Math.round(w * window.innerHeight / Math.max(1, window.innerWidth)));
+  // ?display=WxH: that size (scripted runs: &tap= coordinates stay put).
+  var fixed = /^(\d+)x(\d+)$/.exec(params.get('display') || '');
+  if (fixed) {
+    w = +fixed[1]; h = +fixed[2];
+    // (the element itself that size on the page, centred: touches and the
+    // WebView's frames map onto the element's box, not object-fit's)
+    var k = Math.min(window.innerWidth / w, window.innerHeight / h);
+    canvas.style.cssText = 'position:fixed;width:' + w * k + 'px;height:' + h * k + 'px;left:' +
+        (window.innerWidth - w * k) / 2 + 'px;top:' + (window.innerHeight - h * k) / 2 + 'px';
+  }
+  // ?landscape=1: an app that wants a landscape screen (games: Angry Birds
+  // draws nothing on a portrait one) on a portrait page gets a landscape
+  // display, the canvas turned 90 degrees to fill the page (touches are
+  // turned back: Module.arcwasmInput.turn).
+  var turn = 0;
+  if (params.get('landscape') === '1' && h > w) {
+    var t = w; w = h; h = t;
+    turn = 90;
+    canvas.style.position = 'fixed';
+    canvas.style.width = window.innerHeight + 'px';
+    canvas.style.height = window.innerWidth + 'px';
+    canvas.style.left = (window.innerWidth - window.innerHeight) / 2 + 'px';
+    canvas.style.top = (window.innerHeight - window.innerWidth) / 2 + 'px';
+    canvas.style.transform = 'rotate(90deg)';
+  }
+  canvas.width = w;
+  canvas.height = h;
+  var STACKS = {
+    a44: { script: 'a44/dalvikvm.js', vm: 'dalvik' },
+    a60: { script: 'a60/artvm.js', vm: 'art' },
+    a81: { script: 'a81/artvm8.js', vm: 'art8' },
+    a10: { script: 'a10/artvm10.js', vm: 'art10' },
+  };
+  var s = STACKS[stack];
+  function post(msg) {
+    try { parent.postMessage(Object.assign({ senses: true }, msg), location.origin); } catch (e) {}
+  }
+  // Android keys through the canvas's keyboard path ("Android:N", browser_input.js).
+  function tapKey(keyCode) {
+    ['keydown', 'keyup'].forEach(function (type) {
+      var code = 'Android:' + keyCode;
+      canvas.dispatchEvent(new KeyboardEvent(type, { code: code, key: code, bubbles: true }));
+    });
+  }
+  window.addEventListener('message', function (ev) {
+    if (ev.origin === location.origin && ev.data && ev.data.senses && ev.data.key) tapKey(ev.data.key);
+  });
+  var press = /^(home|back)@(\d+)$/.exec(params.get('press') || '');
+  var taps = params.getAll('tap').map(function (t) {
+    var m = /^(\d+),(\d+)@(\d+(?:\.\d+)?)$/.exec(t);
+    return m && [+m[1], +m[2], +m[3]];
+  }).filter(Boolean);
+  if (!taps.length) taps = null;
+  // A touch as the page's input path takes one (shim/input/browser_input.js).
+  function tapAt(x, y) {
+    var r = canvas.getBoundingClientRect();
+    var cx = r.left + x * r.width / canvas.width, cy = r.top + y * r.height / canvas.height;
+    arcReport('SensesVm: tap ' + x + ',' + y);
+    ['pointerdown', 'pointerup'].forEach(function (type, i) {
+      setTimeout(function () {
+        canvas.dispatchEvent(new PointerEvent(type, { pointerId: 7, pointerType: 'touch', clientX: cx, clientY: cy,
+                                                      pressure: type === 'pointerdown' ? 1 : 0,
+                                                      buttons: type === 'pointerdown' ? 1 : 0, bubbles: true }));
+      }, i * 80);
+    });
+  }
+  function emit(text) {
+    arcReport(text);
+    var m = /^SENSES: (.*)$/.exec(text);
+    if (m) post({ event: m[1] });
+    else post({ log: text });
+    if (m && /^app shown /.test(m[1])) shownAt = Date.now();
+    if (m && taps && /^app shown /.test(m[1])) {
+      taps.forEach(function (t) { setTimeout(function () { tapAt(t[0], t[1]); }, t[2] * 1000); });
+      taps = null;
+    }
+    if (m && press && /^app shown /.test(m[1])) {
+      var which = press[1], key = which === 'home' ? 3 : 4;
+      setTimeout(function () { arcReport('SensesVm: pressing ' + which); tapKey(key); }, press[2] * 1000);
+      press = null;
+    }
+  }
+  var args = ['arcwasm.server.SystemServer'];
+  if (s.vm === 'dalvik') args.push('--display', w + 'x' + h + '@160');
+  // ?opt=...: SystemServer options (e.g. --dump: windows, layers, threads every 5 s).
+  args.push.apply(args, params.getAll('opt'));
+  args.push('--senses', pkg);
+  // Dalvik's heap is fixed at start (16 MB by default): by the wasm memory
+  // the device gave (Module.arcwasmMemoryMax, shim/memory/fit_memory.js).
+  var DALVIK_HEAPS = [[1536, 256], [1024, 192], [768, 128], [0, 64]];
+  var dir = s.script.replace(/[^/]*$/, '');
+  var Module = window.Module = {
+    arguments: args,
+    // ?memcap=MB: the wasm memory's ceiling, as a phone's (iPhone: 1536).
+    arcwasmMemoryCap: (+params.get('memcap') || 0) * 16,
+    // The memory starts that big (at most what the device gave): on iOS all
+    // of it, since growing a shared memory there under running threads has
+    // the tab reloaded (Angry Birds 3.2.0 on a81, at 471 -> 565 MB), while
+    // pages that were never touched cost nothing. ?initmem=MB (0: growth).
+    arcwasmMemoryInitial: params.has('initmem') ? +params.get('initmem') || 0 :
+        /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+        (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1) ? 4096 : 0,
+    canvas: canvas,
+    locateFile: function (path, prefix) { return (prefix || dir) + path; },
+    print: emit,
+    printErr: emit,
+    preRun: [function () {
+      if (turn && Module.arcwasmInput) Module.arcwasmInput.turn = turn;
+      // ?env=KEY=VALUE: the VM's environment (debugging switches).
+      ENV.ARC_DATA_DIR = 'senses/data/' + stack;
+      ENV.ARC_APPS_DIR = 'senses/apps';
+      // (&env= after them: e.g. ARC_DATA_DIR=senses/data/a10test, an app from scratch)
+      params.getAll('env').forEach(function (kv) {
+        var i = kv.indexOf('=');
+        if (i > 0) ENV[kv.slice(0, i)] = kv.slice(i + 1);
+      });
+      var mb = (Module.arcwasmMemoryMax || 0) / 1048576;
+      if (s.vm === 'dalvik') {
+        for (var i = 0; i < DALVIK_HEAPS.length; i++) {
+          if (mb >= DALVIK_HEAPS[i][0]) { args.unshift('-Xmx' + DALVIK_HEAPS[i][1] + 'm'); break; }
+        }
+      }
+      emit('SensesVm: ' + stack + ' ' + args.join(' ') + ' · wasm memory up to ' + Math.round(mb) +
+           ' MB · display ' + w + 'x' + h);
+    }],
+    // Over the memory budget (mem-budget), after the task's state is saved:
+    // a new VM brings the app back where it was.
+    arcMemRestart: function () {
+      post({ restart: true });
+      setTimeout(function () { location.reload(); }, 100);
+    },
+    onExit: function (code) { post({ exit: code }); },
+    onAbort: function (what) {
+      // Where (wasm function names, when the build keeps them).
+      arcReport('SensesVm: abort: ' + what + '\n' + String(new Error().stack).split('\n').slice(1, 40).join('\n'));
+      // After report.js sent the log (it batches for 300 ms): the parent
+      // removes this frame at once.
+      setTimeout(function () { post({ abort: String(what) }); }, 600);
+    },
+  };
+  // Every 5 s: frames on the screen (the display's, as the 2D mode's page
+  // side counts them, or the compositor's), for logs of runs nobody watches.
+  // Stuck (no first frame in 15 s, or the screen frozen 10 s): the Java
+  // threads' stacks to the log once (4.4: arcwasm.server.ApkInbox).
+  // Once for a start without a frame, once for a screen that froze after
+  // the app was shown (Angry Birds' menu on an iPhone: 20-30 s).
+  var shownAt = 0, lastShown = -1, sameSince = 0, dumped = {}, startedAt = Date.now(), small = null;
+  function dumpThreads(why, kind) {
+    if (dumped[kind] || !Module.arcwasmInput) return;
+    dumped[kind] = true;
+    arcReport('SensesVm: stuck (' + why + '): Java threads');
+    Module.arcwasmInput.sendFile('arcwasm-threads', new Uint8Array(1));
+    // And where native code is (the ARM CPU's threads), now, 5 and 20 s on.
+    var dumpNative = function () {
+      try {
+        // (Not before the runtime is up: the call would abort it.)
+        if (Module.calledRun && Module._ndk_cpu_dump_threads) Module._ndk_cpu_dump_threads();
+      } catch (e) { arcReport('SensesVm: ndk_cpu_dump_threads: ' + e); }
+    };
+    dumpNative();
+    setTimeout(dumpNative, 5000);
+    setTimeout(dumpNative, 20000);
+  }
+  // Lazy table slots filled so far, all threads (tools/wasm_lazy_table.py's
+  // counter): on Safari each one is a JS function in its thread's instance;
+  // and the pthread workers (each a JavaScriptCore heap: topic ios-threads).
+  function tableFills() {
+    try {
+      var g = typeof wasmExports != 'undefined' && wasmExports && wasmExports.arc_lazy_table_fills;
+      var w = typeof PThread != 'undefined' ? ', workers ' + (Object.keys(PThread.pthreads).length +
+          PThread.unusedWorkers.length) + ' (' + PThread.unusedWorkers.length + ' unused)' : '';
+      // And the JITs' modules, all threads (topic jit-module-heap): dex-jit
+      // compiled/instances made/dropped/KB, ARM packs made/in a cold one's
+      // place/functions/KB/bodies/bodies instantiated somewhere/functions live/
+      // their estimated cost to JavaScriptCore, KB / packs from the page's
+      // catalog (topic arm-chains). Dormant Java threads (topic java-pool-park):
+      // now/went dormant/woken/stayed/no new pthread. The VM's clock (topic
+      // unity2022-menu-hang): workers found behind and caught up / largest lag, us.
+      var jit = '';
+      [['dexjit', 'arc_dexjit_counts', 4], ['cpujit', 'arc_cpujit_counts', 9],
+       ['dormant', 'arc_dormant_counts', 5], ['clock', 'arc_clock_now', 3, 1]].forEach(function (k) {
+        var c = wasmExports[k[1]];
+        if (c) jit += ', ' + k[0] + ' ' + Array.from(new Uint32Array(wasmMemory.buffer, Number(c.value) >>> 0, k[2]))
+            .slice(k[3] || 0).join('/');
+      });
+      return (g ? ', table fills ' + new Uint32Array(wasmMemory.buffer, g.value, 1)[0] : '') + w + jit;
+    } catch (e) { return ''; }
+  }
+  // A file of the VM growing while the browser gives no space (Safari, the
+  // origin's quota used up: the OPFS thread stops in the call; topic
+  // opfs-after-kill, shim/opfs/opfs_bridge.cc arc_opfs_stall): once, to the log.
+  var stallTold = false;
+  setInterval(function () {
+    try {
+      var cell = !stallTold && typeof wasmExports != 'undefined' && wasmExports && wasmExports.arc_opfs_stall;
+      if (!cell) return;
+      var f = new Float64Array(wasmMemory.buffer, Number(cell.value) >>> 0, 2);
+      if (!f[0] || Date.now() - f[0] < 4000) return;
+      stallTold = true;
+      var b = new Uint8Array(wasmMemory.buffer, Number(wasmExports.arc_opfs_stall_path.value) >>> 0, 256);
+      var n = b.indexOf(0);
+      arcReport('SensesVm: storage full: ' + new TextDecoder().decode(b.slice(0, n < 0 ? 256 : n)) + ' grows by ' +
+                f[1] + ' bytes, no space from the browser for ' + Math.round((Date.now() - f[0]) / 1000) + ' s');
+    } catch (e) {}
+  }, 1000);
+  setInterval(function () {
+    var p = Module.arcwasmPresenter;
+    if (!shownAt && Date.now() - startedAt > 15000) dumpThreads('no frame of the app in 15 s', 'start');
+    if (p && shownAt) {
+      if (p.shown !== lastShown) { lastShown = p.shown; sameSince = Date.now(); }
+      else if (Date.now() - sameSince > 10000) dumpThreads('the screen did not change for 10 s', 'frozen');
+    }
+    if (p) {
+      // And how much of the screen is not black (the 2D canvas can be read),
+      // from a 48x48 copy: the whole canvas read every 5 s left 1 MB a time
+      // for the page's GC (the tab grew ~12 MB a minute on an iPhone).
+      var lit = 0, n = 0;
+      try {
+        small = small || Object.assign(document.createElement('canvas'), { width: 48, height: 48 });
+        var sc = small.getContext('2d');
+        sc.drawImage(canvas, 0, 0, 48, 48);
+        var d = sc.getImageData(0, 0, 48, 48).data;
+        for (var i = 0; i < d.length; i += 4, n++) if (d[i] + d[i + 1] + d[i + 2] > 48) lit++;
+      } catch (e) {}
+      arcReport('SensesVm: frames shown ' + p.shown + ' (2D display), not black ' +
+                (n ? Math.round(100 * lit / n) : '?') + '%' + tableFills());
+    }
+    else if (typeof wasmExports != 'undefined' && wasmExports)
+      // (An export called before the runtime is up aborts the VM: the
+      // frames only once the app was shown; the rest reads memory.)
+      arcReport('SensesVm: frames ' + (shownAt && Module._arcwasm_display_frames ? Module._arcwasm_display_frames() : '?') +
+                tableFills());
+  }, 5000);
+  // ?pdebug=1: the page's pthread pool every 3 s until the app is shown
+  // (a start that hangs in pthread_create: workers that never load).
+  if (params.get('pdebug') === '1') {
+    var pdT0 = Date.now();
+    var pdTimer = setInterval(function () {
+      if (typeof PThread == 'undefined') { arcReport('SensesVm: pdebug: no PThread yet'); return; }
+      var all = PThread.unusedWorkers.concat(Object.values(PThread.pthreads));
+      arcReport('SensesVm: pdebug ' + Math.round((Date.now() - pdT0) / 1000) + ' s: calledRun ' + !!Module.calledRun +
+                ', running ' + Object.keys(PThread.pthreads).length + ', unused ' + PThread.unusedWorkers.length +
+                ', ids ' + all.map(function (w) { return w.workerID + (w.pthread_ptr ? 'r' : ''); }).join(' '));
+      if (shownAt) clearInterval(pdTimer);
+    }, 3000);
+  }
+  // ?workers=N,STEPS,SECONDS: every SECONDS after the app is shown, N more
+  // pthread workers loaded (the VM's JS and an instance of its module), no
+  // thread run on them: what a worker costs before its thread does anything
+  // (topic ios-threads; SystemServer's --threadprobe= starts real threads).
+  var workersProbe = /^(\d+),(\d+),(\d+)$/.exec(params.get('workers') || '');
+  if (workersProbe) {
+    var wpStep = 0;
+    var wpTimer = setInterval(function () {
+      if (!shownAt || typeof PThread == 'undefined') return;
+      if (Date.now() - shownAt < (wpStep + 1) * workersProbe[3] * 1000) return;
+      wpStep++;
+      var loads = [];
+      for (var i = 0; i < +workersProbe[1]; i++) loads.push(PThread.loadWasmModuleToWorker(PThread.allocateUnusedWorker()));
+      Promise.all(loads).then(function () {
+        arcReport('SensesVm: workers probe step ' + wpStep + ': ' + workersProbe[1] + ' workers loaded, ' +
+                  PThread.unusedWorkers.length + ' unused');
+      });
+      if (wpStep >= +workersProbe[2]) clearInterval(wpTimer);
+    }, 1000);
+  }
+  // ?scan=S: every S seconds, how much of the first ?scanmb= MB (512) of the
+  // wasm memory holds data (pages of 16 KB, the phone's, that are not all
+  // zero) per 32 MB, set against footprint(1)'s dirty pages of the tab
+  // (docs/topics/ios-mem.md). Reading a page commits it on iOS: what the
+  // scan covers becomes the tab's memory.
+  if (+params.get('scan') > 0) setInterval(function () {
+    if (typeof wasmMemory == 'undefined' || !wasmMemory) return;
+    var t0 = performance.now(), slices = [], total = 0, last = 0;
+    var words = new Int32Array(wasmMemory.buffer, 0, Math.min(wasmMemory.buffer.byteLength,
+                                                             (+params.get('scanmb') || 512) << 20) >> 2);
+    for (var s = 0; s * 8388608 < words.length; s++) {
+      var n = 0;
+      for (var p = s * 8388608; p < (s + 1) * 8388608 && p < words.length; p += 4096) {
+        for (var i = p; i < p + 4096; i++) if (words[i]) { n++; break; }
+      }
+      slices.push(Math.round(n / 64));
+      total += n;
+      if (n) last = s;
+    }
+    arcReport('SensesVm: wasm pages with data ' + Math.round(total / 64) + ' MB, per 32 MB: ' +
+              slices.slice(0, last + 1).join(' ') + ' (' + Math.round(performance.now() - t0) + ' ms)');
+  }, +params.get('scan') * 1000);
+  var script = document.createElement('script');
+  var query = ['canvas2d', 'memdata', 'remotegl', 'opfstrace', 'opfsgrow', 'opfsfree'].filter(function (k) {
+    return params.get(k) === '1' || (k == 'opfsgrow' && +params.get(k) > 0) || (k == 'opfsfree' && /^-?\d+$/.test(params.get(k))) ||
+           (k == 'remotegl' && /^(noshared|check)$/.test(params.get(k)));
+  }).map(function (k) { return k + '=' + params.get(k); }).join('&');
+  script.src = s.script + (query ? '?' + query : '');
+  // The /system image (.data, 43-65 MB) in one ArrayBuffer, handed to the
+  // file packager's loader (Module.getPreloadedPackage), which keeps it as
+  // the file's contents: its own download collects the chunks and copies
+  // them into a second buffer, and the 65 MB of chunks stayed with the tab
+  // (iPhone X: 178 MB of ArrayBuffers with a VM idle, 107 MB without them).
+  // The loader asks for the image when the script runs, so the script waits
+  // for it; the wasm compiles meanwhile (Module.instantiateWasm).
+  // ?ownfetch=1: the loader's own download, as before.
+  // By default the image is a Blob instead (topic image-on-demand, as the
+  // app page's run.html): the VM fills the pages it uses from its blob: URL,
+  // the packager gets an empty package; ?image=copy: the ArrayBuffer.
+  // ?image=idb: the Blob kept in IndexedDB, which stores it as a file: the
+  // Blob read back is that file, not bytes the browser holds in memory
+  // (WebKit keeps a Blob made in the page in its network process: ~100 MB).
+  // One per stack, known by the response's size and validators.
+  // A response's body as a Blob, read piece by piece: each piece is let go
+  // of once it is in the Blob (transfer, or a closed MessageChannel on iOS 16:
+  // as the VM's reads of the image do). r.blob() on an iPhone X left ~100 MB
+  // in "JS VM Gigacage" for the rest of the run when the body came from the
+  // network (not from the HTTP cache): the first start of a new build.
+  function drop(buf) {
+    try {
+      if (typeof buf.transfer == 'function') buf.transfer(0);
+      else { var ch = new MessageChannel(); ch.port1.postMessage(buf, [buf]); ch.port1.close(); ch.port2.close(); }
+    } catch (e) {}
+  }
+  function blobOf(r) {
+    if (!r.body) return r.blob();
+    var reader = r.body.getReader(), blob = new Blob([]), parts = [], inParts = 0;
+    function flush() {
+      blob = new Blob([blob].concat(parts));
+      parts.forEach(function (p) { drop(p.buffer); });
+      parts = []; inParts = 0;
+    }
+    return (function pump() {
+      return reader.read().then(function (c) {
+        if (c.done) { flush(); return blob; }
+        parts.push(c.value);
+        inParts += c.value.length;
+        if (inParts >= 8 << 20) flush();
+        return pump();
+      });
+    })();
+  }
+  function storedImage(r) {
+    var id = [r.url, r.headers.get('Content-Length'), r.headers.get('Last-Modified'), r.headers.get('ETag')].join('|');
+    var slot = s.script;
+    function idb(mode, work) {
+      return new Promise(function (ok, no) {
+        var q = indexedDB.open('senses-image', 1);
+        q.onupgradeneeded = function () { q.result.createObjectStore('images'); };
+        q.onerror = function () { no(q.error); };
+        q.onsuccess = function () {
+          var t = q.result.transaction('images', mode), got = work(t.objectStore('images'));
+          t.oncomplete = function () { q.result.close(); ok(got && got.result); };
+          t.onerror = t.onabort = function () { q.result.close(); no(t.error); };
+        };
+      });
+    }
+    return idb('readonly', function (st) { return st.get(slot); }).then(function (kept) {
+      if (kept && kept.id === id && kept.blob instanceof Blob && kept.blob.size > 0) {
+        try { r.body.cancel(); } catch (e) {}
+        arcReport('SensesVm: the image from IndexedDB (' + Math.round(kept.blob.size / 1048576) + ' MB)');
+        return kept.blob;
+      }
+      return blobOf(r).then(function (b) {
+        return idb('readwrite', function (st) { st.put({id: id, blob: b}, slot); })
+          .then(function () { return idb('readonly', function (st) { return st.get(slot); }); })
+          .then(function (again) {
+            arcReport('SensesVm: the image kept in IndexedDB');
+            return again && again.blob instanceof Blob ? again.blob : b;
+          }, function (e) {
+            arcReport('SensesVm: IndexedDB: ' + e + ' (the image as a Blob)');
+            return b;
+          });
+      });
+    });
+  }
+  if (params.get('ownfetch') === '1') {
+    document.body.appendChild(script);
+  } else {
+    var image = null;
+    var compiled = WebAssembly.compileStreaming(fetch(s.script.replace(/\.js$/, '.wasm')));
+    compiled.catch(function () {});
+    Module.getPreloadedPackage = function () { var b = image; image = null; return b; };
+    Module.instantiateWasm = function (imports, done) {
+      compiled.then(function (mod) {
+        return WebAssembly.instantiate(mod, imports).then(function (inst) { done(inst, mod); });
+      }).catch(function (e) { arcReport('SensesVm: wasm: ' + e); });
+      return {};
+    };
+    var asBlob = params.get('image') !== 'copy';
+    // (&imagefresh=1: past the HTTP cache, as the first time: tests)
+    fetch(s.script.replace(/\.js$/, '.data'), params.get('imagefresh') === '1' ? {cache: 'reload'} : {}).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (params.get('image') === 'idb') return storedImage(r);
+      return asBlob ? blobOf(r) : r.arrayBuffer();
+    }).then(function (b) {
+      if (!asBlob) { image = b; return; }
+      Module.arcImageSource = {url: URL.createObjectURL(b), size: b.size, blob: b};
+      image = new ArrayBuffer(0);
+    }, function (e) {
+      arcReport('SensesVm: image download: ' + e + ' (the loader tries itself)');
+    }).then(function () { document.body.appendChild(script); });
+  }
+  canvas.focus();
+</script>
+</body>
+</html>

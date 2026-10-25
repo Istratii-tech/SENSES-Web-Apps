@@ -1,0 +1,143 @@
+SENSES Web Apps 2026.10.25 (android10)
+====================================================
+
+SENSES Web Apps runs Android apps in a web browser. This package holds the
+web app (site/), a small server to run it on your own computer (server/), and
+the systems it runs apps on: Android 10, compiled to WebAssembly.
+
+What is NOT in this package: no Android apps (APK files) and nothing from
+Google (no Google Play services, no Play Store, no Google apps). Apps are the
+user's own files. microG or Google Play services can be added by the user, from
+the user's own files, in the app's menu (Google services); none are included.
+
+Components and their licences
+-----------------------------
+The full licence texts and notices are in licenses/, in folders named after
+the components' source folders.
+
+* The Android Open Source Project (AOSP), android-10.0.0_r47: the Android framework, ART/
+  Dalvik, the core libraries, bionic and the system libraries. Apache License
+  2.0, except as noted in licenses/aospNN/: e.g. libcore's OpenJDK-derived parts
+  (GNU GPL v2 with the Classpath Exception), ICU (Unicode licence), BoringSSL
+  (OpenSSL/ISC), Bouncy Castle (MIT), zlib, libpng, libjpeg-turbo, FreeType
+  (FreeType licence), HarfBuzz (MIT), Skia (BSD), SQLite (public domain), Expat
+  (MIT), the Noto fonts (SIL Open Font License 1.1) and the Roboto fonts (Apache
+  2.0), tzdata (public domain).
+* ARC, App Runtime for Chrome (posix_translation, graphics_translation):
+  BSD-style licence of The Chromium Authors, and Apache 2.0 (licenses/arc/).
+* Emscripten runtime, musl libc, libc++, libc++abi and compiler-rt (MIT,
+  University of Illinois/NCSA and Apache 2.0 with LLVM exception:
+  licenses/emscripten/).
+* Tint from Dawn (BSD 3-Clause), SPIRV-Tools (Apache 2.0), SPIR-V Headers and
+  the Vulkan headers (MIT/Apache 2.0).
+* The SENSES Web Apps shell (site/*.html, *.js), the WebAssembly ports and
+  the server (server/): SENSES Web Apps' own code, under the GNU Affero General
+  Public License version 3 (LICENSE.txt). Its source: the repository below.
+
+Source code
+-----------
+The AOSP parts are built from the AOSP tags above (https://android.googlesource.com)
+with the patches in the SENSES Web Apps repository
+(https://github.com/Istratii-tech/SENSES-Web-Apps, patches/), which also holds
+the rest of the source. The parts under the GNU GPL with the Classpath
+Exception (libcore's ojluni of Android 8.1 and 10), exactly as built, are the
+release's file SENSES-Web-Apps-2026.10.25-gpl-sources.tar.gz.
+
+AOSP projects in this package (folder: licence marker)
+------------------------------------------------------
+aosp10/art                                                   APACHE2
+aosp10/art/dt_fd_forward                                     GPL_WITH_CLASSPATH_EXCEPTION
+aosp10/art/dt_fd_forward/export                              APACHE2
+aosp10/art/openjdkjvm                                        GPL_WITH_CLASSPATH_EXCEPTION
+aosp10/art/openjdkjvmti                                      GPL_WITH_CLASSPATH_EXCEPTION
+aosp10/bionic/libc                                           BSD
+aosp10/bionic/libdl                                          BSD
+aosp10/bionic/libm                                           BSD_LIKE
+aosp10/bionic/libstdc++                                      BSD
+aosp10/bionic/linker                                         BSD
+aosp10/external/apache-http                                  APACHE2
+aosp10/external/apache-xml                                   APACHE2
+aosp10/external/boringssl                                    BSD_LIKE
+aosp10/external/boringssl/src                                -
+aosp10/external/bouncycastle                                 BSD_LIKE
+aosp10/external/conscrypt                                    APACHE2
+aosp10/external/dlmalloc                                     PUBLIC_DOMAIN
+aosp10/external/expat                                        MIT
+aosp10/external/fdlibm                                       BSD_LIKE
+aosp10/external/flac                                         BSD_LIKE
+aosp10/external/flac/libFLAC                                 BSD_LIKE
+aosp10/external/freetype                                     BSD_LIKE
+aosp10/external/giflib                                       MIT
+aosp10/external/harfbuzz_ng                                  MIT
+aosp10/external/icu                                          BSD_LIKE
+aosp10/external/icu/icu4c                                    -
+aosp10/external/jsr305                                       BSD_LIKE
+aosp10/external/jsr305/ri                                    -
+aosp10/external/libjpeg-turbo                                BSD
+aosp10/external/libphonenumber                               APACHE2
+aosp10/external/libpng                                       BSD_LIKE
+aosp10/external/libtextclassifier                            APACHE2
+aosp10/external/libvpx                                       BSD
+aosp10/external/libvpx/libvpx                                -
+aosp10/external/lz4                                          GPL
+aosp10/external/lz4/examples                                 -
+aosp10/external/lz4/lib                                      BSD
+aosp10/external/lz4/programs                                 -
+aosp10/external/nist-sip                                     PUBLIC_DOMAIN
+aosp10/external/noto-fonts/cjk                               OFL
+aosp10/external/noto-fonts/emoji                             OFL
+aosp10/external/noto-fonts/emoji-compat                      OFL, UNICODE
+aosp10/external/noto-fonts/other                             OFL
+aosp10/external/noto-fonts/other-vf                          -
+aosp10/external/okhttp                                       APACHE2
+aosp10/external/okhttp/okio                                  APACHE2
+aosp10/external/piex                                         APACHE2
+aosp10/external/protobuf                                     APACHE2
+aosp10/external/rappor                                       APACHE2
+aosp10/external/roboto-fonts                                 APACHE2
+aosp10/external/skia                                         BSD
+aosp10/external/sqlite/android                               -
+aosp10/external/sqlite/dist                                  PUBLIC_DOMAIN
+aosp10/external/tagsoup                                      APACHE2
+aosp10/external/tremolo                                      BSD_LIKE
+aosp10/external/webp                                         BSD
+aosp10/external/zlib                                         BSD_LIKE
+aosp10/frameworks/av                                         APACHE2
+aosp10/frameworks/av/camera                                  APACHE2
+aosp10/frameworks/base                                       APACHE2
+aosp10/frameworks/base/keystore                              APACHE2
+aosp10/frameworks/base/obex                                  BSD_LIKE
+aosp10/frameworks/native                                     APACHE2
+aosp10/hardware/interfaces                                   APACHE2
+aosp10/hardware/libhardware                                  APACHE2
+aosp10/libcore                                               -
+aosp10/libcore/dalvik                                        APACHE2
+aosp10/libcore/json                                          BSD_LIKE
+aosp10/libcore/luni                                          APACHE2, BSD_LIKE, W3C
+aosp10/libcore/ojluni                                        GPL_WITH_CLASSPATH_EXCEPTION
+aosp10/libcore/support                                       APACHE2
+aosp10/libnativehelper                                       APACHE2
+aosp10/packages/services/Telephony                           APACHE2
+aosp10/system/bt                                             APACHE2
+aosp10/system/core                                           APACHE2
+aosp10/system/core/adb                                       APACHE2
+aosp10/system/core/debuggerd                                 APACHE2
+aosp10/system/core/init                                      APACHE2
+aosp10/system/core/libcutils                                 APACHE2
+aosp10/system/core/libgrallocusage                           APACHE2
+aosp10/system/core/liblog                                    -
+aosp10/system/core/libnetutils                               -
+aosp10/system/core/libpixelflinger                           APACHE2
+aosp10/system/core/libsync                                   -
+aosp10/system/core/libutils                                  APACHE2
+aosp10/system/core/logcat                                    APACHE2
+aosp10/system/core/logwrapper                                -
+aosp10/system/core/run-as                                    -
+aosp10/system/core/toolbox                                   APACHE2
+aosp10/system/libhidl                                        APACHE2
+aosp10/system/libhwbinder                                    APACHE2
+aosp10/system/media                                          APACHE2
+aosp10/system/media/audio_route                              BSD
+aosp10/system/security                                       APACHE2
+aosp10/system/tools/hidl                                     APACHE2
+aosp10/system/update_engine                                  APACHE2
