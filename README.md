@@ -91,6 +91,16 @@ Once the first app has launched, you can install and use other apps offline.
 8. Details: `README.txt` in the archive (the launcher's has "How it works" and "Updating").
    Back to the previous version: start with `--rollback`; other systems: `--variant all`.
 
+## Запуск эмулятора в браузере / Run the emulator in a browser
+
+[Открыть SENSES Web Apps на GitHub Pages](https://istratii-tech.github.io/SENSES-Web-Apps/). Здесь работает Android 10: выберите APK, и он запустится в браузере. APK и данные остаются в локальном хранилище браузера и не загружаются на сайт. Первый запуск скачивает около 125 МБ системных файлов.
+
+GitHub Pages не предоставляет сетевой мост, поэтому приложения внутри эмулятора не имеют доступа к интернету. Для приложений с сетью используйте запускатор и локальный сервер из инструкций выше.
+
+[Open SENSES Web Apps on GitHub Pages](https://istratii-tech.github.io/SENSES-Web-Apps/). It runs Android 10 in the browser. Choose an APK to launch it; the APK and app data stay in the browser's local storage and are not uploaded to the site. The first launch downloads about 125 MB of system files.
+
+GitHub Pages has no SENSES network relay, so Android apps on the page cannot access the internet. Use the launcher and local server above for apps that need networking.
+
 ## О сертификате / About the certificate
 
 Сертификат для телефона простыми словами
