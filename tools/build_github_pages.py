@@ -312,8 +312,9 @@ def patch_vm_page(source: str, version: str) -> str:
         "    $('loading-detail').textContent = 'Файлы загружены — запускается Android';\n"
         "    $('loading-percent').textContent = '100%';\n"
         "    $('loading-fill').style.width = '100%';\n"
-        "    $('startup').classList.add('indeterminate');\n"
-        "    $('loading-bar').removeAttribute('aria-valuenow');\n"
+        "    $('startup').classList.remove('indeterminate');\n"
+        "    $('loading-count').textContent = 'Запуск приложения · 0 с';\n"
+        "    $('loading-bar').setAttribute('aria-valuenow', '100');\n"
         "    $('loading-bar').setAttribute('aria-valuetext', 'Файлы загружены, запускается приложение');\n"
         '  }\n'
         '  function start(pkg) {\n'
