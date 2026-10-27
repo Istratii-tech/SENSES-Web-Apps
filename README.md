@@ -19,6 +19,8 @@ Requests and questions: issues of this repository or `https://t.me/istratii_tech
 
 Инструкция: как пользоваться SENSES Web Apps
 
+Попробуйте без установки: https://istratii-tech.github.io/SENSES-Web-Apps/vm/ При первом запуске загрузятся системные файлы Android (около 125 МБ); индикатор покажет ход загрузки.
+
 **Какой файл качать.** Обычно — **запускатор** `SENSES-Web-Apps-launcher-ВЕРСИЯ.zip` (~35 КБ) из Releases
 этого репозитория. При каждом запуске он сам скачивает на компьютер последнюю версию SENSES Web Apps
 отсюда же (Android 10 — ~58 МБ; все системы — ~170 МБ, по `--variant all`), сверяет SHA-256 и
@@ -26,27 +28,37 @@ Requests and questions: issues of this repository or `https://t.me/istratii_tech
 `…-android10.zip` и `…-all.zip` — для компьютера без интернета: их распаковывают и запускают так же
 (или отдают запускатору: `--install ПУТЬ.zip`).
 
-1. Скачайте запускатор (или полный архив) и распакуйте его на компьютере (macOS, Windows или Linux).
-2. Нужен Python 3.8 или новее (https://www.python.org/downloads/; в Windows отметьте «Add python.exe to PATH»).
+1. Скачайте launcher (или полный архив) и распакуйте его на компьютере (macOS, Windows или Linux).
+2. Установите Python 3.8 или новее (https://www.python.org/downloads/; в Windows отметьте «Add python.exe to PATH»). 
+   На macos скорее всего установится автоматически.
 3. Запустите «Start SENSES.command» (macOS), «Start SENSES.bat» (Windows) или `./start-senses.sh` (Linux).
+   Выберите систему. Лучше всего сейчас работает Андроид 10.
+   Вы так же можете запустить через iSH на айфоне без компьютера.
    Запускатор скачает систему Android 10 и покажет загрузку. Затем появится окно с
-   QR-кодом и адресом; не закрывайте его, пока пользуетесь приложениями.
+   QR-кодом и адресом; не закрывайте его, пока не запустите первое приложение.
 4. На iPhone в той же сети Wi-Fi наведите «Камеру» на QR-код. Один раз для телефона страница проведёт по
    шагам: «Скачать профиль» → Настройки → «Профиль загружен» → «Установить» → Основные → Об этом
-   устройстве → «Доверие сертификатам» → включить сертификат SENSES. Затем — «Открыть SENSES Web Apps».
+   устройстве → «Доверие сертификатам» → включить сертификат SENSES. Затем вернитесь в Safari и нажмите «Открыть SENSES Web Apps».
    Если страница не предлагает профиль — отсканируйте второй QR-код «Профиль для iPhone» (в окне и на
    странице компьютера) или откройте `http://АДРЕС:8499/p`.
+   Система с установкой вашего личного сертификата требуется для безопасности. 
+   Вы можете установить и чужой сертификат, но так делать не рекомендуется.
 5. **Предупреждение Safari.** Safari может сам открыть адрес по https и показать «Подключение не защищено».
    Это ожидаемо, пока профиль не установлен: нажмите «Подробнее» → «Посетить веб-сайт» (это сертификат
    вашего же компьютера). После установки профиля и включения доверия к нему предупреждение исчезает.
    Если после «Посетить веб-сайт» ничего не происходит — полностью закройте Safari (смахните его вверх в
    переключателе приложений) и откройте адрес снова.
 6. Скачайте Android-приложение (.apk, .apks, .xapk) на телефон, в SENSES нажмите «Установить приложение»
-   и выберите файл. Совет: «Поделиться» → «На экран „Домой“».
-7. Подробно — `README-ru.txt` в архиве (разделы «Как это работает» и «Обновление» — в запускаторе).
+   и выберите файл из приложения "Файлы". Совет: в Safari выберите «Поделиться» → «На экран „Домой“», на рабочем столе появится иконка.
+   У иконки на рабочем столе будет своя библиотека приложений.
+7. При запуске первого приложения будет загружена система Андроид с вашего компьютера.
+   После успешного запуска первого приложения, устанавливать и пользоваться другими приложениями можно оффлайн.
+8. Подробно — `README-ru.txt` в архиве (разделы «Как это работает» и «Обновление» — в запускаторе).
    Откат к прошлой версии: запуск с `--rollback`; другие системы: `--variant all`.
 
 How to use SENSES Web Apps
+
+Try it without installing: https://istratii-tech.github.io/SENSES-Web-Apps/vm/ The first launch downloads Android system files (~125 MB); a progress indicator shows the download status.
 
 **Which file to download.** Usually the **launcher**, `SENSES-Web-Apps-launcher-VERSION.zip` (~35 KB), from
 this repository's Releases. At each start it downloads the latest SENSES Web Apps from here to your
@@ -55,25 +67,43 @@ starts it; updates come by themselves, and the certificate and the phone's apps 
 `…-android10.zip` and `…-all.zip` are for a computer without internet: unpack and start them the same
 way (or give one to the launcher: `--install PATH.zip`).
 
-1. Download the launcher (or a full archive) and unpack it on your computer (macOS, Windows or Linux).
-2. You need Python 3.8 or newer (https://www.python.org/downloads/; on Windows tick "Add python.exe to PATH").
-3. Start "Start SENSES.command" (macOS), "Start SENSES.bat" (Windows) or `./start-senses.sh` (Linux).
-   The launcher downloads the Android 10 system and shows the download. Then a window
-   shows a QR code and an address; keep it open while you use the apps.
-4. On your iPhone, on the same Wi-Fi, point the Camera at the QR code. Once per phone the page walks you
-   through it: Download the profile → Settings → Profile Downloaded → Install → General → About →
-   Certificate Trust Settings → turn on the SENSES certificate. Then "Open SENSES Web Apps".
-   If the page does not offer the profile, scan the second QR code, "The iPhone profile" (in the window and
-   on the computer's page), or open `http://ADDRESS:8499/p`.
-5. **Safari's warning.** Safari may open the address over https by itself and show "This Connection Is Not
-   Private". That is expected until the profile is installed: tap Show Details → visit this website (it is
-   your own computer's certificate). Once the profile is installed and trusted, the warning goes away.
-   If nothing happens after "visit this website", close Safari completely (swipe it up in the app
-   switcher) and open the address again.
-6. Download an Android app (.apk, .apks, .xapk) to the phone, tap "Install app" in SENSES and pick the
-   file. Tip: Share → Add to Home Screen.
-7. Details: `README.txt` in the archive (the launcher's has "How it works" and "Updating").
+1. Download the launcher (or the full archive) and extract it on your computer (macOS, Windows or Linux).
+2. Install Python 3.8 or newer (https://www.python.org/downloads/; on Windows, check “Add python.exe to PATH”).
+On macOS it will most likely be installed automatically.
+3. Run “Start SENSES.command” (macOS), “Start SENSES.bat” (Windows) or ./start-senses.sh (Linux).
+You can also run it via iSH on your iPhone without a computer.
+Choose a system. Android 10 currently works best.
+The launcher will download Android 10 and show the download progress. A window with a
+QR code and an address will then appear. Keep it open until you have launched your first app.
+4. OOn an iPhone connected to the same Wi-Fi network, point the Camera at the QR code. The first time on each phone, the page walks you through
+these steps: “Download profile” → Settings → “Profile Downloaded” → “Install” → General → About →
+“Certificate Trust Settings” → turn on the SENSES certificate. Then go back to Safari and tap “Open SENSES Web Apps”.
+If the page doesn’t offer the profile, scan the second QR code, “Profile for iPhone” (shown in the window and on the
+computer’s page), or open http://ADDRESS:8499/p.
+For security, the system needs you to install your own personal certificate.
+You can install someone else’s certificate too, but we don’t recommend it.
+5. **Safari's warning.** Safari may switch the address to https by itself and show “This Connection Is Not Private”.
+This is expected until the profile is installed. Tap “Show Details” → “visit this website” (the certificate
+belongs to your own computer). The warning goes away once you install the profile and turn on trust for it.
+If nothing happens after “visit this website”, fully close Safari (swipe it up in the
+app switcher) and open the address again.
+6. Download an Android app (.apk, .apks, .xapk) to your phone. In SENSES, tap “Install app”
+and pick the file in the Files app. Tip: in Safari, tap Share → “Add to Home Screen” to put an icon on your Home Screen.
+That Home Screen icon gets its own app library.
+7. When you launch your first app, the Android system is loaded from your computer.
+Once the first app has launched, you can install and use other apps offline.
+8. Details: `README.txt` in the archive (the launcher's has "How it works" and "Updating").
    Back to the previous version: start with `--rollback`; other systems: `--variant all`.
+
+## Запуск эмулятора в браузере / Run the emulator in a browser
+
+[Открыть SENSES Web Apps на GitHub Pages](https://istratii-tech.github.io/SENSES-Web-Apps/). Здесь работает Android 10: выберите APK, и он запустится в браузере. APK и данные остаются в локальном хранилище браузера и не загружаются на сайт. Первый запуск скачивает около 125 МБ системных файлов.
+
+GitHub Pages не предоставляет сетевой мост, поэтому приложения внутри эмулятора не имеют доступа к интернету. Для приложений с сетью используйте запускатор и локальный сервер из инструкций выше.
+
+[Open SENSES Web Apps on GitHub Pages](https://istratii-tech.github.io/SENSES-Web-Apps/). It runs Android 10 in the browser. Choose an APK to launch it; the APK and app data stay in the browser's local storage and are not uploaded to the site. The first launch downloads about 125 MB of system files.
+
+GitHub Pages has no SENSES network relay, so Android apps on the page cannot access the internet. Use the launcher and local server above for apps that need networking.
 
 ## О сертификате / About the certificate
 
