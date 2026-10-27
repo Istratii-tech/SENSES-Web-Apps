@@ -1,4 +1,4 @@
-SENSES Web Apps 2026.10.25 (android10)
+SENSES Web Apps 2026.10.27 (android10)
 ====================================================
 
 SENSES Web Apps runs Android apps in a web browser. This package holds the
@@ -41,7 +41,7 @@ with the patches in the SENSES Web Apps repository
 (https://github.com/Istratii-tech/SENSES-Web-Apps, patches/), which also holds
 the rest of the source. The parts under the GNU GPL with the Classpath
 Exception (libcore's ojluni of Android 8.1 and 10), exactly as built, are the
-release's file SENSES-Web-Apps-2026.10.25-gpl-sources.tar.gz.
+release's file SENSES-Web-Apps-2026.10.27-gpl-sources.tar.gz.
 
 AOSP projects in this package (folder: licence marker)
 ------------------------------------------------------

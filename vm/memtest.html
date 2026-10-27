@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Тест памяти — SENSES</title>
+<link rel="stylesheet" href="senses.css">
+<style>
+  body { background: #000; color: #e8e8e8; margin: 0; padding: calc(env(safe-area-inset-top) + 16px) 16px 24px;
+         font: 15px -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 22px; font-weight: 600; margin: 4px 0 10px; }
+  p { color: #a8a8a8; line-height: 1.4; margin: 8px 0; }
+  #now { font-size: 40px; font-weight: 700; margin: 18px 0 6px; font-variant-numeric: tabular-nums; min-height: 48px; }
+  #what { color: #a8a8a8; min-height: 20px; }
+  .res { background: #161616; border-radius: 12px; padding: 12px 14px; margin: 14px 0; }
+  .res div { display: flex; justify-content: space-between; padding: 4px 0; }
+  .res span:last-child { font-variant-numeric: tabular-nums; }
+  button { display: block; width: 100%; margin: 10px 0; padding: 13px 0; border: 0; border-radius: 12px;
+           font: inherit; font-weight: 600; background: #e8e8e8; color: #000; }
+  button.second { background: #222; color: #e8e8e8; font-weight: 400; }
+  button[hidden] { display: none; }
+</style>
+</head>
+<body>
+<!-- How much this device lets a tab hold before the browser closes it, and
+     what one more idle VM thread costs (docs/topics/ios-threads.md). Two
+     steps, each ends with the browser closing the tab, which reloads this
+     page: it then keeps the result (localStorage, the app's page uses it:
+     senses-mem-limit) and goes on with the next step or back. The apps'
+     memory budget and wasm memory follow the limit (shim/membudget/
+     mem_plan.js, topic device-mem-budget).
+     ?open=PKG (the library's offer before a heavy app, or the app's "Мало
+     памяти"): that app opens after the test (the library's ?open=PKG&loops=1).
+     ?start=1 (tests on phones nobody holds): the test starts by itself.
+       memory   plain memory, 16 MB a step, filled
+       threads  idle VM thread workers (the 8.1 system's JS and module on a
+                shared memory), one a step
+     Steps go to tools/serve.py's log too ("memtest: ..."). -->
+<h1>Тест памяти устройства</h1>
+<p>SENSES узнает, сколько памяти браузер даёт вкладке на этом устройстве и сколько стоит
+   один поток приложения. По этим числам SENSES даёт приложениям столько памяти, сколько выдержит
+   вкладка, и заранее предупреждает о нехватке.</p>
+<p>Тест идёт около двух минут. Дважды браузер сам закроет и откроет страницу — так и должно быть.
+   Закройте другие вкладки и приложения, чтобы числа были точнее.</p>
+<div id="now"></div>
+<div id="what"></div>
+<div class="res" id="res" hidden></div>
+<button id="start">Начать тест</button>
+<button id="open" hidden>Открыть приложение</button>
+<button id="back" class="second">В библиотеку</button>
+<script src="report.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var KEY = 'senses-mem-limit', RUN = 'senses-memtest-run';
+  var VM = 'a81/artvm8';
+  var openPkg = new URLSearchParams(location.search).get('open') || '';
+  function log(s) { try { arcReport('memtest: ' + s); } catch (e) {} }
+  function load(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
+  function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function showResult(r) {
+    if (!r) return;
+    var rows = [['Предел вкладки', r.mb ? r.mb + ' МБ' : '—'],
+                ['Один поток', r.threadMb ? '≈ ' + r.threadMb.toFixed(1) + ' МБ' : '—'],
+                ['Потоков до закрытия', r.threads ? String(r.threads) : '—'],
+                ['Проверено', r.at ? new Date(r.at).toLocaleString('ru') : '—']];
+    $('res').textContent = '';
+    rows.forEach(function (x) {
+      var d = document.createElement('div'), a = document.createElement('span'), b = document.createElement('span');
+      a.textContent = x[0]; b.textContent = x[1];
+      d.appendChild(a); d.appendChild(b); $('res').appendChild(d);
+    });
+    $('res').hidden = false;
+  }
+  $('back').onclick = function () { location.replace('./'); };
+  $('open').onclick = function () { location.replace('./?open=' + encodeURIComponent(openPkg) + '&loops=1'); };
+  $('start').onclick = function () {
+    save(RUN, {step: 'memory', mb: 0, threads: 0, started: Date.now()});
+    log('start · ' + navigator.userAgent);
+    memory();
+  };
+
+  // A run in progress when the page loads again: the browser closed the tab
+  // at the last saved step.
+  var run = load(RUN), result = load(KEY);
+  showResult(result);
+  if (run && run.step === 'memory' && !run.memoryDone) {
+    run.memoryDone = true;
+    run.limit = run.mb;
+    save(RUN, run);
+    log('memory: the tab was closed at ' + run.mb + ' MB');
+    $('now').textContent = run.mb + ' МБ';
+    $('what').textContent = 'Предел найден. Теперь потоки…';
+    $('start').hidden = true;
+    setTimeout(threads, 1500);
+  } else if (run && run.step === 'threads') {
+    finish(run);
+  } else if (new URLSearchParams(location.search).get('start') === '1' && !(run && run.step)) {
+    setTimeout(function () { $('start').onclick(); }, 1000);
+  }
+
+  async function memory() {
+    $('start').hidden = true; $('back').hidden = true;
+    $('what').textContent = 'Шаг 1 из 2: занимаю память, пока браузер не закроет вкладку';
+    var keep = [], STEP = 16, run = load(RUN);
+    for (var mb = STEP; mb <= 8192; mb += STEP) {
+      var a = new Uint32Array(STEP * 262144);
+      var x = (mb * 2654435761) >>> 0;  // different values: zeros or repeats compress
+      for (var i = 0; i < a.length; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; a[i] = x; }
+      keep.push(a);
+      run.mb = mb; save(RUN, run);
+      $('now').textContent = mb + ' МБ';
+      if (mb % 128 === 0) log('memory ' + mb + ' MB');
+      await sleep(mb % 64 === 0 ? 250 : 25);
+    }
+    // Never closed (a desktop): 8 GB is limit enough.
+    run.memoryDone = true; run.limit = 8192; save(RUN, run);
+    keep = null;
+    location.reload();
+  }
+
+  async function threads() {
+    $('back').hidden = true;
+    $('what').textContent = 'Шаг 2 из 2: добавляю потоки, пока браузер не закроет вкладку';
+    var run = load(RUN);
+    run.step = 'threads'; run.threads = 0; save(RUN, run);
+    var module = await WebAssembly.compileStreaming(fetch(VM + '.wasm'));
+    var memory = new WebAssembly.Memory({initial: 4096, maximum: 24576, shared: true});
+    var workers = [];
+    for (var n = 1; n <= 600; n++) {
+      var w = new Worker(VM + '.js', {name: 'em-pthread-' + n});
+      workers.push(w);
+      await new Promise(function (res) {
+        w.onmessage = function (e) { if (e.data && e.data.cmd === 3) res(); };
+        w.onerror = function () { res(); };
+        w.postMessage({cmd: 1, handlers: [], wasmMemory: memory, wasmModule: module, workerID: n});
+      });
+      run.threads = n; save(RUN, run);
+      $('now').textContent = n + ' потоков';
+      if (n % 10 === 0) log('threads ' + n);
+      await sleep(n % 5 === 0 ? 250 : 40);
+    }
+    run.threadsDone = true; save(RUN, run);
+    location.reload();
+  }
+
+  function finish(run) {
+    // The page with the module (~60 MB on a phone: the page, the compiled
+    // module, the memory's touched part) and N workers reached the limit.
+    var base = 80;
+    var r = {mb: run.limit || 0, threads: run.threads || 0, at: Date.now(), ua: navigator.userAgent};
+    r.threadMb = r.mb && r.threads ? Math.max(1, (r.mb - base) / r.threads) : 0;
+    save(KEY, r);
+    localStorage.removeItem(RUN);
+    // (not again on a reload: ?start=1 goes)
+    var q = new URLSearchParams(location.search);
+    if (q.has('start')) { q.delete('start'); history.replaceState(null, '', '?' + q); }
+    log('result: tab limit ' + r.mb + ' MB, ' + r.threads + ' idle threads, ~' + r.threadMb.toFixed(1) + ' MB each');
+    showResult(r);
+    $('now').textContent = 'Готово';
+    $('what').textContent = 'SENSES учтёт эти числа при запуске приложений.';
+    $('start').textContent = 'Пройти тест снова';
+    $('start').hidden = false;
+    $('back').hidden = false;
+    if (openPkg) {
+      $('open').hidden = false;
+      $('start').className = 'second';
+    }
+  }
+})();
+</script>
+</body>
+</html>

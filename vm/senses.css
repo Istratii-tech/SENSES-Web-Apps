@@ -1,0 +1,83 @@
+/* SENSES Web Apps: the shared look (topic senses-shell). Dark as SENSES:
+   black, grey outlines (#969696), the metal SENSES plate, its control panel's
+   dark sheets (#121212, buttons #1f1f1f). */
+:root { --bg: #000; --card: #121212; --btn: #1f1f1f; --press: #2c2c2c; --fg: #e3e3e3; --fg2: #c4c4c4;
+        --muted: #8d8d8d; --bad: #ff7b72; color-scheme: dark; }
+html, body { margin: 0; background: var(--bg); color: var(--fg);
+             font: 15px/1.45 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+             -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+             -webkit-text-size-adjust: 100%; overscroll-behavior: none; }
+[hidden] { display: none !important; }
+button { font: inherit; color: inherit; cursor: pointer; }
+button.primary, .sheet button.primary { background: #e3e3e3; color: #000; font-weight: 600; text-align: center; }
+button.primary:active, .sheet button.primary:active { background: #bdbdbd; }
+#add { height: 50px; border: 0; border-radius: 25px; font-size: 16px; -webkit-tap-highlight-color: transparent; }
+
+.sheet { position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: flex-end;
+         background: #000a; z-index: 10; }
+.sheet[hidden] { display: none; }
+.sheet .box { background: var(--card); border-radius: 18px 18px 0 0; max-height: 92%; overflow-y: auto;
+              width: 100%; max-width: 560px; margin: 0 auto; box-sizing: border-box;
+              padding: 16px calc(14px + env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom))
+                       calc(14px + env(safe-area-inset-left));
+              display: flex; flex-direction: column; gap: 8px; }
+.sheet button { min-height: 48px; border: 0; border-radius: 12px; background: var(--btn); color: var(--fg);
+                font-size: 16px; text-align: left; padding: 0 16px; -webkit-tap-highlight-color: transparent; }
+.sheet button:active { background: var(--press); }
+.sheet button[hidden] { display: none; }
+.sheet button.close { text-align: center; color: #9a9a9a; background: none; }
+.sheet button.danger { color: #ff8a80; }
+.sheet .row button { text-align: center; padding: 0 8px; }
+.sheetlogo { display: block; height: 30px; margin: 4px auto 10px; }
+
+.bar { height: 6px; margin: 6px 2px; border-radius: 3px; background: #ffffff1a; overflow: hidden; }
+.bar[hidden] { display: none; }
+.bar > div { height: 100%; width: 0; background: #d3d1d1; transition: width .2s; }
+.bar.busy > div { width: 30%; animation: busy 1.4s ease-in-out infinite; }
+@keyframes busy { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+
+#logbox { position: fixed; left: 0; right: 0; bottom: 0; height: 60%; display: flex; flex-direction: column;
+          background: #000e; border-top: 1px solid #222; z-index: 20; }
+#logbox[hidden] { display: none; }
+#logbar { display: flex; align-items: center; gap: 8px; flex: none; height: 40px; padding: 0 8px;
+          background: #121212; color: #9a9a9a; font-size: 14px; }
+#logbar button { height: 32px; border: 0; border-radius: 8px; background: #1f1f1f; color: #e3e3e3;
+                 padding: 0 12px; }
+#log { flex: 1; margin: 0; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); overflow: auto;
+       color: #9aa1b2; font: 11px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word;
+       -webkit-user-select: text; user-select: text; }
+/* «Сервисы Google» (google.js, topic gms) */
+.gms-note { color: #9a9a9a; font-size: 14px; line-height: 1.4; margin: 4px 0 8px; }
+.gms-stack h3 { font-size: 15px; margin: 14px 0 6px; }
+.gms-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.gms-list li { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid #ffffff14; }
+.gms-list li .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.gms-list li .pkg { color: #9a9a9a; font-size: 13px; }
+.gms-list li.gms-none { color: #9a9a9a; font-size: 14px; }
+.gms-list li button { flex: none; padding: 0 12px; }
+.gms-status { min-height: 1.4em; margin: 8px 0 4px; font-size: 14px; }
+.gms-status.error { color: #ff8a80; }
+/* Files between apps and the phone (files.js, topic app-files) */
+.files-sheet h2 { font-size: 18px; margin: 2px 0 2px; }
+.files-note { color: #9a9a9a; font-size: 14px; line-height: 1.4; margin: 0 0 6px; overflow-wrap: anywhere; }
+.files-status { min-height: 1.4em; margin: 4px 0; font-size: 14px; overflow-wrap: anywhere; }
+.files-status.error { color: #ff8a80; }
+.files-list { list-style: none; margin: 0 0 6px; padding: 0; }
+.files-list li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 10px 2px;
+                 border-bottom: 1px solid #ffffff14; }
+.files-list li.dir, .files-list li.file { cursor: pointer; }
+.files-list li .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.files-list li.dir .name { color: #cfd8ff; }
+.files-list li .meta { color: #9a9a9a; font-size: 13px; font-variant-numeric: tabular-nums; }
+.files-list li.files-none { color: #9a9a9a; font-size: 14px; }
+.files-list .files-acts { flex-basis: 100%; display: flex; gap: 8px; margin-top: 6px; }
+.files-list .files-acts button { flex: 1; min-height: 40px; font-size: 15px; }
+.files-stacks { display: flex; gap: 6px; }
+.files-stacks button { flex: 1; min-height: 38px; }
+.files-stacks button.on { background: #e3e3e3; color: #000; font-weight: 600; }
+.files-path { display: flex; align-items: center; gap: 8px; color: #c4c4c4; font-size: 14px; overflow-wrap: anywhere; }
+.files-path .files-up { min-height: 34px; width: 40px; padding: 0; text-align: center; flex: none; }
+.files-path .files-up:disabled { opacity: .35; }
+.files-text { margin: 0 0 6px; padding: 10px; border-radius: 10px; background: #1a1a1a; color: #d0d0d0;
+              font: 13px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; max-height: 40vh;
+              overflow: auto; -webkit-user-select: text; user-select: text; }
