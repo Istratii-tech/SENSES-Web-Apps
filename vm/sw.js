@@ -12,7 +12,7 @@
 //   wasm threads work on hosts that cannot set them.
 'use strict';
 
-const VERSION = '62cef974ba3e';
+const VERSION = '6d5248f899a3';
 // "a81:hash a60:hash a44:hash": a system's cache changes only with its files.
 const SYSTEMS = 'a10:0a8e1a52f5cc '.split(' ').filter(Boolean).map((s) => s.split(':'));
 const SHELL_CACHE = 'senses-apps-' + VERSION;
@@ -30,8 +30,21 @@ function cacheFor(url) {
   return SHELL_CACHE;
 }
 
+// No earlier build of this library here (a first visit, or another site's
+// worker at this scope -- the GitHub Pages demo once had its own, whose pages
+// never ask for skipWaiting): take over at once instead of waiting for every
+// tab to close. An earlier build's pages ask for it themselves (senses.js).
+let replacing = false;  // another site's worker was in charge: its pages reload once we are
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(SHELL_CACHE).then((cache) => cache.addAll(SHELL)));
+  event.waitUntil((async () => {
+    const ours = (await caches.keys()).some((name) => name.startsWith('senses-apps-'));
+    replacing = !ours && !!self.registration.active;
+    const cache = await caches.open(SHELL_CACHE);
+    // From the server, not the browser's HTTP cache: GitHub Pages lets pages
+    // be cached for 10 minutes, and a new build must not keep an old index.html.
+    await cache.addAll(SHELL.map((path) => new Request(path, {cache: 'reload'})));
+    if (!ours) await self.skipWaiting();
+  })());
 });
 
 // A page asks a new build's worker to take over (senses.js, serviceWorker),
@@ -63,6 +76,12 @@ self.addEventListener('activate', (event) => {
       if (name.startsWith('senses-') && !keep.has(name)) await dropCache(name);
     }
     await self.clients.claim();
+    // The other worker's pages do not know this library: show them its pages.
+    if (replacing) {
+      for (const client of await self.clients.matchAll({type: 'window'})) {
+        try { await client.navigate(client.url); } catch (e) {}
+      }
+    }
   })());
 });
 
