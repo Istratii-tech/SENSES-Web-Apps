@@ -421,6 +421,7 @@ public final class WindowManagerService extends arcwasm.server.base.WindowManage
             outOverscanInsets.setEmpty();
             contentInsetsLocked(win, outContentInsets);
             outVisibleInsets.set(outContentInsets);
+            imeInsetsLocked(win, outContentInsets, outVisibleInsets);
             stableInsetsLocked(win, outStableInsets);
             if (outOutsets != null) {
                 outOutsets.setEmpty();
@@ -456,6 +457,66 @@ public final class WindowManagerService extends arcwasm.server.base.WindowManage
         out.setEmpty();
         if (win.takesDecorInsets() && !win.laysOutBelowDecor()) {
             out.top = Math.max(0, mDecorTop - win.mFrame.top);
+        }
+    }
+
+    // --- the soft keyboard (topic ios-audio-keyboard) ---------------------------------------
+    // The page's keyboard covers the bottom of the display (the input method
+    // service hears how much from the page): windows under it get insets, as
+    // PhoneWindowManager lays them out around an input method window --
+    // visible insets (ViewRootImpl pans the focused view into sight:
+    // adjustPan), and content insets too for adjustResize.
+
+    // Display pixels at the bottom the keyboard covers; 0: none.
+    private int mImeHeight;
+
+    /** The input method service: the keyboard now covers |height| px. */
+    public void setImeHeight(int height) {
+        synchronized (mLock) {
+            if (height == mImeHeight) {
+                return;
+            }
+            mImeHeight = height;
+            for (final WindowState w : mWindows) {
+                if (w.mRemoved || !w.isVisibleRequested()) {
+                    continue;
+                }
+                final Rect frame = new Rect(w.mFrame);
+                final Rect content = new Rect();
+                final Rect visible = new Rect();
+                final Rect stable = new Rect();
+                contentInsetsLocked(w, content);
+                visible.set(content);
+                imeInsetsLocked(w, content, visible);
+                stableInsetsLocked(w, stable);
+                postToClient(new Runnable() {
+                    public void run() {
+                        try {
+                            w.mClient.resized(frame, new Rect(), content, visible, stable,
+                                    new Rect(), false, null);
+                        } catch (RemoteException e) {
+                            // In process: not thrown.
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    private void imeInsetsLocked(WindowState win, Rect outContentInsets, Rect outVisibleInsets) {
+        if (mImeHeight <= 0) {
+            return;
+        }
+        final int covered = Math.min(win.mFrame.bottom - (mDisplayHeight - mImeHeight),
+                win.mFrame.height());
+        final int adjust = win.mAttrs.softInputMode
+                & WindowManager.LayoutParams.SOFT_INPUT_MASK_ADJUST;
+        if (covered <= 0 || adjust == WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING) {
+            return;
+        }
+        outVisibleInsets.bottom = covered;
+        if (adjust == WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE) {
+            outContentInsets.bottom = covered;
         }
     }
 

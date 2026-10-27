@@ -57,3 +57,27 @@ button.primary:active, .sheet button.primary:active { background: #bdbdbd; }
 .gms-list li button { flex: none; padding: 0 12px; }
 .gms-status { min-height: 1.4em; margin: 8px 0 4px; font-size: 14px; }
 .gms-status.error { color: #ff8a80; }
+/* Files between apps and the phone (files.js, topic app-files) */
+.files-sheet h2 { font-size: 18px; margin: 2px 0 2px; }
+.files-note { color: #9a9a9a; font-size: 14px; line-height: 1.4; margin: 0 0 6px; overflow-wrap: anywhere; }
+.files-status { min-height: 1.4em; margin: 4px 0; font-size: 14px; overflow-wrap: anywhere; }
+.files-status.error { color: #ff8a80; }
+.files-list { list-style: none; margin: 0 0 6px; padding: 0; }
+.files-list li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 10px 2px;
+                 border-bottom: 1px solid #ffffff14; }
+.files-list li.dir, .files-list li.file { cursor: pointer; }
+.files-list li .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.files-list li.dir .name { color: #cfd8ff; }
+.files-list li .meta { color: #9a9a9a; font-size: 13px; font-variant-numeric: tabular-nums; }
+.files-list li.files-none { color: #9a9a9a; font-size: 14px; }
+.files-list .files-acts { flex-basis: 100%; display: flex; gap: 8px; margin-top: 6px; }
+.files-list .files-acts button { flex: 1; min-height: 40px; font-size: 15px; }
+.files-stacks { display: flex; gap: 6px; }
+.files-stacks button { flex: 1; min-height: 38px; }
+.files-stacks button.on { background: #e3e3e3; color: #000; font-weight: 600; }
+.files-path { display: flex; align-items: center; gap: 8px; color: #c4c4c4; font-size: 14px; overflow-wrap: anywhere; }
+.files-path .files-up { min-height: 34px; width: 40px; padding: 0; text-align: center; flex: none; }
+.files-path .files-up:disabled { opacity: .35; }
+.files-text { margin: 0 0 6px; padding: 10px; border-radius: 10px; background: #1a1a1a; color: #d0d0d0;
+              font: 13px/1.4 ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; max-height: 40vh;
+              overflow: auto; -webkit-user-select: text; user-select: text; }

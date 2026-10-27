@@ -28,6 +28,13 @@ public class TrampolineActivity extends Activity {
             mAsked = true;
             // From onResume: the window would be hidden for now (another
             // activity is starting), so none is made yet.
+            Intent ask = getIntent().getParcelableExtra("ask");
+            if (ask != null) {
+                // A system screen of files (topic app-files): an open or a
+                // save, answered by the page (AppFilesTest10).
+                startActivityForResult(ask, 8);
+                return;
+            }
             startActivityForResult(new Intent(this, ResultActivity.class)
                     .putExtra("question", "sdk?"), 7);
         }
@@ -40,6 +47,12 @@ public class TrampolineActivity extends Activity {
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == 8) {
+            App10.event("TrampolineActivity.files " + resultCode + " " + Files.describe(this, data,
+                    getIntent().getStringExtra("write")));
+            finish();
+            return;
+        }
         App10.event("TrampolineActivity.onActivityResult " + requestCode + " " + resultCode
                 + " " + (data == null ? null : data.getStringExtra("answer")));
         finish();

@@ -8,6 +8,7 @@
 
 #include <emscripten/threading.h>
 #include <errno.h>
+#include <sys/wait.h>
 #include <fcntl.h>
 #include <malloc.h>
 #include <math.h>
@@ -387,6 +388,13 @@ int Refuse(const char* what, int err) {
 }
 int G_fork() { return Refuse("fork", ENOSYS); }
 int G_vfork() { return Refuse("vfork", ENOSYS); }
+// arm64 fork/vfork: the vfork+exec emulation (topic native-exec, ndk_exec.cc).
+// The child resumes at the caller with 0; the parent is suspended until the
+// child execve's or _exit's. Falls back to ENOSYS without the bridge's exec.
+int G64_fork() {
+  if (arc_vfork64) return arc_vfork64();  // ndk_exec.cc (a10 build with the arm64 CPU)
+  return Refuse("fork", ENOSYS);
+}
 int G_execv(const char* path, uint32_t) { return Refuse(path ? path : "exec", ENOSYS); }
 int G_execve(const char* path, uint32_t, uint32_t) { return Refuse(path ? path : "exec", ENOSYS); }
 void G_execl(NdkCpuState* s, void*) {
@@ -395,21 +403,22 @@ void G_execl(NdkCpuState* s, void*) {
   ThunkErrnoEnd();
   SetResult(s, r);
 }
-int G_wait(int32_t*) {
-  errno = ECHILD;
-  return -1;
+// The children are the programs the process spawned (topic native-exec:
+// ndk_exec.cc, arc_lproc_waitpid behind libc's waitpid); ECHILD without.
+int G_waitpid(int pid, int32_t* status, int options) {
+  int st = 0;
+  const int r = waitpid(pid, &st, options);
+  if (r > 0 && status) *status = st;
+  return r;
 }
-int G_waitpid(int, int32_t*, int) {
-  errno = ECHILD;
-  return -1;
-}
+int G_wait(int32_t* status) { return G_waitpid(-1, status, 0); }
 int G_waitid(int, int, void*, int) {
   errno = ECHILD;
   return -1;
 }
-int G_wait4(int, int32_t*, int, void*) {
-  errno = ECHILD;
-  return -1;
+int G_wait4(int pid, int32_t* status, int options, void* rusage) {
+  if (rusage) memset(rusage, 0, 18 * 4);  // struct rusage: 2 timevals + 14 longs (ARM)
+  return G_waitpid(pid, status, options);
 }
 // system(NULL) asks whether there is a shell: no.
 int G_system(const char* cmd) {
@@ -1222,12 +1231,16 @@ void SyncEnviron64() {
   g_environ64 = Addr(env);
 }
 int G64_setenv(const char* name, const char* value, int overwrite) {
-  int r = setenv(name, value, overwrite);
+  int r;
+  if (ExecSetenv && ExecSetenv(name, value ? value : "", overwrite, &r)) return r;  // a spawned program's
+  r = setenv(name, value, overwrite);
   SyncEnviron64();
   return r;
 }
 int G64_unsetenv(const char* name) {
-  int r = unsetenv(name);
+  int r;
+  if (ExecSetenv && ExecSetenv(name, nullptr, 1, &r)) return r;
+  r = unsetenv(name);
   SyncEnviron64();
   return r;
 }
@@ -1302,7 +1315,8 @@ const HostSymbol kBionic[] = {
     NDK_FNX("__system_property_serial", G_system_property_serial),
     NDK_FN("getauxval", G_getauxval),
     // processes and signals
-    NDK_FNX("fork", G_fork), NDK_FNX("vfork", G_vfork), NDK_FNX("execv", G_execv),
+    NDK_FN("fork", G_fork), NDK_FN("vfork", G_vfork),
+    NDK_FN64("fork", G64_fork), NDK_FN64("vfork", G64_fork), NDK_FNX("execv", G_execv),
     NDK_FNX("execvp", G_execv), NDK_FNX("execve", G_execve), NDK_FNX("execvpe", G_execve),
     NDK_RAW("execl", G_execl), NDK_RAW("execlp", G_execl), NDK_RAW("execle", G_execl),
     NDK_FNX("wait", G_wait), NDK_FNX("waitpid", G_waitpid), NDK_FNX("waitid", G_waitid),
@@ -1402,6 +1416,9 @@ int GuestPrlimit64(int resource, uint32_t in, uint32_t old) {
 // DT_INIT and DT_INIT_ARRAY functions (argc, argv, envp). Go's runtime, as a
 // library, finds its auxv (AT_PAGESZ) past the end of envp. The 32-bit block
 // (argv[0], NULL, envp..., NULL, auxv pairs, AT_NULL); envp is argv + 8.
+uint32_t ExecAuxval32(uint32_t type) { return G_getauxval(type); }  // ndk_exec.cc
+int Sysinfo64(uint8_t* si) { return G64_sysinfo(si); }  // ndk64_libc.cc's raw sysinfo
+
 uint32_t GuestProcessArgv() {
   static uint32_t argv = [] {
     static const uint32_t kAux[] = {6, 16, 26, 15, 25, 17, 11, 12, 13, 14, 23};

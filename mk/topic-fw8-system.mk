@@ -30,12 +30,16 @@ F8S_SERVICES_CLASSES := $(F8SFW)/services-java/services-classes.jar
 F8S_JAVA := $(shell find framework/java-arcwasm8 -name '*.java') \
             framework/java-arcwasm/arcwasm/server/Unimplemented.java \
             framework/java-arcwasm/arcwasm/server/Trace.java \
-            framework/java-arcwasm/arcwasm/audio/AudioStats.java
+            framework/java-arcwasm/arcwasm/audio/AudioStats.java \
+            framework/java-arcwasm/arcwasm/input/BrowserIme.java \
+            framework/java-arcwasm/arcwasm/input/ImeHost.java
 $(F8S_SERVICES_JAR): tools/build_services_jar.sh tools/gen_binder_base.py tools/gen_webview_stub.py \
                      $(F8S_JAVA) $(F8FW)/framework.jar $(F8FW)/fw8-libs.stamp $(F8_CORE_CLASSES)
 	@mkdir -p $(F8SFW)
 	tools/build_services_jar.sh $(F8SFW) services8 $(F8_CLASSES)
 $(F8S_SERVICES_CLASSES): $(F8S_SERVICES_JAR) ;
+# The page's files (topic app-files).
+$(F8S_SERVICES_JAR): $(addprefix framework/java-arcwasm/arcwasm/server/,PageFiles.java FilesProvider.java)
 
 .PHONY: fw8-system-jars fw8-system-test
 fw8-system-jars: $(F8S_SERVICES_JAR)

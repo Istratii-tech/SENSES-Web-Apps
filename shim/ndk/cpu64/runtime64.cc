@@ -612,6 +612,48 @@ int ndk64_call_guest_guarded(uint32_t addr, const Ndk64Args* args, Ndk64Result* 
   return 0;
 }
 
+// Resumes the guest at the full state |st| (all registers, sp, pc, flags) on
+// the calling host thread — a continuation, not a fresh call (topic
+// native-exec: a vfork child continues the parent's code mid-function, from
+// the instruction after the clone SVC, with x0 = 0). It runs until the guest
+// returns past this frame (rare: the child usually execve's or _exit's and
+// never returns) or faults. 1 normally, 0 with |why| on a fault.
+int ndk64_resume_guest(const NdkCpu64State* st, char* why, size_t why_size) {
+  Cpu* c = CurrentCpu();
+  Saved saved;
+  Save(c, &saved);
+  int sdepth = c->depth;
+  Guard g;
+  g.outer = t_guard;
+  g.why[0] = '\0';
+  t_guard = &g;
+  if (setjmp(g.jb) == 0) {
+    const bool outer = c->depth == 0;
+    if (outer) GateEnter(c);
+    memcpy(c->x, st->x, sizeof(c->x));
+    memcpy(c->v, st->v, sizeof(c->v));
+    c->sp = st->sp;
+    c->tpidr = st->tpidr;
+    c->fpcr = st->fpcr;
+    c->fpsr = st->fpsr;
+    UnpackNzcv(c, st->nzcv & 0xf0000000u);
+    c->pc = st->pc;
+    c->ex_valid = 0;
+    Run(c);
+    if (outer) GateLeave(c);
+    t_guard = g.outer;
+    Restore(c, &saved);
+    return 1;
+  }
+  t_guard = g.outer;
+  Restore(c, &saved);
+  c->ex_valid = 0;
+  c->depth = sdepth;
+  if (sdepth == 0) GateLeave(c);
+  if (why && why_size) snprintf(why, why_size, "%s", g.why);
+  return 0;
+}
+
 void ndk64_leave_guest(const char* why) {
   Guard* g = t_guard;
   if (!g) return;

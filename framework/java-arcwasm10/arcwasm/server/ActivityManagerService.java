@@ -567,6 +567,13 @@ public final class ActivityManagerService extends ActivityManagerBase {
         }
         // ActivityStackSupervisor.resolveActivity.
         intent = new Intent(intent);
+        // A share sheet (ACTION_CHOOSER): the framework's ChooserActivity
+        // would need a process of the system's; the page shares instead
+        // (topic app-files, PageFiles).
+        if (Intent.ACTION_CHOOSER.equals(intent.getAction())
+                && PageFiles.start(intent, resolvedType, resultTo(resultTo, resultWho, requestCode))) {
+            return ActivityManager.START_SUCCESS;
+        }
         ActivityInfo aInfo;
         try {
             if (intent.getComponent() != null) {
@@ -592,6 +599,11 @@ public final class ActivityManagerService extends ActivityManagerBase {
             Slog.w(TAG, "Unable to resolve " + intent);
             if (intent.getComponent() == null && Senses.openUrl(intent)) {
                 return ActivityManager.START_SUCCESS;  // the page's browser shows it
+            }
+            // Files to open, save or share: the page is the phone's side
+            // (topic app-files, PageFiles).
+            if (PageFiles.start(intent, resolvedType, resultTo(resultTo, resultWho, requestCode))) {
+                return ActivityManager.START_SUCCESS;
             }
             // A screen of the Settings app (default apps, notification channels,
             // app details), a document picker ...: there is none, so as if the
@@ -662,6 +674,25 @@ public final class ActivityManagerService extends ActivityManagerBase {
             resumeTopActivityLocked();
             return ActivityManager.START_SUCCESS;
         }
+    }
+
+    /** Where PageFiles sends a start's result later; null if none was asked for. */
+    private PageFiles.Result resultTo(final IBinder resultTo, final String resultWho,
+            final int requestCode) {
+        if (requestCode < 0) {
+            return null;
+        }
+        return new PageFiles.Result() {
+            @Override
+            public void deliver(int resultCode, Intent data) {
+                synchronized (ActivityManagerService.this) {
+                    ActivityRecord source = forToken(resultTo);
+                    if (source != null) {
+                        sendResultLocked(source, resultWho, requestCode, resultCode, data);
+                    }
+                }
+            }
+        };
     }
 
     /**
@@ -3188,6 +3219,9 @@ public final class ActivityManagerService extends ActivityManagerBase {
             holder.noReleaseNeeded = true;
             return holder;
         }
+        if (FilesProvider.AUTHORITY.equals(name)) {
+            return systemProvider(name, FilesProvider.class.getName(), mFiles);
+        }
         synchronized (this) {
             ContentProviderHolder h = publishedProviderLocked(name);
             if (h != null) {
@@ -3248,6 +3282,27 @@ public final class ActivityManagerService extends ActivityManagerBase {
             }
             return publishedProviderLocked(name);
         }
+    }
+
+    /** The page's files (topic app-files): content://arcwasm.files. */
+    private final FilesProvider mFiles = new FilesProvider();
+
+    /** A holder of a provider of the system's ("android"). */
+    private static ContentProviderHolder systemProvider(String authority, String className,
+            android.content.IContentProvider provider) {
+        ProviderInfo info = new ProviderInfo();
+        info.authority = authority;
+        info.name = className;
+        info.packageName = "android";
+        info.applicationInfo = new ApplicationInfo();
+        info.applicationInfo.packageName = "android";
+        info.applicationInfo.uid = Process.SYSTEM_UID;
+        info.exported = true;
+        info.grantUriPermissions = true;
+        ContentProviderHolder holder = new ContentProviderHolder(info);
+        holder.provider = provider;
+        holder.noReleaseNeeded = true;
+        return holder;
     }
 
     /** A holder of published provider |name| for the calling process. */

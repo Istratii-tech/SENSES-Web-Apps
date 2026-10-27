@@ -33,12 +33,16 @@ F10S_SERVICES_CLASSES := $(F10SFW)/services-java/services-classes.jar
 F10S_JAVA := $(shell find framework/java-arcwasm10 -name '*.java') \
              $(addprefix framework/java-arcwasm/arcwasm/server/,Unimplemented.java Trace.java \
                AppLibrary.java Senses.java) \
-             framework/java-arcwasm/arcwasm/audio/AudioStats.java
+             framework/java-arcwasm/arcwasm/audio/AudioStats.java \
+             framework/java-arcwasm/arcwasm/input/BrowserIme.java \
+             framework/java-arcwasm/arcwasm/input/ImeHost.java
 $(F10S_SERVICES_JAR): tools/build_services_jar.sh tools/gen_binder_base.py tools/gen_webview_stub.py \
                       $(F10S_JAVA) $(F10FW)/framework.jar $(F10FW)/fw10-libs.stamp $(A10_CORE_CLASSES)
 	@mkdir -p $(F10SFW)
 	CORE10_CLASSES="$$PWD/$(A10_CORE_CLASSES)" tools/build_services_jar.sh $(F10SFW) services10 $(F10_CLASSES)
 $(F10S_SERVICES_CLASSES): $(F10S_SERVICES_JAR) ;
+# The page's files (topic app-files).
+$(F10S_SERVICES_JAR): $(addprefix framework/java-arcwasm/arcwasm/server/,PageFiles.java FilesProvider.java)
 
 .PHONY: fw10-system-jars fw10-system-test
 fw10-system-jars: $(F10S_SERVICES_JAR)
@@ -247,6 +251,10 @@ F10S_TESTS += InstallTest SplitInstallTest
 ART10_JAVA_TESTS += tests/java10/arcwasm/AppSupportTest10.java
 $(A10FW)/arc-tests.jar: tests/java10/arcwasm/AppSupportTest10.java
 F10S_TESTS += AppSupportTest10
+# AppFilesTest10 (tests/java10): files between an app and the page (topic app-files).
+ART10_JAVA_TESTS += tests/java10/arcwasm/AppFilesTest10.java
+$(A10FW)/arc-tests.jar: tests/java10/arcwasm/AppFilesTest10.java
+F10S_TESTS += AppFilesTest10
 
 # --- libarcwasm_system10.so: the window manager's and compositor's natives -----------------
 # shim/fw10-system/arcwasm_system10_jni.cc: arcwasm.server.Compositor over

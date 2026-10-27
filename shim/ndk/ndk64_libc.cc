@@ -41,6 +41,7 @@
 #include <string>
 #include <vector>
 
+#include "../multiproc/include/arc_lproc.h"
 #include "ndk_bridge.h"
 
 extern "C" int __android_log_print(int prio, const char* tag, const char* fmt, ...);
@@ -48,6 +49,8 @@ extern "C" int __android_log_print(int prio, const char* tag, const char* fmt, .
 extern "C" int ndk_sig_send(int tid, int sig) __attribute__((weak));
 
 namespace ndk {
+
+int Sysinfo64(uint8_t* si);  // ndk_bionic.cc
 
 namespace {
 
@@ -482,6 +485,8 @@ void RunAtexit64(uint64_t dso) {
 }
 void G64_cxa_finalize(uint64_t dso) { RunAtexit64(dso); }
 void G64_exit(int status) {
+  // A spawned program: its end (topic native-exec, ndk_exec.cc).
+  arc_lproc_run_exit_hook(arc_lproc_current(), (status & 0xff) << 8);
   RunAtexit64(0);
   exit(status);
 }
@@ -1085,6 +1090,15 @@ int64_t Syscall64(uint64_t nr, const uint64_t* a) {
       return SysRet(FdOpen(full.c_str(), I(2), I(3)));
     }
     case 57: return SysRet(FdClose(I(0)));
+    case 73: {   // ppoll(fds, nfds, tmo_ts, sigmask, sigsetsize): qemu-user waits so
+      int ms = -1;
+      if (a[2]) {
+        const G64Timespec* ts = static_cast<const G64Timespec*>(P(2));
+        ms = static_cast<int>(ts->tv_sec * 1000 + (ts->tv_nsec + 999999) / 1000000);
+      }
+      return SysRet(GuestPoll(static_cast<struct pollfd*>(P(0)), static_cast<unsigned>(a[1]), ms));
+    }
+    case 32: return 0;   // flock: advisory, one VM (as on a single-writer fs)
     case 62: return SysRet(lseek(I(0), static_cast<off_t>(a[1]), I(2)));
     case 67: return SysRet(pread(I(0), P(1), static_cast<size_t>(a[2]), static_cast<off_t>(a[3])));
     case 68: return SysRet(pwrite(I(0), P(1), static_cast<size_t>(a[2]), static_cast<off_t>(a[3])));
@@ -1160,6 +1174,10 @@ int64_t Syscall64(uint64_t nr, const uint64_t* a) {
       return 8;
     }
     case 172: return getpid();
+    case 154: return SysRet(setpgid(I(0), I(1)));   // setpgid (zygote/Dalvik process groups)
+    case 155: return SysRet(getpgid(I(0)));
+    case 156: return SysRet(getsid(I(0)));
+    case 157: return SysRet(setsid());
     case 173: return getppid();
     case 174: return getuid();
     case 175: return geteuid();
@@ -1174,7 +1192,10 @@ int64_t Syscall64(uint64_t nr, const uint64_t* a) {
     case 129: case 130: case 131: {   // kill, tkill, tgkill
       int sig = I(nr == 131 ? 2 : 1);
       int tid = nr == 129 ? GuestTid() : I(nr == 131 ? 1 : 0);   // kill: this process, this thread
-      if (tid == GuestTid() && (sig == 6 || sig == 9 || sig == 11)) return G64_raise(sig);
+      if (tid == GuestTid() && (sig == 6 || sig == 9 || sig == 11)) {
+        arc_lproc_run_exit_hook(arc_lproc_current(), sig);   // a spawned program ends so
+        return G64_raise(sig);
+      }
       if (tid == GuestTid()) return ndk64_sig_raise(sig) < 0 ? -22 : 0;
       int r = ndk_sig_send ? ndk_sig_send(tid, sig) : -3;
       return r < 0 ? r : 0;
@@ -1277,12 +1298,20 @@ int64_t Syscall64(uint64_t nr, const uint64_t* a) {
     case 212: return SysRet(G64_recvmsg(I(0), static_cast<G64Msghdr*>(P(1)), I(2)));
     case 283: return 0;   // membarrier: no commands (MEMBARRIER_CMD_QUERY)
     case 160: return SysRet(uname(static_cast<struct utsname*>(P(0))));
+    case 179: return SysRet(Sysinfo64(static_cast<uint8_t*>(P(0))));   // sysinfo (qemu-user asks)
     case 163: return SysRet(GuestPrlimit64(I(0), 0, a[1] ? GuestAddr64(a[1]) : 0));  // getrlimit
     case 261:   // prlimit64(pid, resource, new, old): struct rlimit is 2 x 64 bits (ndk_bionic.cc's limits)
       return SysRet(GuestPrlimit64(I(1), a[2] ? GuestAddr64(a[2]) : 0, a[3] ? GuestAddr64(a[3]) : 0));
     case 164: return 0;   // setrlimit
     case 214: return 0;   // brk: no heap break
-    case 220: case 221: case 260:   // clone, execve, wait4
+    case 221:    // execve: a spawned program re-execs (qemu-user for the guest's execve)
+      if (ExecRaw64) {
+        if (ExecRaw64(S(0), a[1], a[2]) < 0)
+          return SysErr();
+        return 0;   // (unreached on success)
+      }
+      return -38;
+    case 220: case 260:   // clone, wait4 (clone handled above for threads)
       return nr == 260 ? -10 /* ECHILD */ : -38;
     case 93: case 94:
       fflush(stdout);
@@ -1293,6 +1322,15 @@ int64_t Syscall64(uint64_t nr, const uint64_t* a) {
 
 // The CPU's raw-syscall hook: SVC #0 in guest code.
 int SvcHandler64(NdkCpu64State* s) {
+  // Threads of a static program the VM spawned (topic native-exec).
+  if ((s->x[8] == 220 || s->x[8] == 435) && ExecClone64) {
+    int64_t r;
+    if (ExecClone64(s, &r)) {
+      s->x[0] = static_cast<uint64_t>(r);
+      return 1;
+    }
+  }
+  if (s->x[8] == 93 && ExecThreadExit64) ExecThreadExit64();
   int64_t r = Syscall64(s->x[8], s->x);
   if (r == -38 - 1000) return 0;   // the CPU's own table, then -ENOSYS with a message
   s->x[0] = static_cast<uint64_t>(r);
@@ -1405,6 +1443,8 @@ uint32_t GuestProcessArgv64() {
   }();
   return argv;
 }
+
+uint64_t ExecAuxval64(uint64_t type) { return G64_getauxval(type); }  // ndk_exec.cc
 
 void RegisterLibc64() {
   // The ctype table pointers: the same tables as the 32-bit guests'.

@@ -395,6 +395,7 @@ public final class PackageManagerService extends PackageManagerBase {
         File crcFile = new File(dest.getParentFile(), "." + dest.getName() + ".crc");
         String crc = Long.toHexString(entry.getCrc()) + " " + entry.getSize();
         if (dest.length() == entry.getSize() && crc.equals(readSmallFile(crcFile))) {
+            makeExecutable(dest);
             return;
         }
         InputStream in = zip.getInputStream(entry);
@@ -414,6 +415,17 @@ public final class PackageManagerService extends PackageManagerBase {
         } finally {
             out.close();
         }
+        makeExecutable(dest);
+    }
+
+    /**
+     * 0755, as NativeLibraryHelper leaves them on a device: apps run programs
+     * shipped as lib*.so from nativeLibraryDir and check canExecute() first
+     * (topic native-exec; /data keeps the mode, shim/opfs/opfs_file.cc).
+     */
+    private static void makeExecutable(File f) {
+        f.setReadable(true, false);
+        f.setExecutable(true, false);
     }
 
     private static String readSmallFile(File f) {

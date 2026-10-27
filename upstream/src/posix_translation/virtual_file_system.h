@@ -137,6 +137,15 @@ class VirtualFileSystem : public VirtualFileSystemInterface {
   int getsockname(int s, sockaddr* name, socklen_t* namelen);
   int getsockopt(int sockfd, int level, int optname, void* optval,
                  socklen_t* optlen);
+  // arc-wasm (topic native-exec): spawned process |pid| gets descriptors
+  // 0-2 of its own: the streams of |fds| (the caller's descriptors; -1:
+  // closed). FdToFileStreamMap::SetProcessView.
+  int SetupProcessFds(int pid, const int fds[3]);
+  // Its end: what it left open is closed, its 0-2 let go.
+  void ReleaseProcessFds(int pid);
+  // arc-wasm: chmod/fchmod reach the file's handler (topic native-exec).
+  int chmod(const std::string& pathname, mode_t mode);
+  int fchmod(int fd, mode_t mode);
   int ioctl(int fd, int request, va_list ap);
   int listen(int sockfd, int backlog);
   off64_t lseek(int fd, off64_t offset, int whence);

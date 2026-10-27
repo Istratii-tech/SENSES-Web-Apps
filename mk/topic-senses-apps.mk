@@ -21,7 +21,7 @@
 SAPPS := $(BUILD)/senses-apps
 SENSES_STACKS ?= a81 a10 a60 a44
 SAPPS_PAGE := index.html run.html memtest.html origin.html manifest.webmanifest senses.css senses.js apk.js install.js \
-              google.js icon.js store.js store-worker.js origins.js senses-mask.png icon-180.png icon-192.png icon-512.png \
+              google.js files.js icon.js store.js store-worker.js origins.js senses-mask.png icon-180.png icon-192.png icon-512.png \
               icon-maskable-512.png
 SAPPS_SHELL := $(SAPPS_PAGE) idb_opfs.js report.js mem_plan.js stacks.json
 SAPPS_A81 := a81/artvm8.js a81/artvm8.wasm a81/artvm8.data
@@ -77,3 +77,9 @@ $(SAPPS)/sw.js: demo/apps/sw.js $(addprefix $(SAPPS)/,$(SAPPS_SHELL) $(SAPPS_SYS
 
 .PHONY: senses-apps-web
 senses-apps-web: $(addprefix $(SAPPS)/,$(SAPPS_SHELL) $(SAPPS_SYS_FILES)) $(SAPPS)/sw.js
+
+# Files between apps and the phone, the page's side (topic app-files):
+# demo/apps/files.js and the store worker's file operations under Node.
+.PHONY: senses-apps-files-test
+senses-apps-files-test:
+	node tests/apps/files_test.js

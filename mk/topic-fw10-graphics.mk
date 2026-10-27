@@ -471,13 +471,14 @@ $(A10SYSTEM_IMAGE): $(G10_FONTS) framework/fonts10/fonts.xml $(BUILD)/dalvik/gra
 # The Android 4.4 tests (GraphicsTest, ViewTest), compiled against the 10
 # framework, and the 10 versions of the 6.0 ones (tests/java10: SurfaceTest
 # on SurfaceControl.Builder/Transaction and the layer tree of 10, HwuiTest
-# on the Skia pipeline and HardwareRenderer), with the 10 implementation of
-# the arcwasm class they use (framework/java-arcwasm10; natives in
-# libarcwasm_graphics10.so above).
+# on the Skia pipeline and HardwareRenderer; ImeTest, topic
+# ios-audio-keyboard: the page's keyboard as the input method), with the 10
+# implementation of the arcwasm class they use (framework/java-arcwasm10;
+# natives in libarcwasm_graphics10.so above).
 G10_JAVA10 := $(addprefix framework/java-arcwasm10/arcwasm/,graphics/FramebufferSurface.java \
                 input/BrowserInput.java input/InputManagerService.java)
 FW10G_TESTS := GraphicsTest ViewTest InputTest
-FW10G_TESTS6 := SurfaceTest HwuiTest
+FW10G_TESTS6 := SurfaceTest HwuiTest ImeTest
 G10_TEST_SRCS := $(addprefix tests/java/arcwasm/,$(addsuffix .java,$(FW10G_TESTS) GraphicsDemo InputDemo)) \
                  $(addprefix tests/java10/arcwasm/,$(addsuffix .java,$(FW10G_TESTS6)))
 ART10_JAVA_TESTS += $(G10_JAVA10) $(G10_TEST_SRCS)

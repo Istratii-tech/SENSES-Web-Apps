@@ -36,13 +36,17 @@ FS_JAVA := $(shell find framework/java-arcwasm6 -name '*.java') \
            framework/java-arcwasm/arcwasm/server/Trace.java \
            framework/java-arcwasm/arcwasm/audio/AudioStats.java \
            framework/java-arcwasm/arcwasm/server/SystemKeys.java \
-           framework/java-arcwasm/arcwasm/server/HangWatchdog.java
+           framework/java-arcwasm/arcwasm/server/HangWatchdog.java \
+           framework/java-arcwasm/arcwasm/input/BrowserIme.java \
+           framework/java-arcwasm/arcwasm/input/ImeHost.java
 $(FS_SERVICES_JAR): tools/build_services_jar.sh tools/gen_binder_base.py tools/gen_webview_stub.py $(FS_JAVA) \
                     $(F6FW)/framework.jar $(F6FW)/fw6-libs.stamp
 	tools/build_services_jar.sh $(F6FW) services6 $(F6_CLASSES)
 $(FS_SERVICES_CLASSES): $(FS_SERVICES_JAR) ;
 ASYSTEM_ADD += --add $(FS_SERVICES_JAR):system/framework/services.jar
 $(ASYSTEM_IMAGE): $(FS_SERVICES_JAR)
+# The page's files (topic app-files).
+$(FS_SERVICES_JAR): $(addprefix framework/java-arcwasm/arcwasm/server/,PageFiles.java FilesProvider.java)
 
 # The 6.0 arcwasm.input/arcwasm.graphics classes are in services.jar (on the
 # boot class path) now: not again in arc-tests.jar. Tests compile against it.

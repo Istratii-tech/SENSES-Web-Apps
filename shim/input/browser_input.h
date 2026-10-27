@@ -146,6 +146,62 @@ int32_t KeyCodeForScanCode(int32_t scan_code);
 // Whether the browser keyboard can produce the Android key code.
 bool KeyboardHasKey(int32_t key_code);
 
+// --- the page's text input (topic ios-audio-keyboard) --------------------------------
+// The "input_method" service is the soft keyboard: the page's hidden
+// <textarea> (browser_input.js) turns what the system keyboard types into
+// edits of the served editor (commitText, setComposingText, ...), queued
+// here in order; the service's thread takes them (arcwasm.input.BrowserIme).
+// The other way, the service sets the editor state the page shows.
+enum ImeOp {
+  kImeCommit = 'c',        // commitText(text, 1)
+  kImeCompose = 'p',       // setComposingText(text, 1)
+  kImeFinish = 'f',        // finishComposingText()
+  kImeDelete = 'd',        // deleteSurroundingText(a, b)
+  kImeKey = 'k',           // sendKeyEvent: key code a down and up, meta state b
+  kImeAction = 'a',        // performEditorAction(a)
+  kImeBatch = 'b',         // beginBatchEdit() (a = 1) / endBatchEdit() (a = 0)
+  kImeKeyboard = 'h',      // the page's keyboard: a = display pixels it covers, b = 1 shown,
+                           // 0 hidden, 2 put away by the user
+  kImeReseed = 'r',        // the page lost track: the text before the cursor again
+};
+
+struct ImeRecord {
+  int32_t op;
+  int32_t a, b;
+  std::u16string text;
+};
+
+// The longest text of one record (the page splits longer pastes).
+const int kImeTextMax = 1024;
+
+// Queues a record (the page, or tests).
+void QueueImeRecord(const ImeRecord& record);
+// The next record; waits up to timeout_ms (< 0: forever). False on timeout.
+bool TakeImeRecord(ImeRecord* record, int timeout_ms);
+
+// What the page shows: the served editor (EditorInfo's inputType,
+// imeOptions, actionId) or none, whether the keyboard is wanted, and the
+// editor's text before the cursor (for the system keyboard's suggestions).
+struct ImeState {
+  int32_t serial;     // bumped on every change
+  int32_t editor;     // 1: an editor is served
+  int32_t show;       // 1: the keyboard is wanted
+  int32_t input_type;
+  int32_t ime_options;
+  int32_t action_id;
+  int32_t seed_len;   // text before the cursor, UTF-16 units
+  char16_t seed[256];
+};
+// Sets the state and tells the page (asynchronously; nothing without one).
+void SetImeState(const ImeState& state);
+
+}  // namespace arcwasm
+
+// The page's copy of the state (browser_input.cc; tests read it too).
+extern "C" arcwasm::ImeState* arcwasm_ime_state();
+
+namespace arcwasm {
+
 }  // namespace arcwasm
 
 #endif

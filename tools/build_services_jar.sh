@@ -257,6 +257,8 @@ EOF6
     srcs "$ROOT/framework/java-arcwasm6/arcwasm" "$W/gen" > "$W/srcs.txt"
     srcs "$ROOT/framework/java-arcwasm/arcwasm/server/Unimplemented.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/server/Trace.java" \
+         "$ROOT/framework/java-arcwasm/arcwasm/input/BrowserIme.java" \
+         "$ROOT/framework/java-arcwasm/arcwasm/input/ImeHost.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/audio/AudioStats.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/server/SystemKeys.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/server/HangWatchdog.java" \
@@ -267,6 +269,9 @@ EOF6
          "$ROOT/framework/java-arcwasm/arcwasm/server/AppLibrary.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/server/Senses.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/server/Gms.java" >> "$W/srcs.txt"
+    # The page's files (topic app-files).
+    srcs "$ROOT/framework/java-arcwasm/arcwasm/server/PageFiles.java" \
+         "$ROOT/framework/java-arcwasm/arcwasm/server/FilesProvider.java" >> "$W/srcs.txt"
     build services "$FW"
     ;;
   services8)
@@ -338,12 +343,17 @@ EOF8
     # library and one-app mode (topic install8).
     srcs "$ROOT/framework/java-arcwasm/arcwasm/server/Unimplemented.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/server/Trace.java" \
+         "$ROOT/framework/java-arcwasm/arcwasm/input/BrowserIme.java" \
+         "$ROOT/framework/java-arcwasm/arcwasm/input/ImeHost.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/audio/AudioStats.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/server/SystemKeys.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/server/AppLibrary.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/server/Senses.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/server/Gms.java" \
          "$ROOT/framework/java-multiproc/arcwasm/server/LightProcess.java" >> "$W/srcs.txt"
+    # The page's files (topic app-files).
+    srcs "$ROOT/framework/java-arcwasm/arcwasm/server/PageFiles.java" \
+         "$ROOT/framework/java-arcwasm/arcwasm/server/FilesProvider.java" >> "$W/srcs.txt"
     build services "$FW"
     ;;
   services10)
@@ -420,11 +430,16 @@ EOF10
     # through arcwasm.server.Input).
     srcs "$ROOT/framework/java-arcwasm/arcwasm/server/Unimplemented.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/server/Trace.java" \
+         "$ROOT/framework/java-arcwasm/arcwasm/input/BrowserIme.java" \
+         "$ROOT/framework/java-arcwasm/arcwasm/input/ImeHost.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/audio/AudioStats.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/server/AppLibrary.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/server/Senses.java" \
          "$ROOT/framework/java-arcwasm/arcwasm/server/Gms.java" \
          "$ROOT/framework/java-multiproc/arcwasm/server/LightProcess.java" >> "$W/srcs.txt"
+    # The page's files (topic app-files).
+    srcs "$ROOT/framework/java-arcwasm/arcwasm/server/PageFiles.java" \
+         "$ROOT/framework/java-arcwasm/arcwasm/server/FilesProvider.java" >> "$W/srcs.txt"
     build services "$FW"
     ;;
   *) echo "usage: $0 OUT_DIR policy|services|services6|services8|services10 FW_CLASSES..." >&2; exit 2 ;;

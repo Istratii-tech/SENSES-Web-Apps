@@ -14,6 +14,10 @@
 //   [{path, size}], .readAt({path, at, len}) -> ArrayBuffer (the library
 //   sends an app's files), .receive({path, at, bytes, last}), .wipe() (the
 //   app's origin takes them; a whole origin cleared)
+//   Files of apps (topic app-files, files.js): .listDir(path) -> [{name, kind,
+//   size, mtime}], .fileAt(path, name, type) -> File, .putFile(dir, File,
+//   onProgress) -> the name it got in DIR, .removePath(path) (under
+//   senses/data/STACK/media/ only)
 //   SensesStore.usage() -> {usage, quota} | null, .persist() -> bool
 //   Space (topic opfs-after-kill): SensesStore.storage() -> {usage, quota,
 //   free, guessed, apps, data: {stack: bytes}, regen, caches: {name: bytes},
@@ -82,6 +86,11 @@
     removeApp: function (pkg) { return call('removeApp', pkg); },
     tree: function (args) { return call('tree', args); },
     readAt: function (args) { return call('readAt', args); },
+    // Files of apps (topic app-files, files.js)
+    listDir: function (path) { return call('listDir', {path: path}); },
+    fileAt: function (path, name, type) { return call('fileAt', {path: path, name: name, type: type}); },
+    putFile: function (dir, file, onProgress) { return call('putFile', {dir: dir, file: file}, onProgress); },
+    removePath: function (path) { return call('removePath', {path: path}); },
     receive: function (args, transfer) { return call('receive', args, null, transfer); },
     wipe: function () { return call('wipe'); },
     clearData: function (pkg) { return call('clearData', pkg); },

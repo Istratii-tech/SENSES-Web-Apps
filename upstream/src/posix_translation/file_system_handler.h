@@ -92,6 +92,10 @@ class FileSystemHandler {
   // Sorted by syscall name. Note that we should always prefer
   // 'const std::string&' over 'const char*' for a string parameter
   // which is always non-NULL.
+  // arc-wasm: the default keeps no permission bits (every file is the VM's)
+  // and only checks that |pathname| exists; a handler that stores them
+  // (OpfsHandler) answers them in stat() (topic native-exec).
+  virtual int chmod(const std::string& pathname, mode_t mode);
   virtual int mkdir(const std::string& pathname, mode_t mode);
   virtual scoped_refptr<FileStream> open(
       int fd, const std::string& pathname, int oflag, mode_t cmode) = 0;

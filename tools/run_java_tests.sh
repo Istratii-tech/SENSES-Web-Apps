@@ -48,7 +48,8 @@
 # ArtSpeedTest, Java8Test, Java9Test), fw10-core (LooperTest, BinderTest,
 # ApkTest, FrameworkResTest, Framework10Test), fw10-graphics (GraphicsTest,
 # ViewTest, InputTest, SurfaceTest, HwuiTest: the 10 versions of the last two are in
-# tests/java10; PAGE=fw10-graphics-web for the display on the page's canvas),
+# tests/java10; PAGE=fw10-graphics-web for the display on the page's canvas;
+# ImeTest of topic ios-audio-keyboard: the page's keyboard as the input method),
 # fw10-crypto-media (CryptoTest, NetTest, XmlTest, DatabaseTest, AudioTest,
 # MediaTest, NdkMediaTest) and fw10-system (ActivityTest10, AppSupportTest10,
 # NdkTest, NdkArm64Test, InstallTest, SplitInstallTest: the system server 10,
@@ -70,6 +71,10 @@
 # "no device" and the null device; with WebGPU (chrome, Safari 26) the real
 # device, PAGE=fw8-graphics-web / fw10-graphics-web.
 #
+# NativeExecTest (topic native-exec, docs/topics/native-exec.md; 10 only):
+# symlinks and modes on /data, 4 KB pages, ARM/arm64 programs run with
+# ProcessBuilder; it restarts its VM once (RESTART_TESTS).
+#
 # InstallTest (topic install8) is in all three lists: SENSES Web Apps' app
 # library, with the VM's environment as the shell gives it (below); so is
 # SplitInstallTest (topic apks-split: apps as split APKs, 4.4 only checks
@@ -83,7 +88,7 @@ case ${VM:-dalvik} in
   art8) VMDIR=art8; VMJS=artvm8.js; WEB=art8-web
         DEFAULT_TESTS="VmTest ArtSpeedTest Java8Test LooperTest BinderTest ApkTest FrameworkResTest GraphicsTest ViewTest InputTest SurfaceTest HwuiTest WindowTest ActivityTest8 AppSupportTest8 NdkTest Ndk6Test Ndk8Test NdkRelocTest CryptoTest NetTest NetDenyTest NetOffTest XmlTest AudioTest MediaTest NdkMediaTest NdkMediaArmTest TextureViewTest MemoryTest InstallTest NdkArm64Test NdkMediaArm64Test SplitInstallTest WebViewTest NdkJitTest MultiProcessTest GmsTest GmsMicrogTest GmsOffTest VulkanTest NativeActivityTest NativeActivityArm64Test" ;;
   art10) VMDIR=art10; VMJS=artvm10.js; WEB=art10-web
-         DEFAULT_TESTS="VmTest ArtSpeedTest Java8Test Java9Test DormantTest LooperTest BinderTest ApkTest FrameworkResTest Framework10Test GraphicsTest ViewTest InputTest SurfaceTest HwuiTest CryptoTest NetTest NetDenyTest NetOffTest XmlTest DatabaseTest AudioTest MediaTest NdkMediaTest ActivityTest10 AppSupportTest10 NdkTest Ndk6Test NdkArm64Test InstallTest SplitInstallTest NdkJitTest WebViewTest MultiProcessTest GmsTest GmsMicrogTest GmsOffTest VulkanTest NativeActivityTest NativeActivityArm64Test" ;;
+         DEFAULT_TESTS="VmTest ArtSpeedTest Java8Test Java9Test DormantTest LooperTest BinderTest ApkTest FrameworkResTest Framework10Test GraphicsTest ViewTest InputTest ImeTest SurfaceTest HwuiTest CryptoTest NetTest NetDenyTest NetOffTest XmlTest DatabaseTest AudioTest MediaTest NdkMediaTest ActivityTest10 AppSupportTest10 AppFilesTest10 NdkTest Ndk6Test NdkArm64Test InstallTest SplitInstallTest NdkJitTest WebViewTest MultiProcessTest GmsTest GmsMicrogTest GmsOffTest VulkanTest NativeActivityTest NativeActivityArm64Test NativeExecTest" ;;
   *) VMDIR=dalvik; VMJS=dalvikvm.js; WEB=dalvik-web
      DEFAULT_TESTS="VmTest LooperTest BinderTest ApkTest GraphicsTest FrameworkResTest ViewTest InputTest WindowTest ActivityTest GlesTest NdkTest CryptoTest Ndk6Test NdkRelocTest NetTest NetDenyTest NetOffTest ConnectivityTest InstallTest SplitInstallTest NdkJitTest" ;;
 esac
@@ -92,7 +97,7 @@ esac
 WEB=${PAGE:-$WEB}
 TESTS=${*:-$DEFAULT_TESTS}
 # Tests that restart their VM (exit 75) and need /data to outlive it.
-RESTART_TESTS="MemoryTest InstallTest SplitInstallTest"
+RESTART_TESTS="MemoryTest InstallTest SplitInstallTest NativeExecTest"
 case ${VM:-dalvik} in art) STACK=a60 ;; art8) STACK=a81 ;; art10) STACK=a10 ;; *) STACK=a44 ;; esac
 PORT=${PORT:-8125}
 LOG=${LOG:-build/browser-log.txt}
@@ -140,6 +145,8 @@ s.serve_forever()' > "$fifo" & http_pid=$!
   if [ "$t" = InstallTest ] || [ "$t" = SplitInstallTest ]; then
     tenv="ARC_DATA_DIR=senses/data/$STACK ARC_APPS_DIR=senses/apps ARC_OPFS_ROOT_MOUNT=/mnt/opfs ARC_TEST_RUN=$$-$(date +%s)"
   fi
+  # NativeExecTest restarts its VM once (what /data keeps across it).
+  [ "$t" = NativeExecTest ] && tenv="ARC_TEST_RUN=$$-$(date +%s)"
   # (and the test app's OBB files mounted, as the shell does for an .xapk's)
   [ "$t" = SplitInstallTest ] && tenv="$tenv ARC_APP_OBB=org.arcwasm.splittest"
   # The activity tests turn the display for a landscape activity (topic

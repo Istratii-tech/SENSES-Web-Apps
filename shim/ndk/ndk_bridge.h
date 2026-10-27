@@ -859,6 +859,38 @@ void NoteExecRegion64(uint32_t lo, uint32_t hi) __attribute__((weak));
 std::string Maps64() __attribute__((weak));
 // Whether |path| is an AArch64 ELF shared object.
 bool IsElf64File(const char* path) __attribute__((weak));
+// Where a loaded library (an executable loaded as one: ndk_exec.cc) lies:
+// its load bias and program headers in memory. False for a host library.
+bool LibraryImage64(Library64* lib, uint32_t* bias, uint32_t* phdr, uint32_t* phnum)
+    __attribute__((weak));
+bool LibraryImage(Library* lib, uint32_t* bias, uint32_t* phdr, uint32_t* phnum);
+
+// /proc/self/maps lines of the wasm memory and the arm64 windows (ndk_libc.cc),
+// for programs the VM spawned.
+std::string ProcMapsWindows();
+
+// --- native programs (ndk_exec.cc, topic native-exec) -------------------------------
+// Only in builds that run them (Android 10: mk/topic-native-exec.mk); weak.
+// The calling thread's spawned program's stdin/stdout/stderr (|i| 0-2) as
+// host FILEs over its own descriptors 0-2, or null outside one.
+FILE* ExecStdFile(int i) __attribute__((weak));
+// getenv of a spawned program (its own environment); |*handled| false
+// outside one.
+const char* ExecGetenv(const char* name, bool* handled) __attribute__((weak));
+// fork()/vfork() of an arm64 spawned program (ndk_exec.cc): child resumes at
+// the caller with 0, parent gets the child pid; -1/errno on failure.
+int arc_vfork64(void) __attribute__((weak));
+// Raw execve (SVC) of a spawned program: qemu-user re-execs itself for the
+// guest's execve (ndk_exec.cc). -1/errno on failure, no return on success.
+int ExecRaw64(const char* path, uint64_t argv, uint64_t envp) __attribute__((weak));
+// setenv (|value| non-null) / unsetenv (null) of a spawned program: its own
+// environment; false outside one.
+bool ExecSetenv(const char* name, const char* value, int overwrite, int* result) __attribute__((weak));
+// Its thunks (__libc_init of arm64 executables, wait/spawn): last of all.
+void RegisterExec() __attribute__((weak));
+// Raw clone/clone3 and exit of a static arm64 program's threads (SVC).
+bool ExecClone64(NdkCpu64State* s, int64_t* result) __attribute__((weak));
+bool ExecThreadExit64() __attribute__((weak));
 
 // Registration of the arm64-only thunk files (called by EnsureInit). Weak: the
 // files are only in builds with the AArch64 CPU (mk/topic-ndk-arm64.mk), as

@@ -47,6 +47,12 @@ class FileStream : public base::RefCounted<FileStream> {
   // MemoryRegion.
   virtual bool ReturnsSameAddressForMultipleMmaps() const;
 
+  // arc-wasm (topic native-exec): true if mmap() takes any file offset (it
+  // copies the file into anonymous memory: OpfsFile). For other streams an
+  // offset in 4 KB steps that is not one of the host's 64 KB pages is a copy
+  // made by VirtualFileSystem::mmap.
+  virtual bool MapsAnyOffset() const { return false; }
+
   // Adds a file reference to allow the object to call OnLastFileRef() later
   // when the file reference count is dropped to zero.
   void AddFileRef();

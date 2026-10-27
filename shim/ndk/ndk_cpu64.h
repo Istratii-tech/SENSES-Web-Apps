@@ -83,6 +83,10 @@ int ndk64_call_guest_guarded(uint32_t addr, const Ndk64Args* args, Ndk64Result* 
 void ndk64_leave_guest(const char* why);
 // Whether the calling thread is inside a guarded 64-bit guest call.
 int ndk64_in_guarded_call(void);
+// Continues the guest at a full saved state (not a fresh call): a vfork child
+// resumes the parent's code after the clone SVC (topic native-exec). 1
+// normally, 0 with |why| on a fault.
+int ndk64_resume_guest(const NdkCpu64State* st, char* why, size_t why_size);
 
 // The calling host thread's guest context, created on first use with its
 // own guest stack.

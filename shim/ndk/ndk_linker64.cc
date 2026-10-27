@@ -822,6 +822,14 @@ Library64* Dlopen64(const char* path, int flags) {
   return lib;
 }
 
+bool LibraryImage64(Library64* lib, uint32_t* bias, uint32_t* phdr, uint32_t* phnum) {
+  if (!lib || lib->is_host) return false;
+  *bias = lib->bias;
+  *phdr = lib->phdr;
+  *phnum = lib->phnum;
+  return true;
+}
+
 Library64* LoadNoInit64(const char* path) {
   EnsureInit();
   InstallSymbolizer64();

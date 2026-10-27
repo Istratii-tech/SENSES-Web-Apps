@@ -1,18 +1,24 @@
 // arc-wasm: the "input_method" service on Android 6.0.1: a device with no
 // input method installed. InputMethodManager (made by every window session)
 // and the views it serves work against it -- focus changes and startInput
-// are accepted, nothing is bound, the soft keyboard never shows -- and key
+// are accepted, nothing is bound. With a page it is the soft keyboard (topic
+// ios-audio-keyboard, docs/topics/ios-audio-keyboard.md): the browser's
+// keyboard types into the page, and arcwasm.input.ImeHost applies that to the
+// served editor's InputConnection, as an input method does. Without one key
 // events reach the focused view from the browser keyboard directly
 // (ViewRootImpl's ImeInputStage passes them on when no method is bound).
 package arcwasm.server;
 
 import android.os.IBinder;
+import android.os.RemoteException;
 import android.os.ResultReceiver;
 import android.text.style.SuggestionSpan;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.view.inputmethod.InputMethodSubtype;
 
+import arcwasm.input.ImeHost;
 import arcwasm.server.base.InputMethodManagerBase;
 
 import com.android.internal.view.IInputContext;
@@ -23,6 +29,22 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class InputMethodManagerService extends InputMethodManagerBase {
+    private final ImeHost mIme = new ImeHost(new ImeHost.Host() {
+        @Override
+        public void setClientActive(Object client, boolean active) {
+            try {
+                ((IInputMethodClient) client).setActive(active);
+            } catch (RemoteException e) {
+                // In process: not thrown.
+            }
+        }
+
+        @Override
+        public void setKeyboardHeight(int height) {
+            WindowManagerService.getInstance().setImeHeight(height);
+        }
+    });
+
     @Override
     public List<InputMethodInfo> getInputMethodList() {
         return new ArrayList<InputMethodInfo>();
@@ -50,10 +72,14 @@ public final class InputMethodManagerService extends InputMethodManagerBase {
             int uid, int pid) {}
     @Override public void removeClient(IInputMethodClient client) {}
 
+    /** The page's keyboard gets the editor (ImeHost); no method to bind (null). */
     @Override
     public InputBindResult startInput(IInputMethodClient client, IInputContext inputContext,
             EditorInfo attribute, int controlFlags) {
-        return null;  // no method to bind
+        if (client != null) {
+            mIme.startInput(client, client.asBinder(), null, 0, attribute, inputContext);
+        }
+        return null;
     }
 
     @Override public void finishInput(IInputMethodClient client) {}
@@ -61,19 +87,40 @@ public final class InputMethodManagerService extends InputMethodManagerBase {
     @Override
     public boolean showSoftInput(IInputMethodClient client, int flags,
             ResultReceiver resultReceiver) {
-        return false;
+        final int was = mIme.showSoftInput(client != null ? client.asBinder() : null);
+        if (was < 0) {
+            return false;
+        }
+        if (resultReceiver != null) {
+            resultReceiver.send(was > 0 ? InputMethodManager.RESULT_UNCHANGED_SHOWN
+                    : InputMethodManager.RESULT_SHOWN, null);
+        }
+        return true;
     }
 
     @Override
     public boolean hideSoftInput(IInputMethodClient client, int flags,
             ResultReceiver resultReceiver) {
-        return false;
+        final int was = mIme.hideSoftInput();
+        if (was < 0) {
+            return false;
+        }
+        if (resultReceiver != null) {
+            resultReceiver.send(was > 0 ? InputMethodManager.RESULT_HIDDEN
+                    : InputMethodManager.RESULT_UNCHANGED_HIDDEN, null);
+        }
+        return was > 0;
     }
 
+    /** The window and its editor go to the page's keyboard (ImeHost); nothing bound. */
     @Override
     public InputBindResult windowGainedFocus(IInputMethodClient client, IBinder windowToken,
             int controlFlags, int softInputMode, int windowFlags, EditorInfo attribute,
             IInputContext inputContext) {
+        if (client != null) {
+            mIme.startInput(client, client.asBinder(), windowToken, softInputMode, attribute,
+                    inputContext);
+        }
         return null;
     }
 
@@ -105,7 +152,7 @@ public final class InputMethodManagerService extends InputMethodManagerBase {
 
     @Override
     public int getInputMethodWindowVisibleHeight() {
-        return 0;
+        return mIme.keyboardHeight();
     }
 
     @Override public void notifyUserAction(int sequenceNumber) {}

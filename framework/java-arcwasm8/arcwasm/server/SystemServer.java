@@ -649,6 +649,7 @@ public final class SystemServer {
         }
         if (senses) {
             Senses.sweepOptions(options);  // tools/app_sweep.py
+            PageFiles.launch();  // files from the page (topic app-files)
         }
         // --threadprobe=STEP,STEPS,SECONDS[,KIND]: threads in steps (topic ios-threads).
         ThreadProbe.start(options);

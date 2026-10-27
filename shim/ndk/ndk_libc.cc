@@ -315,6 +315,8 @@ void G_div(NdkCpuState* s, void*) {
 
 void G_abort() {
   __android_log_print(6, "ndk", "guest called abort()");
+  // A spawned program ends with SIGABRT (topic native-exec, ndk_exec.cc).
+  arc_lproc_run_exit_hook(arc_lproc_current(), SIGABRT);
   LeaveGuest("abort()");  // to the app's JNI call, where the bridge guards it
   abort();
 }
@@ -341,8 +343,33 @@ int G_atexit(uint32_t fn) {
 }
 void G_cxa_finalize(uint32_t dso) { RunAtexit(dso); }
 void G_exit(int status) {
+  // A spawned program (topic native-exec): its end, not the app's atexit
+  // handlers (the handlers are the VM's: shim/ndk/ndk_exec.cc).
+  arc_lproc_run_exit_hook(arc_lproc_current(), (status & 0xff) << 8);
   RunAtexit(0);
   exit(status);
+}
+
+// setenv/unsetenv: a spawned program's own environment (ndk_exec.cc).
+int G_setenv(const char* name, const char* value, int overwrite) {
+  int r;
+  if (ExecSetenv && ExecSetenv(name, value ? value : "", overwrite, &r)) return r;
+  return setenv(name, value, overwrite);
+}
+int G_unsetenv(const char* name) {
+  int r;
+  if (ExecSetenv && ExecSetenv(name, nullptr, 1, &r)) return r;
+  return unsetenv(name);
+}
+
+// getenv: a spawned program has an environment of its own.
+const char* G_getenv(const char* name) {
+  if (ExecGetenv) {
+    bool handled = false;
+    const char* v = ExecGetenv(name, &handled);
+    if (handled) return v;
+  }
+  return getenv(name);
 }
 
 // --- __stack_chk ------------------------------------------------------------------
@@ -1180,7 +1207,7 @@ const HostSymbol kLibc[] = {
     NDK_FNX("rand", ::rand), NDK_FNX("srand", ::srand), NDK_FNX("rand_r", ::rand_r),
     NDK_FNX("random", G_random), NDK_FNX("srandom", ::srandom), NDK_FNX("lrand48", G_lrand48),
     NDK_FNX("mrand48", G_mrand48), NDK_FNX("srand48", G_srand48), NDK_FNX("drand48", ::drand48),
-    NDK_FNX("getenv", ::getenv), NDK_FN("setenv", ::setenv), NDK_FN("unsetenv", ::unsetenv),
+    NDK_FNX("getenv", G_getenv), NDK_FN("setenv", G_setenv), NDK_FN("unsetenv", G_unsetenv),
     NDK_FN("putenv", ::putenv),  // (arm64: ndk_bionic.cc keeps its environ in step)
     NDK_FNX("abort", G_abort), NDK_FN("exit", G_exit), NDK_FNX("_exit", ::_exit),
     NDK_FN("atexit", G_atexit), NDK_FN("__cxa_atexit", G_cxa_atexit),
@@ -1445,6 +1472,34 @@ void* GuestMmap(void* addr, size_t len, int prot, int flags, int fd, int64_t off
       NoteExecRegion(Addr(addr), Addr(addr) + len);
     return addr;
   }
+  // The same for a file (topic native-exec: qemu-user maps a guest's ELF
+  // segments and files page by page, 4 KB, inside its reservation): the
+  // file's bytes copied into place, zeros after its end. Writes to a shared
+  // one stay in memory (logged once).
+  if ((flags & MAP_FIXED) && !(flags & MAP_ANONYMOUS) && addr != nullptr && fd >= 0 &&
+      ((Addr(addr) & (PAGE_SIZE - 1)) != 0 || (len & (PAGE_SIZE - 1)) != 0) &&
+      (Addr(addr) & 4095) == 0 && (off & 4095) == 0) {
+    struct stat st;
+    if (fstat(fd, &st) != 0)
+      return MAP_FAILED;
+    GuestZero(addr, len, prot | PROT_WRITE);
+    size_t done = 0;
+    while (done < len) {
+      const ssize_t n = pread(fd, static_cast<char*>(addr) + done, len - done, off + static_cast<int64_t>(done));
+      if (n <= 0)
+        break;
+      done += static_cast<size_t>(n);
+    }
+    if ((flags & MAP_SHARED) && (prot & PROT_WRITE)) {
+      static std::atomic<bool> told{false};
+      if (!told.exchange(true))
+        __android_log_print(5, "ndk", "mmap: a shared writable file mapping at 4 KB pages is a copy");
+    }
+    FlushGuestCode(Addr(addr), len);
+    if (prot & PROT_EXEC)
+      NoteExecRegion(Addr(addr), Addr(addr) + len);
+    return addr;
+  }
   void* r = mmap(addr, len, prot, flags, fd, off);
   if (r != MAP_FAILED && (len & (PAGE_SIZE - 1)) != 0) {
     std::lock_guard<std::mutex> l(g_odd_maps_lock);
@@ -1505,6 +1560,11 @@ const uint64_t kRoomMin = 1ull << 20, kRoomMax = 32ull << 20;
 const uint64_t kWindowLow = 2ull << 30;
 // A run with up to this much data moves when a commit grows past it.
 const uint64_t kMoveMax = 1ull << 20;
+// A reservation of a spawned program (topic native-exec: qemu-user's TCG code
+// buffer, ~128 MB) up to this size stays in the low 4 GB, where the A64 CPU
+// can run the code it will hold; larger ones (Unity's 511 MB, a 32-bit
+// guest's 4 GB) are windows.
+const uint64_t kLowReserveMax = 256ull << 20;
 
 uint64_t GranDown(uint64_t a) { return a & ~(kGran - 1); }
 uint64_t GranUp(uint64_t a) { return (a + kGran - 1) & ~(kGran - 1); }
@@ -1899,7 +1959,12 @@ size_t WindowMinBytes() {
 }
 
 // A new window for a reservation of |len|: its address, or ~0 (errno).
-uint64_t NewWindow(uint64_t len) {
+// |want|: the address asked for (a hint): honoured when its window is free,
+// 64 KB aligned and the reservation fits there (qemu-user picks a hole from
+// /proc/self/maps and takes nothing else: ProcMapsWindows); 0, or one that
+// cannot be had: the first free window, at W + kWindowLow -- or, with
+// |exact|, EEXIST (MAP_FIXED_NOREPLACE).
+uint64_t NewWindow(uint64_t len, uint64_t want = 0, bool exact = false) {
   if (len > (1ull << kWindowShift) - kWindowLow) {
     errno = ENOMEM;
     return ~0ull;
@@ -1909,11 +1974,28 @@ uint64_t NewWindow(uint64_t len) {
   {
     std::lock_guard<std::mutex> l(g_windows_lock);
     int slot = 0;
-    while (slot < kMaxWindows && g_windows[slot].base)
-      ++slot;
-    if (slot == kMaxWindows) {
-      errno = ENOMEM;
-      return ~0ull;
+    uint64_t at = 0;
+    if (want) {
+      const uint64_t k = want >> kWindowShift;
+      const uint64_t offset = want & ((1ull << kWindowShift) - 1);
+      if (k >= 1 && k <= kMaxWindows && !g_windows[k - 1].base && (want & (kGran - 1)) == 0 &&
+          offset + len <= (1ull << kWindowShift)) {
+        slot = static_cast<int>(k - 1);
+        at = want;
+      }
+    }
+    if (!at) {
+      if (exact) {
+        errno = EEXIST;
+        return ~0ull;
+      }
+      while (slot < kMaxWindows && g_windows[slot].base)
+        ++slot;
+      if (slot == kMaxWindows) {
+        errno = ENOMEM;
+        return ~0ull;
+      }
+      at = WindowW(slot) + kWindowLow;
     }
     if (!g_scratch) {
       void* s = GuestMmap(nullptr, kGran, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -1928,14 +2010,14 @@ uint64_t NewWindow(uint64_t len) {
       return ~0ull;
     }
     ReserveWindow& win = g_windows[slot];
-    win.base = base = WindowW(slot) + kWindowLow;
+    win.base = base = at;
     win.end = base + len;
     win.table = table;
     for (size_t i = 0; i < entries; ++i)
       table[i] = g_scratch - static_cast<uint32_t>(base + (static_cast<uint64_t>(i) << kGranShift));
     win.reserved.Add(base, win.end);
     if (ndk64_window_table)
-      ndk64_window_table[slot + 1] = table - (kWindowLow >> kGranShift);  // (indexed by a >> 16 & 0xfffff)
+      ndk64_window_table[slot + 1] = table - ((base - WindowW(slot)) >> kGranShift);  // (indexed by a >> 16 & 0xfffff)
     first = g_reserve_windows.fetch_add(1) == 0;
   }
   // Translations made so far take the low 32 bits of an address as it is.
@@ -1948,6 +2030,30 @@ uint64_t NewWindow(uint64_t len) {
 }
 
 }  // namespace
+
+// /proc/self/maps lines of the address space an arm64 guest has beyond the
+// libraries: the wasm memory (and what aliases it, below the first window),
+// each window in use whole, the low guard of each free one -- so that a hole
+// found there is the start of a free window (qemu-user's guest_base).
+std::string ProcMapsWindows() {
+  std::string text;
+  char line[160];
+  auto add = [&](uint64_t lo, uint64_t hi, const char* name) {
+    snprintf(line, sizeof line, "%010llx-%010llx ---p 00000000 00:00 0          %s\n",
+             static_cast<unsigned long long>(lo), static_cast<unsigned long long>(hi), name);
+    text += line;
+  };
+  add(0, 1ull << kWindowShift, "[anon:arc-wasm memory]");
+  std::lock_guard<std::mutex> l(g_windows_lock);
+  for (int slot = 0; slot < kMaxWindows; ++slot) {
+    if (g_windows[slot].base)
+      add(WindowW(slot), WindowW(slot + 1), "[anon:arc-wasm reservation]");
+    else
+      add(WindowW(slot), WindowW(slot) + kWindowLow, "[anon:arc-wasm guard]");
+  }
+  add(WindowW(kMaxWindows), 1ull << 47, "[anon:arc-wasm beyond]");
+  return text;
+}
 
 uint64_t ReserveWindowAddr64(uint32_t a) {
   const uint32_t g = __atomic_load_n(&g_window_rev[a >> kGranShift], __ATOMIC_ACQUIRE);
@@ -1997,14 +2103,33 @@ extern "C" uint64_t ndk_reserve_idle_bytes() {
 
 uint64_t GuestMmap64(uint64_t addr, uint64_t len, int prot, int flags, int fd, int64_t off) {
   const bool fixed = (flags & MAP_FIXED) != 0;
-  if (!fixed && addr + len > k4G)
-    addr = 0;  // a hint where there is nothing
   if (len == 0) {
     errno = EINVAL;
     return ~0ull;
   }
-  if (!fixed && (flags & MAP_ANONYMOUS) && prot == PROT_NONE && len >= WindowMinBytes())
-    return NewWindow((len + 4095) & ~4095ull);
+  // A reservation: a window (at the hint, if it can be had there). A spawned
+  // program's mid-size reservation with no window hint stays in the low 4 GB
+  // instead: qemu-user's code buffer must be executable there (topic
+  // native-exec; the A64 CPU's PC is 32-bit).
+  if (!fixed && (flags & MAP_ANONYMOUS) && prot == PROT_NONE && len >= WindowMinBytes()) {
+    const bool window_hint = addr + len > k4G;
+    const bool spawned = arc_lproc_any() && arc_lproc_is_spawned(arc_lproc_current());
+    if (spawned && !window_hint && len <= kLowReserveMax && len < k4G) {
+      void* r = GuestMmap(Ptr<void>(0u), static_cast<size_t>(len), prot,
+                          flags & ~MAP_FIXED_NOREPLACE, fd, off);
+      if (r != MAP_FAILED)
+        return Addr(r);
+      // The low 4 GB is full: a window after all.
+    }
+    return NewWindow((len + 4095) & ~4095ull, window_hint ? addr : 0, (flags & MAP_FIXED_NOREPLACE) != 0);
+  }
+  if (!fixed && addr + len > k4G) {
+    if (flags & MAP_FIXED_NOREPLACE) {  // what is asked for is not to be had
+      errno = EEXIST;
+      return ~0ull;
+    }
+    addr = 0;  // a hint where there is nothing
+  }
   if (addr + len <= k4G && len < k4G) {
     void* r = GuestMmap(Ptr<void>(static_cast<uint32_t>(addr)), static_cast<size_t>(len), prot, flags, fd, off);
     return r == MAP_FAILED ? ~0ull : Addr(r);

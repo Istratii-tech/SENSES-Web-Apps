@@ -507,6 +507,50 @@ async function tree({prefix, skip}) {
   return out;
 }
 
+// Files between apps and the phone (topic app-files, files.js): a folder of a
+// system's /data as {name, kind, size, mtime} entries, a file as a File
+// (OPFS: read from the disk when used, never copied here; posted to the page),
+// a picked File written in (a free name: "a (2).txt"), and removal under a
+// system's shared storage (senses/data/STACK/media/) only.
+async function listDir({path}) {
+  const out = [];
+  let d;
+  try { d = await dirOf(parts(path), false); } catch (e) { return out; }
+  for await (const [name, h] of d.entries()) {
+    const e = {name, kind: h.kind, size: 0, mtime: 0};
+    if (h.kind === 'file') {
+      try { const f = await h.getFile(); e.size = f.size; e.mtime = f.lastModified || 0; } catch (err) {}
+    }
+    out.push(e);
+  }
+  return out;
+}
+async function fileAt({path, name, type}) {
+  const f = await (await fileHandle(path, false)).getFile();
+  let data = [f];
+  if (!(f instanceof Blob)) {
+    // (IndexedDB, iOS 16.1: a File's shape only; its bytes, piece by piece)
+    data = [];
+    for (let at = 0; at < f.size; at += PIECE) {
+      data.push(new Blob([await f.slice(at, Math.min(f.size, at + PIECE)).arrayBuffer()]));
+    }
+  }
+  return new File(data, name || parts(path).pop(), {type: type || f.type || '', lastModified: f.lastModified});
+}
+async function putFile(id, {dir, file}) {
+  let name = String(file.name || 'file').replace(/[\\\/\x00-\x1f:]/g, '_').replace(/^\.+/, '') || 'file';
+  const dot = name.lastIndexOf('.'), base = dot > 0 ? name.slice(0, dot) : name, ext = dot > 0 ? name.slice(dot) : '';
+  for (let n = 2; await exists(dir + name); n++) name = base + ' (' + n + ')' + ext;
+  await writeBlob(dir + name, file, id);
+  return name;
+}
+const SHARED = /^senses\/data\/a\d\d\/media\/0\/./;
+async function removePath({path}) {
+  if (!SHARED.test(path) || parts(path).indexOf('..') >= 0) throw new Error('not in shared storage: ' + path);
+  await remove(path);
+  return true;
+}
+
 // {path, at, len} -> ArrayBuffer (posted, not copied).
 async function readAt({path, at, len}) {
   const h = await (await fileHandle(path, false)).createSyncAccessHandle();
@@ -784,6 +828,10 @@ const OPS = {
   removeApp: (args) => removeApp(args),
   tree: (args) => tree(args),
   readAt: (args) => readAt(args),
+  listDir: (args) => listDir(args),
+  fileAt: (args) => fileAt(args),
+  putFile: (args, id) => putFile(id, args),
+  removePath: (args) => removePath(args),
   receive: (args) => receive(args),
   wipe: () => wipe(),
 };

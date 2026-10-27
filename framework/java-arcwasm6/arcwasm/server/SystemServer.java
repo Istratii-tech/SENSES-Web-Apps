@@ -358,6 +358,7 @@ public final class SystemServer {
             Senses.signal("app started " + component.getPackageName() + " "
                     + component.getClassName());
             Senses.sweepOptions(options);  // tools/app_sweep.py
+            PageFiles.launch();  // files from the page (topic app-files)
         }
         // system_server's main thread loops forever.
         boolean dump = options.contains("--dump");

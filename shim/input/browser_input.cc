@@ -901,6 +901,62 @@ bool TakePageFile(const char* path, std::string* name) {
   return true;
 }
 
+// --- the page's text input (topic ios-audio-keyboard) ---------------------------------
+
+namespace {
+
+pthread_mutex_t g_ime_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t g_ime_cond = PTHREAD_COND_INITIALIZER;
+std::deque<ImeRecord> g_ime_records;
+ImeState g_ime_state;      // the service's
+ImeState g_ime_state_out;  // the page's copy (arcwasm_ime_state)
+
+}  // namespace
+
+void QueueImeRecord(const ImeRecord& record) {
+  pthread_mutex_lock(&g_ime_lock);
+  g_ime_records.push_back(record);
+  pthread_cond_signal(&g_ime_cond);
+  pthread_mutex_unlock(&g_ime_lock);
+}
+
+bool TakeImeRecord(ImeRecord* record, int timeout_ms) {
+  pthread_mutex_lock(&g_ime_lock);
+  if (timeout_ms < 0) {
+    while (g_ime_records.empty())
+      pthread_cond_wait(&g_ime_cond, &g_ime_lock);
+  } else if (g_ime_records.empty()) {
+    struct timespec until;
+    clock_gettime(CLOCK_REALTIME, &until);
+    int64_t ns = until.tv_nsec + static_cast<int64_t>(timeout_ms) * 1000000;
+    until.tv_sec += ns / 1000000000;
+    until.tv_nsec = ns % 1000000000;
+    while (g_ime_records.empty()) {
+      if (pthread_cond_timedwait(&g_ime_cond, &g_ime_lock, &until) != 0)
+        break;
+    }
+  }
+  const bool got = !g_ime_records.empty();
+  if (got) {
+    *record = g_ime_records.front();
+    g_ime_records.pop_front();
+  }
+  pthread_mutex_unlock(&g_ime_lock);
+  return got;
+}
+
+void SetImeState(const ImeState& state) {
+  pthread_mutex_lock(&g_ime_lock);
+  const int32_t serial = g_ime_state.serial + 1;
+  g_ime_state = state;
+  g_ime_state.serial = serial;
+  pthread_mutex_unlock(&g_ime_lock);
+  MAIN_THREAD_ASYNC_EM_ASM({
+    var input = Module['arcwasmInput'];
+    if (input && input.imeChanged) input.imeChanged();
+  });
+}
+
 }  // namespace arcwasm
 
 // --- the page's side (shim/input/browser_input.js, on the main thread) -------------
@@ -983,6 +1039,32 @@ EMSCRIPTEN_KEEPALIVE void arcwasm_page_file_ready(uint8_t* data, int size) {
   pthread_mutex_lock(&arcwasm::g_page_files_lock);
   arcwasm::g_page_files.push_back(file);
   pthread_mutex_unlock(&arcwasm::g_page_files_lock);
+}
+
+// The page's text input (Module.arcwasmInput's IME part): it writes a
+// record's text (UTF-16) here, then queues the record.
+EMSCRIPTEN_KEEPALIVE char16_t* arcwasm_ime_text_buffer() {
+  static char16_t buffer[arcwasm::kImeTextMax];
+  return buffer;
+}
+
+EMSCRIPTEN_KEEPALIVE void arcwasm_ime_op(int op, int a, int b, int length) {
+  arcwasm::ImeRecord r;
+  r.op = op;
+  r.a = a;
+  r.b = b;
+  if (length > 0)
+    r.text.assign(arcwasm_ime_text_buffer(), std::min(length, arcwasm::kImeTextMax));
+  arcwasm::QueueImeRecord(r);
+}
+
+// The editor state for the page (after imeChanged): a copy it reads at
+// leisure (arcwasm::ImeState's layout).
+EMSCRIPTEN_KEEPALIVE arcwasm::ImeState* arcwasm_ime_state() {
+  pthread_mutex_lock(&arcwasm::g_ime_lock);
+  arcwasm::g_ime_state_out = arcwasm::g_ime_state;
+  pthread_mutex_unlock(&arcwasm::g_ime_lock);
+  return &arcwasm::g_ime_state_out;
 }
 
 }  // extern "C"

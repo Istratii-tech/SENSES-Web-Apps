@@ -10,6 +10,8 @@
 
 #include "common/alog.h"
 
+#include "../multiproc/include/arc_lproc.h"
+
 namespace {
 
 // write(2), not fwrite(stderr): the kernel logs (ALOGW in a socket's
@@ -17,15 +19,26 @@ namespace {
 // FILE lock may be held by a thread whose fprintf(stderr) waits for that
 // mutex in its own write. A write(2) from inside the kernel goes straight to
 // the host (arc_kernel.cc); one from outside goes through the kernel.
+// The log is the VM's: a thread of a spawned process (topic native-exec)
+// writes it to the VM's stderr, not the program's own descriptor 2
+// (posix_translation gives such a process 0-2 of its own).
 void DefaultWriter(const void* buf, size_t count) {
+  int pid = 0, uid = 0;
+  if (arc_lproc_any()) {
+    arc_lproc_get_thread(&pid, &uid);
+    if (pid)
+      arc_lproc_set_thread(0, uid);
+  }
   const char* p = static_cast<const char*>(buf);
   while (count > 0) {
     const ssize_t n = write(STDERR_FILENO, p, count);
     if (n <= 0)
-      return;
+      break;
     p += n;
     count -= n;
   }
+  if (pid)
+    arc_lproc_set_thread(pid, uid);
 }
 
 arc::LogWriter g_writer = DefaultWriter;
