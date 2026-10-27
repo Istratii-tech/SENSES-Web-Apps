@@ -2,6 +2,7 @@
 
 #include "kernel/arc_kernel.h"
 
+#include <algorithm>
 #include <dirent.h>
 #include <emscripten/syscalls.h>
 #include <emscripten/emscripten.h>
@@ -35,6 +36,8 @@
 #include "posix_translation/dev_urandom.h"
 #include "posix_translation/device_file.h"
 #include "posix_translation/dev_zero.h"
+#include "posix_translation/dir.h"
+#include "posix_translation/directory_manager.h"
 #include "posix_translation/passthrough.h"
 #include "posix_translation/permission_info.h"
 #include "posix_translation/process_environment.h"
@@ -46,6 +49,10 @@
 #include "posix_translation/virtual_file_system.h"
 #include "ppapi/cpp/instance.h"
 #include "wasm_mm/wasm_mmap.h"
+
+#include <limits.h>
+#include <map>
+#include <sys/resource.h>
 
 using posix_translation::VirtualFileSystem;
 
@@ -228,19 +235,49 @@ bool IsAtCwd(int dirfd, const char* path) {
   return dirfd == AT_FDCWD || (path && path[0] == '/');
 }
 
+// The working directory: the VM's, and one of its own for each spawned
+// process (topic native-exec: a program an app runs with
+// ProcessBuilder.directory(), chdir() in it). Called under the VFS's mutex;
+// arc_kernel_set_process_cwd takes it too.
 class DefaultProcessEnvironment
     : public posix_translation::ProcessEnvironment {
  public:
   DefaultProcessEnvironment() : cwd_("/"), umask_(022) {}
-  virtual std::string GetCurrentDirectory() const { return cwd_; }
-  virtual void SetCurrentDirectory(const std::string& dir) { cwd_ = dir; }
+  virtual std::string GetCurrentDirectory() const {
+    if (!cwds_.empty()) {
+      std::map<int, std::string>::const_iterator it = cwds_.find(arc_lproc_current());
+      if (it != cwds_.end())
+        return it->second;
+    }
+    return cwd_;
+  }
+  virtual void SetCurrentDirectory(const std::string& dir) {
+    if (!cwds_.empty()) {
+      std::map<int, std::string>::iterator it = cwds_.find(arc_lproc_current());
+      if (it != cwds_.end()) {
+        it->second = dir;
+        return;
+      }
+    }
+    cwd_ = dir;
+  }
   virtual mode_t GetCurrentUmask() const { return umask_; }
   virtual void SetCurrentUmask(mode_t mask) { umask_ = mask; }
+  // |dir| ("/a/b/", as chdir leaves it), or "" to forget process |pid|'s.
+  void SetProcessDirectory(int pid, const std::string& dir) {
+    if (dir.empty())
+      cwds_.erase(pid);
+    else
+      cwds_[pid] = dir;
+  }
 
  private:
   std::string cwd_;
+  std::map<int, std::string> cwds_;
   mode_t umask_;
 };
+
+DefaultProcessEnvironment* g_environment = NULL;
 
 // A read-only file of fixed text (/proc/cpuinfo, /sys/devices/system/cpu/*).
 class TextFile : public posix_translation::ReadonlyMemoryFile {
@@ -257,6 +294,122 @@ class TextFile : public posix_translation::ReadonlyMemoryFile {
 
  private:
   Content content_;
+};
+
+// binfmt_misc (topic native-exec): the registry is in the NDK bridge
+// (shim/ndk/ndk_exec.cc); these reach it. Weak — the kernel unit test links
+// no bridge, and then /proc/sys/fs/binfmt_misc just refuses writes.
+extern "C" int arc_binfmt_register(const char* line, size_t n) __attribute__((weak));
+extern "C" int arc_binfmt_status_write(const char* buf, size_t n) __attribute__((weak));
+extern "C" size_t arc_binfmt_status_read(char* buf, size_t size) __attribute__((weak));
+extern "C" size_t arc_binfmt_list(char* buf, size_t size) __attribute__((weak));
+
+// /proc/sys/fs/binfmt_misc/{register,status}: Linux's interface for
+// registering an interpreter for a binary format (register is write-only,
+// status is read/write). A program or the stand registers rules the Linux
+// way; no per-package special cases.
+class BinfmtFile : public posix_translation::FileStream {
+ public:
+  BinfmtFile(int oflag, const std::string& pathname, bool status)
+      : FileStream(oflag, pathname), status_(status) {}
+  virtual ssize_t read(void* buf, size_t count) OVERRIDE {
+    if (!status_ || !arc_binfmt_status_read)
+      return 0;  // "register" is write-only
+    char tmp[64];
+    const size_t n = arc_binfmt_status_read(tmp, sizeof tmp);
+    if (pos_ >= n)
+      return 0;
+    const size_t c = std::min(count, n - pos_);
+    memcpy(buf, tmp + pos_, c);
+    pos_ += c;
+    return c;
+  }
+  virtual ssize_t write(const void* buf, size_t count) OVERRIDE {
+    const char* p = static_cast<const char*>(buf);
+    int r = -ENOSYS;
+    if (status_ && arc_binfmt_status_write)
+      r = arc_binfmt_status_write(p, count);
+    else if (!status_ && arc_binfmt_register)
+      r = arc_binfmt_register(p, count);
+    if (r < 0) {
+      errno = -r;
+      return -1;
+    }
+    return count;  // a whole register line per write, as Linux expects
+  }
+  virtual int fstat(struct stat* out) OVERRIDE {
+    memset(out, 0, sizeof(*out));
+    out->st_mode = S_IFREG | (status_ ? 0644 : 0200);
+    out->st_nlink = 1;
+    return 0;
+  }
+  virtual int fstatfs(struct statfs* out) OVERRIDE { return posix_translation::DoStatFsForProc(out); }
+  virtual const char* GetStreamType() const OVERRIDE { return "binfmt_misc"; }
+
+ private:
+  bool status_;
+  size_t pos_ = 0;
+};
+
+class BinfmtHandler : public posix_translation::FileSystemHandler {
+ public:
+  BinfmtHandler() : FileSystemHandler("BinfmtHandler") {}
+  void OnMounted(const std::string& path) OVERRIDE {
+    mount_ = path;
+    while (mount_.size() > 1 && mount_.back() == '/') mount_.pop_back();
+  }
+  // "" for the directory itself, else the entry name ("register", "status", a rule).
+  std::string Entry(const std::string& p) const {
+    std::string s = p;
+    while (s.size() > 1 && s.back() == '/') s.pop_back();
+    if (s == mount_) return "";
+    if (s.compare(0, mount_.size() + 1, mount_ + "/") == 0) return s.substr(mount_.size() + 1);
+    return "\x01";  // not ours
+  }
+  scoped_refptr<posix_translation::FileStream> open(int fd, const std::string& pathname, int oflag,
+                                                    mode_t cmode) OVERRIDE {
+    const std::string e = Entry(pathname);
+    if (e == "register" || e == "status")
+      return new BinfmtFile(oflag, pathname, e == "status");
+    errno = (e.empty()) ? EISDIR : EACCES;
+    return NULL;
+  }
+  int stat(const std::string& pathname, struct stat* out) OVERRIDE {
+    const std::string e = Entry(pathname);
+    if (e == "\x01") { errno = ENOENT; return -1; }
+    memset(out, 0, sizeof(*out));
+    if (e.empty()) { out->st_mode = S_IFDIR | 0755; out->st_nlink = 2; }
+    else { out->st_mode = S_IFREG | (e == "status" ? 0644 : 0200); out->st_nlink = 1; }
+    return 0;
+  }
+  int statfs(const std::string& pathname, struct statfs* out) OVERRIDE {
+    return posix_translation::DoStatFsForProc(out);
+  }
+  posix_translation::Dir* OnDirectoryContentsNeeded(const std::string& name) OVERRIDE {
+    if (!Entry(name).empty()) return NULL;
+    posix_translation::DirectoryManager listing;
+    const std::string dir = mount_ + "/";
+    listing.MakeDirectories(dir);
+    listing.AddFileWithType(dir + "register", posix_translation::Dir::REGULAR);
+    listing.AddFileWithType(dir + "status", posix_translation::Dir::REGULAR);
+    if (arc_binfmt_list) {
+      std::string names(arc_binfmt_list(NULL, 0), '\0');
+      if (!names.empty()) {
+        arc_binfmt_list(&names[0], names.size());
+        size_t start = 0;
+        for (size_t i = 0; i <= names.size(); i++) {
+          if (i == names.size() || names[i] == '\n') {
+            if (i > start) listing.AddFileWithType(dir + names.substr(start, i - start), posix_translation::Dir::REGULAR);
+            start = i + 1;
+          }
+        }
+      }
+    }
+    return listing.OpenDirectory(dir);
+  }
+
+ private:
+  std::string mount_;
 };
 
 class TextFileHandler : public posix_translation::FileSystemHandler {
@@ -339,6 +492,7 @@ VirtualFileSystem* Boot() {
 
   static pp::Instance instance(1);
   static DefaultProcessEnvironment environment;
+  g_environment = &environment;
   VirtualFileSystem* vfs = new VirtualFileSystem(&instance, &environment,
                                                  0 /* min fd */, 1023);
   posix_translation::SetVirtualFileSystemInterface(vfs);
@@ -379,6 +533,10 @@ VirtualFileSystem* Boot() {
   const std::string range = cpus == 1 ? "0\n" : "0-" + std::to_string(cpus - 1) + "\n";
   vfs->Mount("/sys/devices/system/cpu/present", new TextFileHandler(range));
   vfs->Mount("/sys/devices/system/cpu/possible", new TextFileHandler(range));
+  // binfmt_misc: interpreters for binary formats (topic native-exec), the
+  // Linux way. A program (or the stand) registers rules by writing
+  // /proc/sys/fs/binfmt_misc/register.
+  vfs->Mount("/proc/sys/fs/binfmt_misc/", new BinfmtHandler);
   vfs->SetBrowserReady();
 
   g_vfs.store(vfs, std::memory_order_release);
@@ -386,6 +544,76 @@ VirtualFileSystem* Boot() {
 }
 
 bool IsBooted() { return g_vfs.load() != NULL; }
+
+}  // namespace arc_kernel
+
+// Spawned process |pid|'s working directory (topic native-exec): |dir| as
+// given (a directory that must exist; NULL: the caller's), "" to forget it.
+extern "C" int arc_kernel_set_process_cwd(int pid, const char* dir) {
+  VirtualFileSystem* vfs = g_vfs.load(std::memory_order_acquire);
+  if (!vfs || !g_environment)
+    return -ENOSYS;
+  std::string d;
+  if (dir && *dir) {
+    struct stat st;
+    {
+      KernelScope scope;
+      if (vfs->stat(dir, &st) != 0)
+        return -errno;
+    }
+    if (!S_ISDIR(st.st_mode))
+      return -ENOTDIR;
+    char real[PATH_MAX];
+    {
+      KernelScope scope;
+      if (!vfs->realpath(dir, real))
+        return -errno;
+    }
+    d = real;
+    if (d.empty() || d[d.size() - 1] != '/')
+      d += '/';
+  } else if (dir) {
+    base::AutoLock lock(vfs->mutex());
+    g_environment->SetProcessDirectory(pid, std::string());
+    return 0;
+  } else {
+    base::AutoLock lock(vfs->mutex());
+    d = g_environment->GetCurrentDirectory();
+  }
+  base::AutoLock lock(vfs->mutex());
+  g_environment->SetProcessDirectory(pid, d);
+  return 0;
+}
+
+// A spawned process's start and end (topic native-exec, shim/ndk/ndk_exec.cc):
+// its descriptors 0-2 (|fds|: the caller's) and working directory (|dir|,
+// null: the caller's); then what it left open closed and its directory forgotten.
+extern "C" int arc_kernel_process_setup(int pid, const int fds[3], const char* dir) {
+  VirtualFileSystem* vfs = g_vfs.load(std::memory_order_acquire);
+  if (!vfs)
+    return -ENOSYS;
+  int r;
+  {
+    KernelScope scope;
+    r = vfs->SetupProcessFds(pid, fds);
+  }
+  if (r < 0)
+    return -errno;
+  return arc_kernel_set_process_cwd(pid, dir);
+}
+
+extern "C" void arc_kernel_process_release(int pid) {
+  VirtualFileSystem* vfs = g_vfs.load(std::memory_order_acquire);
+  if (!vfs)
+    return;
+  {
+    KernelScope scope;
+    vfs->ReleaseProcessFds(pid);
+  }
+  arc_kernel_set_process_cwd(pid, "");
+}
+
+namespace arc_kernel {
 
 unsigned long RoutedCallCount() {  // NOLINT
   return g_routed_calls.load(std::memory_order_relaxed);
@@ -503,8 +731,9 @@ __wasi_errno_t __wasi_fd_sync(__wasi_fd_t fd) {
 
 __wasi_errno_t __wasi_fd_fdstat_get(__wasi_fd_t fd, __wasi_fdstat_t* stat) {
   VirtualFileSystem* vfs = Route();
-  // stdio is passed through to the host; let it answer isatty() & co.
-  if (!vfs || fd <= 2)
+  // stdio is passed through to the host; let it answer isatty() & co. (A
+  // spawned process's 0-2 are its own: topic native-exec.)
+  if (!vfs || (fd <= 2 && !(arc_lproc_any() && arc_lproc_is_spawned(arc_lproc_current()))))
     return host_fd_fdstat_get(fd, stat);
   KernelScope scope;
   struct stat st;
@@ -565,6 +794,16 @@ uid_t __syscall_geteuid32() { return arc_lproc_current_uid(); }
 gid_t __syscall_getgid32() { return arc_lproc_current_uid(); }
 gid_t __syscall_getegid32() { return arc_lproc_current_uid(); }
 pid_t __syscall_getpid() { return arc_lproc_current(); }
+pid_t __syscall_getppid() { return arc_lproc_parent(arc_lproc_current()); }
+
+// waitpid/wait4: the spawned processes (topic native-exec); a child of the
+// VM itself there is none.
+pid_t __syscall_wait4(pid_t pid, int* wstatus, int options, struct rusage* rusage) {
+  if (rusage)
+    memset(rusage, 0, sizeof(*rusage));
+  const int r = arc_lproc_waitpid(pid, wstatus, options);
+  return r < 0 ? -errno : r;
+}
 
 // --- __syscall_*: files and directories ------------------------------------
 
@@ -681,18 +920,19 @@ int __syscall_faccessat(int dirfd, const char* path, int amode, int flags) {
   return Sys(vfs->access(path, amode));
 }
 
-// chmod: posix_translation keeps no permission bits (every file is the
-// VM's), so a file that exists takes any mode, as file_wrap_stub's chmod did
-// for NaCl. Without these emscripten's own FS answered ENOENT for every file
-// of the VFS: File.setWritable/setExecutable were false (SoLoader's
-// "cannot make directory writable for us", topic a10-default).
+// chmod: the file's handler takes the mode (VirtualFileSystem::chmod): /data
+// on OPFS keeps it (File.setExecutable, chmod +x; topic native-exec), other
+// handlers keep no permission bits (every file is the VM's) and only check
+// that the file exists, as file_wrap_stub's chmod did for NaCl. Without
+// these emscripten's own FS answered ENOENT for every file of the VFS:
+// File.setWritable/setExecutable were false (SoLoader's "cannot make
+// directory writable for us", topic a10-default).
 int __syscall_chmod(const char* path, mode_t mode) {
   VirtualFileSystem* vfs = Route();
   if (!vfs)
     return host_chmod(path, mode);
   KernelScope scope;
-  struct stat st;
-  return Sys(vfs->stat(path, &st));
+  return Sys(vfs->chmod(path, mode));
 }
 
 int __syscall_fchmod(int fd, mode_t mode) {
@@ -700,8 +940,7 @@ int __syscall_fchmod(int fd, mode_t mode) {
   if (!vfs)
     return host_fchmod(fd, mode);
   KernelScope scope;
-  struct stat st;
-  return Sys(vfs->fstat(fd, &st));
+  return Sys(vfs->fchmod(fd, mode));
 }
 
 int __syscall_fchmodat2(int dirfd, const char* path, mode_t mode, int flags) {
@@ -709,13 +948,19 @@ int __syscall_fchmodat2(int dirfd, const char* path, mode_t mode, int flags) {
   if (!vfs)
     return host_fchmodat2(dirfd, path, mode, flags);
   KernelScope scope;
-  struct stat st;
   if ((flags & AT_EMPTY_PATH) && (!path || !*path))
-    return Sys(vfs->fstat(dirfd, &st));
+    return Sys(vfs->fchmod(dirfd, mode));
   if (!IsAtCwd(dirfd, path))
     return -ENOTSUP;
-  return Sys((flags & AT_SYMLINK_NOFOLLOW) ? vfs->lstat(path, &st)
-                                           : vfs->stat(path, &st));
+  struct stat st;
+  // A symbolic link has no mode of its own (Linux: EOPNOTSUPP for one).
+  if (flags & AT_SYMLINK_NOFOLLOW) {
+    if (vfs->lstat(path, &st) != 0)
+      return -errno;
+    if (S_ISLNK(st.st_mode))
+      return -EOPNOTSUPP;
+  }
+  return Sys(vfs->chmod(path, mode));
 }
 
 int __syscall_mkdirat(int dirfd, const char* path, mode_t mode) {

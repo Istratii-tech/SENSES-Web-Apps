@@ -102,6 +102,39 @@ void arc_lproc_set_thread(int pid, int uid);
 // Blocks the calling thread for good (a thread of a killed process).
 void arc_lproc_park(const char* why) __attribute__((noreturn));
 
+// --- Spawned processes (topic native-exec, docs/topics/native-exec.md) ---
+// A native program an app runs (ProcessBuilder, posix_spawn) is a light
+// process too: a child of the process that started it, with an exit status
+// its parent waits for. Its program runs on threads of its own (the NDK
+// bridge, shim/ndk/ndk_exec.cc); its descriptors 0-2 and working directory
+// are its own (posix_translation's descriptor table, arc_kernel).
+
+// Creates a spawned process, a child of the calling thread's process.
+int arc_lproc_spawn_create(const char* name, int uid);
+
+// 1 if |pid| is a spawned process (alive or not), else 0.
+int arc_lproc_is_spawned(int pid);
+
+// The parent of process |pid| (the VM's own pid for the VM and its other
+// light processes).
+int arc_lproc_parent(int pid);
+
+// Process |pid| ended with wait status |wstatus| (exit code << 8, or the
+// signal number): its waiting parent wakes. The first status counts. Marks it
+// dead as arc_lproc_kill does, without parking the caller.
+void arc_lproc_exited(int pid, int wstatus);
+
+// Hook run by exit(), _exit() and abort() in a spawned process (the NDK
+// bridge ends the program there instead of parking the thread): never
+// returns when it handles the call; returns if it does not.
+void arc_lproc_set_exit_hook(void (*hook)(int pid, int wstatus));
+void arc_lproc_run_exit_hook(int pid, int wstatus);
+
+// waitpid(2) for the calling thread's process: |pid| > 0 that child,
+// -1 (or 0) any child. WNOHANG: 0 if none has ended yet. Returns the pid
+// whose status it reaped, -1 with errno ECHILD if there is no such child.
+int arc_lproc_waitpid(int pid, int* wstatus, int options);
+
 #ifdef __cplusplus
 }
 #endif

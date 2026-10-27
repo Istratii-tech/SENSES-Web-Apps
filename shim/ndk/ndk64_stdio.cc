@@ -32,6 +32,10 @@ uint64_t g_std64[3];
 FILE* HostFile64(uint32_t guest) {
   uint32_t base = Addr(g_sF64);
   if (guest - base < 3 * kSFileSize) {
+    // A spawned program's own (topic native-exec: ndk_exec.cc).
+    if (ExecStdFile)
+      if (FILE* own = ExecStdFile(static_cast<int>((guest - base) / kSFileSize)))
+        return own;
     switch ((guest - base) / kSFileSize) {
       case 0: return stdin;
       case 1: return stdout;
@@ -42,6 +46,10 @@ FILE* HostFile64(uint32_t guest) {
 }
 
 uint32_t GuestFile64(FILE* host) {
+  if (ExecStdFile) {
+    for (int i = 0; i < 3; i++)
+      if (host && host == ExecStdFile(i)) return Addr(g_sF64) + i * kSFileSize;
+  }
   if (host == stdin) return Addr(g_sF64);
   if (host == stdout) return Addr(g_sF64) + kSFileSize;
   if (host == stderr) return Addr(g_sF64) + 2 * kSFileSize;

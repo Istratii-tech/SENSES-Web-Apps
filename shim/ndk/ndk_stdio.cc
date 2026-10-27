@@ -49,10 +49,20 @@ enum { kSRD = 0x0004, kSWR = 0x0008, kSRW = 0x0010, kSEOF = 0x0020, kSERR = 0x00
 
 GFile g_sF[3];  // __sF: stdin, stdout, stderr
 
+// The host FILE behind |f|; the standard streams of a spawned program are
+// its own (topic native-exec: ndk_exec.cc).
+FILE* Cookie(GFile* f) {
+  if (f >= g_sF && f < g_sF + 3 && ExecStdFile) {
+    if (FILE* own = ExecStdFile(static_cast<int>(f - g_sF)))
+      return own;
+  }
+  return Ptr<FILE>(f->_cookie);
+}
+
 FILE* Host(GFile* f) {
   if (!f)
     return nullptr;
-  FILE* h = Ptr<FILE>(f->_cookie);
+  FILE* h = Cookie(f);
   // A guest clearerr() macro only clears the guest's flags.
   if (!(f->_flags & (kSEOF | kSERR)) && (feof(h) || ferror(h)))
     clearerr(h);
@@ -60,7 +70,7 @@ FILE* Host(GFile* f) {
 }
 // Copies the host's EOF/error state into the flags the macros read.
 void Sync(GFile* f) {
-  FILE* h = Ptr<FILE>(f->_cookie);
+  FILE* h = Cookie(f);
   f->_flags = (f->_flags & ~(kSEOF | kSERR)) | (feof(h) ? kSEOF : 0) | (ferror(h) ? kSERR : 0);
   f->_r = f->_w = 0;
 }

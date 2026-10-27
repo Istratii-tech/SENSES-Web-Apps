@@ -771,6 +771,7 @@ public final class SystemServer {
         }
         if (senses) {
             Senses.sweepOptions(options);  // tools/app_sweep.py
+            PageFiles.launch();  // files from the page (topic app-files)
         }
         // --shot=SECONDS:PATH: the display as a PNG after SECONDS (for reports;
         // with the compositor of fw10-graphics).

@@ -30,8 +30,12 @@
   #panel { position: relative; flex: none; background: #000; touch-action: none;
            -webkit-tap-highlight-color: transparent; }
   #panel svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  /* Storage and memory (RAM, threads) over the plate: yellow when memory
+     runs low, red when the tab is close to its limit. */
   #mem { position: absolute; left: 0; right: 0; top: 0; text-align: center; color: #6f6f6f;
          white-space: nowrap; overflow: hidden; pointer-events: none; font-variant-numeric: tabular-nums; }
+  #mem.warn { color: #e0b040; font-weight: 600; }
+  #mem.bad { color: #ff6a5a; font-weight: 600; }
 
   #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
              padding: 24px; background: #000; z-index: 5; }
@@ -68,12 +72,6 @@
   #memwarn button.test { display: block; width: 100%; margin-top: 8px; padding: 4px 0; background: transparent;
                          color: #f0e6d0; font-weight: 400; text-decoration: underline; }
   #memwarn button[hidden], #memwarn[hidden] { display: none; }
-  /* Memory in use, always over the app (taps go through). */
-  #ram { position: fixed; right: 8px; bottom: calc(env(safe-area-inset-bottom) + 8px); z-index: 15;
-         padding: 3px 8px; border-radius: 9px; background: #000a; color: #e8e8e8; font-size: 11.5px;
-         font-variant-numeric: tabular-nums; pointer-events: none; }
-  #ram.warn { background: #6b4a10e0; }
-  #ram[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -146,7 +144,6 @@
 </div>
 <div id="stopping" hidden>Приложение закрывается…</div>
 <div id="notice" hidden><b>Хранилище заполнено</b><span id="noticetext"></span></div>
-<div id="ram" hidden></div>
 <div id="memwarn" hidden><b id="memtitle">Мало памяти</b><span id="memtext"></span>
   <div class="row"><button id="memreload">Перезагрузить</button><button id="memlater" class="later">Позже</button></div>
   <button id="memtest" class="test" hidden>Узнать, сколько памяти даёт это устройство (тест, 2 мин)</button>
@@ -161,6 +158,7 @@
 <script src="store.js"></script>
 <script src="origins.js"></script>
 <script src="senses.js"></script>
+<script src="files.js"></script>
 <script>
 (function () {
   'use strict';
@@ -623,6 +621,7 @@
     // No room for the file data of a read or write (opfs-oom-ios, below).
     if (/^arc-opfs: out of memory for file data/.test(text)) fileMemory();
     if (/^Failed to grow the heap from |^dlmalloc: out of memory/.test(text)) heapFullAt = performance.now();
+    if (appFiles.watch(text)) return;
     // The VM's one-app mode (install8): its signals first.
     var sig = /^SENSES: app (\w+) (\S+)(?: (.*))?$/.exec(text);
     if (sig) {
@@ -696,6 +695,17 @@
     });
   }
 
+  // Files the app opens, saves or shares (topic app-files, files.js): the
+  // page is the phone's side ("SENSES: file ..." lines).
+  var appFiles = SensesFiles.app({
+    send: function (name, bytes) {
+      return !!(Module && Module.arcwasmInput && Module.arcwasmInput.sendFile(name, bytes));
+    },
+    dataDir: function () { return runStack ? 'senses/data/' + runStack : null; },
+    name: function () { return runMeta && runMeta.label; },
+    testPick: params.get('testpick'),  // (tests: /__test/NAME as the user's pick)
+  });
+
   var crashes = 0;
   function crashed() {
     if (failed || leaving) return;
@@ -752,18 +762,25 @@
     }, 500);
   }
   function updateMemory() {
-    var parts = [];
     var top = Module && Module._arcwasm_heap_top, max = Module && Module.arcwasmMemoryMax;
-    if (typeof top === 'function' && max) {
-      try {
-        parts.push('ОЗУ ' + S.size(top()) + ' / ' + S.size(max));
-        if (!ramFromMonitor) showRam(top() / MB, 0, false, false);
-      } catch (e) {}
+    if (typeof top === 'function' && max && !ramFromMonitor) {
+      try { showRam(top() / MB, 0, false, false, 0, 0, S.size(max)); } catch (e) {}
     }
     SensesStore.usage().then(function (u) {
-      if (u && u.quota) parts.unshift('Хранилище ' + S.size(u.usage || 0) + ' / ' + S.size(u.quota));
-      $('mem').textContent = parts.join(' · ');
+      storeText = u && u.quota ? 'Хранилище ' + S.size(u.usage || 0) + ' / ' + S.size(u.quota) : '';
+      showMem();
     });
+  }
+  // The line over the plate: storage and memory together where they fit,
+  // else memory and storage in turns (memory alone while it runs low).
+  var storeText = '', ramText = '', ramLevel = '';
+  function showMem() {
+    var el = $('mem'), both = [storeText, ramText].filter(Boolean).join(' · ');
+    el.className = ramLevel;
+    el.textContent = both;
+    if (!storeText || !ramText || el.scrollWidth <= el.clientWidth) return;
+    // (4 s each)
+    el.textContent = ramLevel || Math.floor(Date.now() / 4000) % 2 === 0 ? ramText : storeText;
   }
 
   // --- storage space (topic opfs-after-kill, docs/topics/opfs-after-kill.md) -------
@@ -1042,17 +1059,22 @@
     return madeMb ? Math.min(s.wasmMb, s.touchedMb + Math.max(0, s.wasmMb - madeMb)) : s.wasmMb;
   }
   function tabLimit(s) { return devLimit && devLimit.mb || (s.ios ? 1490 : 0); }
-  // The RAM badge: what the memory monitor finds in use (8.1, 10), else the
-  // VM's heap top (4.4, 6.0.1); on an iPhone the threads too (their workers
-  // cost the tab besides). Its peak is kept for the library's tile.
-  var ramPeak = 0, ramFromMonitor = false;
-  function showRam(mb, threads, ios, warn, est, limit) {
+  // Memory on the line over the plate (showMem): what the memory monitor
+  // finds in use (8.1, 10), else the VM's heap top (4.4, 6.0.1; |max| its
+  // memory's size); on an iPhone the threads too (their workers cost the tab
+  // besides). |warn|: yellow; the tab at 95% of its limit: red. Its peak is
+  // kept for the library's tile.
+  var ramPeak = 0, ramFromMonitor = false, ramShown = false;
+  function showRam(mb, threads, ios, warn, est, limit, max) {
     if (!(mb > 0)) return;
     mb = Math.round(mb);
-    $('ram').textContent = limit && est ? 'ОЗУ ≈ ' + Math.round(est) + ' из ' + limit + ' МБ · ' + threads + ' потоков'
-        : 'ОЗУ ' + mb + ' МБ' + (ios && threads ? ' · ' + threads + ' потоков' : '');
-    $('ram').classList.toggle('warn', !!warn);
-    $('ram').hidden = false;
+    ramText = limit && est ? 'ОЗУ ≈ ' + Math.round(est) + ' из ' + limit + ' МБ · потоков ' + threads
+        : 'ОЗУ ' + mb + ' МБ' + (max ? ' / ' + max : '') + (ios && threads ? ' · потоков ' + threads : '');
+    var level = limit && est && est >= limit * 0.95 ? 'bad' : warn ? 'warn' : '';
+    if (level !== ramLevel || !ramShown) S.log('Run: memory line: ' + ramText + (level ? ' (' + level + ')' : ''));
+    ramLevel = level;
+    ramShown = true;
+    showMem();
     if (limit && est) mb = Math.round(est);  // (the tile shows what the tab took)
     if (mb > ramPeak) {
       ramPeak = mb;
@@ -1218,6 +1240,22 @@
           // An .xapk's OBB files (topic apks-split): the VM mounts the
           // library's PACKAGE/obb read-only as the app's OBB directory.
           if (meta.obb && meta.obb.length) ENV.ARC_APP_OBB = pkg;
+          // Diagnostics: ?setenv=KEY=VALUE (repeatable) sets any VM env var,
+          // which spawned native programs inherit too (e.g. QEMU_STRACE=1 to
+          // trace an emulator's guest syscalls). General, not per-app.
+          params.getAll('setenv').forEach(function (kv) {
+            var i = kv.indexOf('=');
+            if (i > 0) { ENV[kv.slice(0, i)] = kv.slice(i + 1); S.log('Run: env ' + kv.slice(0, i) + ' set'); }
+          });
+          // Diagnostics: ?binfmt=RULE (repeatable) registers a binfmt_misc rule
+          // at boot (a Linux register line ":name:M::magic:mask:interp:flags"),
+          // e.g. a 32-bit ARM ELF -> an emulator. General, not per-app: joined
+          // into ARC_BINFMT, read once by the native-exec layer (ndk_exec.cc).
+          var binfmt = params.getAll('binfmt').filter(function (r) { return r; });
+          if (binfmt.length) {
+            ENV.ARC_BINFMT = (ENV.ARC_BINFMT ? ENV.ARC_BINFMT + '\n' : '') + binfmt.join('\n');
+            S.log('Run: ' + binfmt.length + ' binfmt rule(s) set');
+          }
           var max = Module.arcwasmMemoryMax || 0, heap = heapFor(system.vm, max);
           if (heap) args.unshift(heap);
           S.log('Run: wasm memory up to ' + Math.round(max / 1048576) + ' MB' + (heap ? ', Java heap ' + heap : ''));

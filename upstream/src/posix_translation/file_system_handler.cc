@@ -4,6 +4,8 @@
 
 #include "posix_translation/file_system_handler.h"
 
+#include <sys/stat.h>
+
 namespace posix_translation {
 
 FileSystemHandler::FileSystemHandler(const std::string& name)
@@ -50,6 +52,11 @@ std::string FileSystemHandler::SetPepperFileSystem(
     const std::string& path_in_vfs) {
   ALOGE("%s does not support Pepper filesystem.", name().c_str());
   return "";
+}
+
+int FileSystemHandler::chmod(const std::string& pathname, mode_t mode) {
+  struct stat st;
+  return stat(pathname, &st);
 }
 
 int FileSystemHandler::mkdir(const std::string& pathname, mode_t mode) {

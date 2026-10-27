@@ -70,6 +70,8 @@ int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* attr,
 void __wrap_exit(int status) {
   const int pid = LightPid();
   if (pid) {
+    // A spawned program (topic native-exec): the bridge ends it.
+    arc_lproc_run_exit_hook(pid, (status & 0xff) << 8);
     arc_lproc_kill(pid, 0);
     arc_lproc_park("exit");
   }
@@ -79,6 +81,7 @@ void __wrap_exit(int status) {
 void __wrap__exit(int status) {
   const int pid = LightPid();
   if (pid) {
+    arc_lproc_run_exit_hook(pid, (status & 0xff) << 8);
     arc_lproc_kill(pid, 0);
     arc_lproc_park("_exit");
   }
@@ -89,6 +92,7 @@ void __wrap_abort(void) {
   const int pid = LightPid();
   if (pid) {
     __android_log_print(6, "LightProcess", "abort() in light process %d", pid);
+    arc_lproc_run_exit_hook(pid, SIGABRT);
     arc_lproc_kill(pid, SIGABRT);
     arc_lproc_park("abort");
   }

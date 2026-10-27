@@ -727,6 +727,13 @@ public final class ActivityManagerService extends ActivityManagerBase {
         }
         // ActivityStackSupervisor.resolveActivity.
         intent = new Intent(intent);
+        // A share sheet (ACTION_CHOOSER): the framework's ChooserActivity
+        // would need a process of the system's; the page shares instead
+        // (topic app-files, PageFiles).
+        if (Intent.ACTION_CHOOSER.equals(intent.getAction())
+                && PageFiles.start(intent, resolvedType, resultTo(resultTo, resultWho, requestCode))) {
+            return ActivityManager.START_SUCCESS;
+        }
         ActivityInfo aInfo;
         try {
             if (intent.getComponent() != null) {
@@ -750,6 +757,11 @@ public final class ActivityManagerService extends ActivityManagerBase {
         }
         if (aInfo == null) {
             Slog.w(TAG, "Unable to resolve " + intent);
+            // Files to open, save or share: the page is the phone's side
+            // (topic app-files, PageFiles).
+            if (PageFiles.start(intent, resolvedType, resultTo(resultTo, resultWho, requestCode))) {
+                return ActivityManager.START_SUCCESS;
+            }
             if (Unimplemented.lenient("ActivityManager.startActivity(" + intent.getAction() + ")")) {
                 // No app here handles it (a ringtone picker, say): the caller
                 // goes on as if the user backed out of it, instead of dying
@@ -2608,6 +2620,27 @@ public final class ActivityManagerService extends ActivityManagerBase {
         }
     }
 
+    private final FilesProvider mFiles = new FilesProvider();
+
+    /** Where PageFiles sends a start's result later; null if none was asked for. */
+    private PageFiles.Result resultTo(final IBinder resultTo, final String resultWho,
+            final int requestCode) {
+        if (requestCode < 0) {
+            return null;
+        }
+        return new PageFiles.Result() {
+            @Override
+            public void deliver(int resultCode, Intent data) {
+                synchronized (ActivityManagerService.this) {
+                    ActivityRecord source = forToken(resultTo);
+                    if (source != null) {
+                        sendResultLocked(source, resultWho, requestCode, resultCode, data);
+                    }
+                }
+            }
+        };
+    }
+
     /** The providers of the system's own (on a device: system apps'). */
     private android.content.IContentProvider systemProvider(String authority) {
         if (SettingsProvider.AUTHORITY.equals(authority)) {
@@ -2615,6 +2648,9 @@ public final class ActivityManagerService extends ActivityManagerBase {
         }
         if (UserDictionaryProvider.AUTHORITY.equals(authority)) {
             return mUserDictionary;
+        }
+        if (FilesProvider.AUTHORITY.equals(authority)) {
+            return mFiles;  // the page's files (topic app-files)
         }
         return null;
     }

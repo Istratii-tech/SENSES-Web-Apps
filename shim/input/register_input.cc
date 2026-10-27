@@ -122,6 +122,73 @@ jstring takePageFile(JNIEnv* env, jclass, jstring pathObj) {
   return env->NewStringUTF(name.c_str());
 }
 
+// --- arcwasm.input.BrowserIme (topic ios-audio-keyboard) ----------------------------
+
+// The next record from the page's text input: its text (null on timeout),
+// op/a/b into args[0..2].
+jstring imeTake(JNIEnv* env, jclass, jintArray args, jint timeoutMillis) {
+  arcwasm::ImeRecord r;
+  if (!arcwasm::TakeImeRecord(&r, timeoutMillis))
+    return nullptr;
+  jint values[3] = {r.op, r.a, r.b};
+  env->SetIntArrayRegion(args, 0, 3, values);
+  return env->NewString(reinterpret_cast<const jchar*>(r.text.data()), r.text.size());
+}
+
+void imeInject(JNIEnv* env, jclass, jint op, jint a, jint b, jstring textObj) {
+  arcwasm::ImeRecord r;
+  r.op = op;
+  r.a = a;
+  r.b = b;
+  if (textObj) {
+    const jchar* chars = env->GetStringChars(textObj, nullptr);
+    r.text.assign(reinterpret_cast<const char16_t*>(chars), env->GetStringLength(textObj));
+    env->ReleaseStringChars(textObj, chars);
+  }
+  arcwasm::QueueImeRecord(r);
+}
+
+void imeSetState(JNIEnv* env, jclass, jboolean editor, jboolean show, jint inputType,
+                 jint imeOptions, jint actionId, jstring seedObj) {
+  arcwasm::ImeState state;
+  memset(&state, 0, sizeof(state));
+  state.editor = editor ? 1 : 0;
+  state.show = show ? 1 : 0;
+  state.input_type = inputType;
+  state.ime_options = imeOptions;
+  state.action_id = actionId;
+  if (seedObj) {
+    const jsize length = env->GetStringLength(seedObj);
+    const jsize n = length < 256 ? length : 256;
+    // The end of the text: what is right before the cursor.
+    env->GetStringRegion(seedObj, length - n, n, reinterpret_cast<jchar*>(state.seed));
+    state.seed_len = n;
+  }
+  arcwasm::SetImeState(state);
+}
+
+// The state the page would read (tests): serial, editor, show, inputType,
+// imeOptions, actionId into out[0..5]; the text before the cursor returned.
+jstring imeGetState(JNIEnv* env, jclass, jintArray out) {
+  arcwasm::ImeState* state = arcwasm_ime_state();
+  jint values[6] = {state->serial, state->editor, state->show, state->input_type,
+                    state->ime_options, state->action_id};
+  env->SetIntArrayRegion(out, 0, 6, values);
+  return env->NewString(reinterpret_cast<const jchar*>(state->seed), state->seed_len);
+}
+
+jboolean imeAvailable(JNIEnv*, jclass) {
+  return JNI_TRUE;
+}
+
+const JNINativeMethod kBrowserImeMethods[] = {
+    {"nativeAvailable", "()Z", reinterpret_cast<void*>(imeAvailable)},
+    {"nativeTake", "([II)Ljava/lang/String;", reinterpret_cast<void*>(imeTake)},
+    {"nativeInject", "(IIILjava/lang/String;)V", reinterpret_cast<void*>(imeInject)},
+    {"nativeSetState", "(ZZIIILjava/lang/String;)V", reinterpret_cast<void*>(imeSetState)},
+    {"nativeGetState", "([I)Ljava/lang/String;", reinterpret_cast<void*>(imeGetState)},
+};
+
 const JNINativeMethod kBrowserInputMethods[] = {
     {"nativeRegisterInputChannel", "(Landroid/view/InputChannel;)V",
      reinterpret_cast<void*>(registerInputChannel)},
@@ -260,6 +327,12 @@ int register_arcwasm_input_natives(JNIEnv* env) {
                                kInputManagerServiceMethods,
                                NELEM(kInputManagerServiceMethods)) < 0)
     return -1;
+  // The text input's natives where the framework has the class (Android 10:
+  // the "input_method" service's way to the page).
+  ScopedLocalRef<jclass> ime(env, env->FindClass("arcwasm/input/BrowserIme"));
+  if (ime.get() == nullptr ||
+      env->RegisterNatives(ime.get(), kBrowserImeMethods, NELEM(kBrowserImeMethods)) < 0)
+    env->ExceptionClear();
 
   arcwasm::StartInputDispatcher();
   // Publish the "input" service (needs servicemanager, which

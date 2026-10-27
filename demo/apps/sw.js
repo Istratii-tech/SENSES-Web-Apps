@@ -17,7 +17,7 @@ const VERSION = '__VERSION__';
 const SYSTEMS = '__SYSTEMS__'.split(' ').filter(Boolean).map((s) => s.split(':'));
 const SHELL_CACHE = 'senses-apps-' + VERSION;
 const SHELL = ['./', 'index.html', 'run.html', 'memtest.html', 'origin.html', 'manifest.webmanifest', 'senses.css',
-               'senses.js', 'apk.js', 'install.js', 'google.js', 'icon.js', 'store.js', 'store-worker.js', 'origins.js',
+               'senses.js', 'apk.js', 'install.js', 'google.js', 'files.js', 'icon.js', 'store.js', 'store-worker.js', 'origins.js',
                'idb_opfs.js', 'report.js', 'mem_plan.js',
                'stacks.json', 'senses-mask.png', 'icon-180.png', 'icon-192.png', 'icon-512.png',
                'icon-maskable-512.png'];

@@ -1044,6 +1044,14 @@ void SetLibraryPath(const char* path) {
   }
 }
 
+bool LibraryImage(Library* lib, uint32_t* bias, uint32_t* phdr, uint32_t* phnum) {
+  if (!lib || lib->is_host) return false;
+  *bias = lib->bias;
+  *phdr = lib->phdr;
+  *phnum = lib->phnum;
+  return true;
+}
+
 Library* LoadNoInit(const char* path) {
   EnsureInit();
   std::lock_guard<std::recursive_mutex> l(g_lock);
@@ -1448,6 +1456,11 @@ extern "C" size_t arc_proc_maps(char* buf, size_t size) {
   std::string both;
   if (ndk::Maps64)   // the arm64 libraries (ndk_linker64.cc), in builds that have them
     both = *ndk::g_maps + ndk::Maps64();
+  // A program the VM spawned (topic native-exec) sees its address space
+  // beyond the libraries too: the wasm memory and the arm64 windows (where a
+  // hole for a big reservation is). The app's own processes: as before.
+  if (ndk::Maps64 && arc_lproc_any() && arc_lproc_is_spawned(arc_lproc_current()))
+    both += ndk::ProcMapsWindows();
   const std::string& s = ndk::Maps64 ? both : *ndk::g_maps;
   if (buf && size)
     memcpy(buf, s.data(), s.size() < size ? s.size() : size);

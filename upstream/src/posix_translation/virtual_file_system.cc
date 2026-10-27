@@ -77,6 +77,10 @@ const char kVirtualFileSystemHandlerStr[] ALLOW_UNUSED = "VirtualFileSystem";
 
 const int kPreopenPendingFd = -2;
 
+// Symlinks being followed by this thread's ResolveSymlinks (a handler's
+// readlink may let go of mutex_ while it waits: OpfsHandler).
+thread_local int t_symlink_depth = 0;
+
 void FillPermissionInfoToStat(const PermissionInfo& permission,
                               struct stat* out) {
   // Files created by apps should not allow other users to read them.
@@ -384,13 +388,21 @@ void* VirtualFileSystem::mmap(void* addr, size_t length, int prot, int flags,
     addr = reinterpret_cast<void*>(aligned_addr);
   }
 
-  if (util::RoundToPageSize(offset) != static_cast<size_t>(offset)) {
+  // arc-wasm (topic native-exec): apps think in 4 KB pages (sysconf), the
+  // host's are 64 KB. A file offset in 4 KB steps that is not on a host page
+  // is mapped as a copy of the file in anonymous memory, unless the stream
+  // copies anyway and takes any offset (MapsAnyOffset).
+  const bool host_aligned =
+      util::RoundToPageSize(offset) == static_cast<size_t>(offset);
+  if (!host_aligned &&
+      ((offset & 4095) != 0 || (flags & (MAP_ANON | MAP_ANONYMOUS)))) {
     // |offset| is not a multiple of the page size.
     errno = EINVAL;
     return MAP_FAILED;
   }
 
   scoped_refptr<FileStream> stream;
+  scoped_refptr<FileStream> copy_from;
   // dlmalloc() in Bionic never calls mmap with MAP_ANONYMOUS | MAP_FIXED.
   // Also, note that calls from Bionic can not be captured by posix_translation,
   // and MemoryRegion can not track such memory regions.
@@ -404,11 +416,38 @@ void* VirtualFileSystem::mmap(void* addr, size_t length, int prot, int flags,
     errno = EBADF;
     return MAP_FAILED;
   }
+  if (!host_aligned && !stream->MapsAnyOffset()) {
+    if ((flags & MAP_SHARED) && (prot & PROT_WRITE)) {
+      ALOGW("mmap: %s at offset 0x%llx is a copy: writes stay in memory",
+            stream->pathname().c_str(), static_cast<long long>(offset));
+    }
+    copy_from = stream;
+    stream = new PassthroughStream;
+    flags = (flags & MAP_FIXED) | MAP_PRIVATE | MAP_ANONYMOUS;
+    prot |= PROT_WRITE;
+  }
 
   length = util::RoundToPageSize(length);
-  void* new_addr = stream->mmap(addr, length, prot, flags, offset);
+  void* new_addr = stream->mmap(addr, length, prot, flags,
+                                copy_from ? 0 : offset);
   if (new_addr == MAP_FAILED)
     return new_addr;
+  if (copy_from) {
+    size_t done = 0;
+    ssize_t n = 0;
+    while (done < length) {
+      n = copy_from->pread(static_cast<char*>(new_addr) + done, length - done,
+                           offset + done);
+      if (n <= 0)
+        break;
+      done += n;
+    }
+    if (n < 0 && done == 0) {  // a stream that cannot be read at an offset
+      stream->munmap(new_addr, length);
+      errno = ENODEV;
+      return MAP_FAILED;
+    }
+  }
 
   ALOG_ASSERT(util::IsPageAligned(new_addr));
 
@@ -1628,6 +1667,69 @@ int VirtualFileSystem::bind(int fd, const sockaddr* addr, int addrlen) {
   return stream->bind(addr, addrlen);
 }
 
+int VirtualFileSystem::SetupProcessFds(int pid, const int fds[3]) {
+  base::AutoLock lock(mutex_);
+  scoped_refptr<FileStream> stdio[3];
+  for (int i = 0; i < 3; ++i) {
+    if (fds[i] < 0)
+      continue;
+    stdio[i] = fd_to_stream_->GetStream(fds[i]);
+    if (!stdio[i]) {
+      errno = EBADF;
+      return -1;
+    }
+  }
+  fd_to_stream_->SetProcessView(pid, stdio);
+  return 0;
+}
+
+void VirtualFileSystem::ReleaseProcessFds(int pid) {
+  base::AutoLock lock(mutex_);
+  const std::vector<int> left = fd_to_stream_->RemoveProcessView(pid);
+  for (size_t i = 0; i < left.size(); ++i)
+    CloseLocked(left[i]);
+}
+
+// arc-wasm (topic native-exec): the mode goes to the file's handler, which
+// may keep it (OpfsHandler: File.setExecutable, chmod +x) or, by default,
+// only checks that the file exists (every file is the VM's).
+int VirtualFileSystem::chmod(const std::string& pathname, mode_t mode) {
+  base::AutoLock lock(mutex_);
+  ARC_STRACE_REPORT_HANDLER(kVirtualFileSystemHandlerStr);
+
+  std::string resolved(pathname);
+  GetNormalizedPathLocked(&resolved, kResolveSymlinks);
+  FileSystemHandler* handler = GetFileSystemHandlerLocked(resolved, NULL);
+  if (!handler) {
+    errno = ENOENT;
+    return -1;
+  }
+  return handler->chmod(resolved, mode);
+}
+
+int VirtualFileSystem::fchmod(int fd, mode_t mode) {
+  base::AutoLock lock(mutex_);
+  ARC_STRACE_REPORT_HANDLER(kVirtualFileSystemHandlerStr);
+
+  scoped_refptr<FileStream> stream = fd_to_stream_->GetStream(fd);
+  if (!stream) {
+    errno = EBADF;
+    return -1;
+  }
+  // Pipes, sockets and other unnamed streams, or a file unlinked since it
+  // was opened: nothing to keep.
+  const std::string pathname = stream->pathname();
+  if (pathname.empty() || pathname[0] != '/')
+    return 0;
+  FileSystemHandler* handler = GetFileSystemHandlerLocked(pathname, NULL);
+  const int saved_errno = errno;
+  if (!handler || handler->chmod(pathname, mode) != 0) {
+    errno = saved_errno;
+    return 0;
+  }
+  return 0;
+}
+
 int VirtualFileSystem::chown(const std::string& path, uid_t owner,
                              gid_t group) {
   base::AutoLock lock(mutex_);
@@ -1890,9 +1992,9 @@ int VirtualFileSystem::access(const std::string& pathname, int mode) {
       errno = EACCES;
       return -1;
     }
-    // If exec bit for the owner is set, the file must be owned by the
-    // user (perm=07?? UID=10000) or everyone can execute it (perm=0??5).
-    ALOG_ASSERT(arc::IsAppUid(st.st_uid) || (st.st_mode & S_IXOTH));
+    // arc-wasm: no check of the owner here (ARC asserted an app's file or
+    // one everyone may run): every file is the VM's, and a mode kept by
+    // chmod (OpfsHandler, topic native-exec) may say 0700 for root's.
   }
   // There are no restrictions for read access in ARC. Files without S_IWUSR
   // exist (arc-wasm: /proc/meminfo is 0444, as on Linux; Subway Surfers
@@ -1934,13 +2036,13 @@ int VirtualFileSystem::rename(const std::string& oldpath,
   base::AutoLock lock(mutex_);
   ARC_STRACE_REPORT_HANDLER(kVirtualFileSystemHandlerStr);
 
-  // TODO(crbug.com/423063): Consider using kResolveParentSymlinks for both
-  // paths just like remove() and unlink(). man 2 rename says "If oldpath
-  // refers to a symbolic link, the link is renamed; if newpath refers to a
-  // symbolic link the link will be overwritten."
+  // man 2 rename says "If oldpath refers to a symbolic link, the link is
+  // renamed; if newpath refers to a symbolic link the link will be
+  // overwritten." arc-wasm: kResolveParentSymlinks for both paths, as
+  // remove() and unlink() (symlinks kept on OPFS, topic native-exec).
 
   std::string resolved_oldpath(oldpath);
-  GetNormalizedPathLocked(&resolved_oldpath, kResolveSymlinks);
+  GetNormalizedPathLocked(&resolved_oldpath, kResolveParentSymlinks);
   PermissionInfo permission_old;
   FileSystemHandler* handler = GetFileSystemHandlerLocked(
       resolved_oldpath, &permission_old);
@@ -1949,7 +2051,7 @@ int VirtualFileSystem::rename(const std::string& oldpath,
     return -1;
   }
   std::string resolved_newpath(newpath);
-  GetNormalizedPathLocked(&resolved_newpath, kResolveSymlinks);
+  GetNormalizedPathLocked(&resolved_newpath, kResolveParentSymlinks);
   PermissionInfo permission_new;
   FileSystemHandler* another_handler = GetFileSystemHandlerLocked(
       resolved_newpath, &permission_new);
@@ -2024,8 +2126,10 @@ int VirtualFileSystem::symlink(const std::string& oldpath,
   base::AutoLock lock(mutex_);
   ARC_STRACE_REPORT_HANDLER(kVirtualFileSystemHandlerStr);
 
+  // arc-wasm: the link itself is made, not what an existing |newpath| points
+  // to (that is EEXIST): parent symlinks only (topic native-exec).
   std::string resolved_newpath(newpath);
-  GetNormalizedPathLocked(&resolved_newpath, kResolveSymlinks);
+  GetNormalizedPathLocked(&resolved_newpath, kResolveParentSymlinks);
 
   // TODO(crbug.com/423063): The current logic seems good enough for handling
   // the test cases added in 021377bc and for handling two
@@ -2356,12 +2460,22 @@ void VirtualFileSystem::ResolveSymlinks(std::string* in_out_path) {
   const int old_errono = errno;
   if (handler->readlink(*in_out_path, &resolved) >= 0) {
     ALOG_ASSERT(*in_out_path != resolved);
-    // TODO(crbug.com/437099): Support the symlink target including
-    // relative paths and embedded symlinks.
+    // arc-wasm (topic native-exec): a target relative to the link's
+    // directory ("../../proc/mounts", as trees unpacked by apps have them)
+    // and targets with symlinks of their own are resolved too, as Linux
+    // does; after 40 links in one walk the path stays as it is (ELOOP).
+    if (resolved.empty() || t_symlink_depth >= 40) {
+      errno = old_errono;
+      return;
+    }
+    if (resolved[0] != '/')
+      resolved = util::GetDirName(*in_out_path) + "/" + resolved;
+    ++t_symlink_depth;
+    GetNormalizedPathLocked(&resolved, kResolveSymlinks);
+    --t_symlink_depth;
     in_out_path->replace(0, in_out_path->length(), resolved);
-    // TODO(crbug.com/437099): There are no protection against
-    // infinite symbolic link loop.
-    return ResolveSymlinks(in_out_path);
+    errno = old_errono;
+    return;
   }
   errno = old_errono;
 }

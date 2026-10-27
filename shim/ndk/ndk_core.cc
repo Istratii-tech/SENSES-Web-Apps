@@ -648,6 +648,8 @@ void EnsureInit() {
         if (reg) reg();
       }
     }
+    // Native programs (ndk_exec.cc, Android 10): their thunks win.
+    if (RegisterExec) RegisterExec();
     InstallSymbolizer();
     // OpenSSL built for API < 18 (no getauxval) finds the CPU's extensions
     // by running their instructions under a SIGILL handler, and guests get

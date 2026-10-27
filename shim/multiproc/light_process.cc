@@ -37,10 +37,18 @@ struct Process {
   int uid = 0;
   bool dead = false;
   bool native_shared = false;
+  // Spawned processes (topic native-exec): parent, wait status.
+  bool spawned = false;
+  int parent = 0;
+  bool exited = false;
+  bool reaped = false;
+  int wstatus = 0;
 };
 
 pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t g_killed_cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t g_exit_cond = PTHREAD_COND_INITIALIZER;  // a spawned process ended
+void (*g_exit_hook)(int, int) = nullptr;
 // Never freed (a dead process keeps its record: its zombie threads still ask).
 std::map<int, Process>* g_procs = new std::map<int, Process>;
 std::string* g_main_name = new std::string("app_process");
@@ -185,6 +193,11 @@ int arc_lproc_kill(int pid, int signal) {
     if (it == g_procs->end() || it->second.dead)
       return -1;
     it->second.dead = true;
+    if (it->second.spawned && !it->second.exited) {
+      it->second.exited = true;
+      it->second.wstatus = signal ? (signal & 0x7f) : 0;
+      pthread_cond_broadcast(&g_exit_cond);
+    }
     memcpy(hooks, g_kill_hooks, sizeof(hooks));
     __android_log_print(4, "LightProcess", "killed pid %d \"%s\" (signal %d, from pid %d)",
                         pid, it->second.name.c_str(), signal, arc_lproc_current());
@@ -282,5 +295,101 @@ void arc_lproc_set_thread(int pid, int uid) {
 }
 
 void arc_lproc_park(const char* why) { Park(why); }
+
+int arc_lproc_spawn_create(const char* name, int uid) {
+  const int parent = arc_lproc_current();
+  const int pid = arc_lproc_create(name, uid);
+  Lock l;
+  Process& p = (*g_procs)[pid];
+  p.spawned = true;
+  p.parent = parent;
+  return pid;
+}
+
+int arc_lproc_is_spawned(int pid) {
+  Lock l;
+  std::map<int, Process>::iterator it = g_procs->find(pid);
+  return it != g_procs->end() && it->second.spawned;
+}
+
+int arc_lproc_parent(int pid) {
+  Lock l;
+  std::map<int, Process>::iterator it = g_procs->find(pid);
+  return it != g_procs->end() && it->second.spawned ? it->second.parent : kMainPid;
+}
+
+void arc_lproc_exited(int pid, int wstatus) {
+  void (*hooks[kMaxHooks])(int);
+  bool was_dead;
+  {
+    Lock l;
+    std::map<int, Process>::iterator it = g_procs->find(pid);
+    if (it == g_procs->end())
+      return;
+    if (!it->second.exited) {
+      it->second.exited = true;
+      it->second.wstatus = wstatus;
+    }
+    was_dead = it->second.dead;
+    it->second.dead = true;
+    memcpy(hooks, g_kill_hooks, sizeof(hooks));
+    pthread_cond_broadcast(&g_exit_cond);
+    __android_log_print(4, "LightProcess", "pid %d \"%s\" ended (status 0x%x)", pid,
+                        it->second.name.c_str(), it->second.wstatus);
+  }
+  if (was_dead)
+    return;
+  for (int i = 0; i < kMaxHooks; i++) {
+    if (hooks[i])
+      hooks[i](pid);
+  }
+}
+
+void arc_lproc_set_exit_hook(void (*hook)(int pid, int wstatus)) {
+  Lock l;
+  g_exit_hook = hook;
+}
+
+void arc_lproc_run_exit_hook(int pid, int wstatus) {
+  void (*hook)(int, int);
+  {
+    Lock l;
+    hook = g_exit_hook;
+    std::map<int, Process>::iterator it = g_procs->find(pid);
+    if (it == g_procs->end() || !it->second.spawned)
+      return;
+  }
+  if (hook)
+    hook(pid, wstatus);
+}
+
+int arc_lproc_waitpid(int pid, int* wstatus, int options) {
+  const int self = arc_lproc_current();
+  Lock l;
+  while (true) {
+    bool any = false;
+    for (std::map<int, Process>::iterator it = g_procs->begin(); it != g_procs->end(); ++it) {
+      Process& p = it->second;
+      // A given pid is waited for from any process (Java's reaper thread is
+      // shared by the app's processes); "any child" means the caller's.
+      if (!p.spawned || p.reaped || (pid > 0 ? it->first != pid : p.parent != self))
+        continue;
+      any = true;
+      if (p.exited) {
+        p.reaped = true;
+        if (wstatus)
+          *wstatus = p.wstatus;
+        return it->first;
+      }
+    }
+    if (!any) {
+      errno = ECHILD;
+      return -1;
+    }
+    if (options & 1 /* WNOHANG */)
+      return 0;
+    pthread_cond_wait(&g_exit_cond, &g_lock);
+  }
+}
 
 }  // extern "C"
