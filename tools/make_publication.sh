@@ -38,6 +38,12 @@ cd "$OUT"
 git config user.name istratiitech
 git config user.email istratiitech@users.noreply.github.com
 git add -A
+# The gate's word list is copied for the gate to run on OUT, never committed
+# (.gitignore): it names what it guards.
+if git ls-files --error-unmatch tools/badwords.b64 >/dev/null 2>&1; then
+  echo "⛔ tools/badwords.b64 is staged in $OUT: it must stay untracked (.gitignore)"
+  exit 1
+fi
 echo "== the personal-data gate on $OUT"
 if ! tools/checknames.sh; then
   echo "⛔ not committed: clean what the gate found (in the source checkout) and run again"

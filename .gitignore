@@ -7,3 +7,5 @@ third_party/tzdata/
 third_party/aosp10/
 third_party/vulkan-headers/
 __pycache__/
+# the privacy gate's word list names what it guards: never published
+tools/badwords.b64
