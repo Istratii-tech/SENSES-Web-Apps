@@ -51,8 +51,10 @@ release-test:
 # The source of the GPL parts in the systems, as built (an asset of each
 # release; NOTICE, 1.1): libcore's ojluni (GPL v2 with the Classpath
 # Exception) of Android 8.1 and 10 -- the AOSP tag with patches/ applied --
-# and libcore's licence and notice.
-RELEASE_GPL := $(RELEASE)/SENSES-Web-Apps-$(RELEASE_VERSION)-gpl-sources.tar.gz
+# and libcore's licence and notice. A tar keeps each file's owner and macOS
+# extended attributes: the owner is set to senses (0/0) and the attributes
+# are left out, or every entry names the Mac user (tools/checknames.sh checks).
+RELEASE_GPL :=$(RELEASE)/SENSES-Web-Apps-$(RELEASE_VERSION)-gpl-sources.tar.gz
 .PHONY: release-gpl-sources
 release-gpl-sources:
 	@mkdir -p $(RELEASE)
@@ -60,9 +62,13 @@ release-gpl-sources:
 	    "as built into SENSES Web Apps $(RELEASE_VERSION): the AOSP sources with the project's patches" \
 	    "applied. Licence: GNU GPL version 2 with the Classpath Exception (LICENSE in each libcore)." \
 	    > $(RELEASE)/GPL-SOURCES-README.txt
-	tar -czf $(RELEASE_GPL) -s ',^third_party/,SENSES-Web-Apps-gpl-sources/,' \
+	tar -czf $(RELEASE_GPL) --uid 0 --gid 0 --uname senses --gname senses \
+	    --no-xattrs --no-mac-metadata --no-fflags --no-acls \
+	    -s ',^third_party/,SENSES-Web-Apps-gpl-sources/,' \
 	    -s ',^$(RELEASE)/,SENSES-Web-Apps-gpl-sources/,' $(RELEASE)/GPL-SOURCES-README.txt \
 	    $(foreach a,aosp81 aosp10,third_party/$(a)/libcore/ojluni third_party/$(a)/libcore/LICENSE third_party/$(a)/libcore/NOTICE)
+	@test -x tools/checknames.sh || { echo "⛔ no tools/checknames.sh: the personal-data gate is only on the author's machine"; exit 1; }
+	tools/checknames.sh $(RELEASE_GPL)
 	@ls -la $(RELEASE_GPL)
 
 # The public repository (docs/topics/local-release.md, "Publication"): what is

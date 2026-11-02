@@ -4,7 +4,9 @@
 # publication's README and NOTICE, as a commit in OUT -- a repository of its
 # own with a fresh history signed istratiitech. The personal-data gate
 # (tools/checknames.sh) checks OUT before the commit; anything found, no
-# commit. git push is for a person to do.
+# commit. The gate's own files are copied to OUT to run there but never
+# committed (.gitignore): they say what is hidden and how, and the word list
+# is the hidden data itself. git push is for a person to do.
 #
 #   tools/make_publication.sh OUT [VERSION]      (make publication PUBLICATION=OUT)
 #
@@ -38,10 +40,12 @@ cd "$OUT"
 git config user.name istratiitech
 git config user.email istratiitech@users.noreply.github.com
 git add -A
-# The gate's word list is copied for the gate to run on OUT, never committed
-# (.gitignore): it names what it guards.
-if git ls-files --error-unmatch tools/badwords.b64 >/dev/null 2>&1; then
-  echo "⛔ tools/badwords.b64 is staged in $OUT: it must stay untracked (.gitignore)"
+# The gate (its word list and scripts) runs on OUT, never committed there.
+staged=$(git ls-files -- tools/badwords.b64 tools/checknames.sh tools/checkpatterns.py \
+  tools/checkpatterns-allow.b64 tools/unpackimage.py tests/checknames)
+if [ -n "$staged" ]; then
+  echo "⛔ the gate's files are tracked in $OUT, they must stay untracked (.gitignore): git rm --cached"
+  printf '%s\n' "$staged" | sed 's/^/     /'
   exit 1
 fi
 echo "== the personal-data gate on $OUT"

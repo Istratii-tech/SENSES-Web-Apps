@@ -7,5 +7,12 @@ third_party/tzdata/
 third_party/aosp10/
 third_party/vulkan-headers/
 __pycache__/
-# the privacy gate's word list names what it guards: never published
+# the privacy gate is never published: its word list names what it guards,
+# its scripts say what is hidden and how. Tracked only in arc-wasm (no
+# remote); a new gate file there needs git add -f
 tools/badwords.b64
+tools/checknames.sh
+tools/checkpatterns.py
+tools/checkpatterns-allow.b64
+tools/unpackimage.py
+tests/checknames/
